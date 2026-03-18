@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -16,7 +17,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool    _obscurePassword = true;
   bool    _isLoading       = false;
-  String  _selectedRole    = 'admin';
   String? _errorMessage;
 
   @override
@@ -29,15 +29,48 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() { _isLoading = true; _errorMessage = null; });
+
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      // Step 1: sign in with Firebase Auth
+      final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email:    _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
+
+      final uid = cred.user!.uid;
+
+      // Step 2: read role from Realtime Database
+      final snap = await FirebaseDatabase.instance.ref('users/$uid').get();
+
+      String role = 'faculty';
+      String name = _emailController.text.trim().split('@').first;
+
+      if (snap.exists) {
+        final data = Map<String, dynamic>.from(snap.value as Map);
+        role = data['role'] as String? ?? 'faculty';
+        name = data['name'] as String? ?? name;
+      } else {
+        // First login — store as faculty by default
+        await FirebaseDatabase.instance.ref('users/$uid').set({
+          'email': _emailController.text.trim(),
+          'name':  name,
+          'role':  'faculty',
+        });
+      }
+
       if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/dashboard');
+
+      // Step 3: navigate — pass role directly so dashboard gets it instantly
+      Navigator.pushReplacementNamed(
+        context,
+        '/dashboard',
+        arguments: {'role': role, 'name': name},
+      );
+
     } on FirebaseAuthException catch (e) {
       setState(() => _errorMessage = _friendlyError(e.code));
+    } catch (e) {
+      setState(() => _errorMessage = 'Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -46,7 +79,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _handleForgotPassword() async {
     final email = _emailController.text.trim();
     if (email.isEmpty) {
-      setState(() => _errorMessage = 'Enter your email first, then tap forgot password.');
+      setState(() => _errorMessage = 'Enter your email first.');
       return;
     }
     try {
@@ -62,11 +95,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
   String _friendlyError(String code) {
     switch (code) {
-      case 'user-not-found':    return 'No account found with this email.';
-      case 'wrong-password':    return 'Incorrect password. Please try again.';
-      case 'invalid-email':     return 'Please enter a valid email address.';
-      case 'too-many-requests': return 'Too many attempts. Please wait and try again.';
-      default:                  return 'Login failed. Please try again.';
+      case 'user-not-found':     return 'No account found with this email.';
+      case 'wrong-password':     return 'Incorrect password. Please try again.';
+      case 'invalid-email':      return 'Please enter a valid email address.';
+      case 'invalid-credential': return 'Invalid email or password.';
+      case 'too-many-requests':  return 'Too many attempts. Please wait and try again.';
+      default:                   return 'Login failed. Please try again.';
     }
   }
 
@@ -88,15 +122,18 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildField('EMAIL ADDRESS', Icons.email_outlined,
-                            _emailController,
-                            hint: 'you@dnsc.edu.ph',
-                            keyboard: TextInputType.emailAddress,
-                            validator: (v) {
-                              if (v == null || v.isEmpty) return 'Email is required';
-                              if (!v.contains('@')) return 'Enter a valid email';
-                              return null;
-                            }),
+                        _buildField(
+                          'EMAIL ADDRESS',
+                          Icons.email_outlined,
+                          _emailController,
+                          hint: 'you@dnsc.edu.ph',
+                          keyboard: TextInputType.emailAddress,
+                          validator: (v) {
+                            if (v == null || v.isEmpty) return 'Email is required';
+                            if (!v.contains('@')) return 'Enter a valid email';
+                            return null;
+                          },
+                        ),
                         const SizedBox(height: 18),
                         _buildPasswordField(),
                         const SizedBox(height: 8),
@@ -105,7 +142,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           child: TextButton(
                             onPressed: _handleForgotPassword,
                             style: TextButton.styleFrom(
-                                padding: EdgeInsets.zero, minimumSize: Size.zero),
+                                padding: EdgeInsets.zero,
+                                minimumSize: Size.zero),
                             child: const Text('Forgot password?',
                                 style: TextStyle(fontSize: 12,
                                     color: AppColors.greenMid,
@@ -118,20 +156,18 @@ class _LoginScreenState extends State<LoginScreen> {
                         ],
                         const SizedBox(height: 16),
                         _buildLoginButton(),
-                        const SizedBox(height: 24),
-                        _buildDivider(),
-                        const SizedBox(height: 16),
-                        _buildRoleSelector(),
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 28),
                         Center(
                           child: RichText(
                             text: const TextSpan(
                               style: TextStyle(fontSize: 12, color: AppColors.textMuted),
                               children: [
                                 TextSpan(text: 'DNSC Campus · '),
-                                TextSpan(text: 'Davao del Norte State College',
-                                    style: TextStyle(color: AppColors.greenDark,
-                                        fontWeight: FontWeight.w500)),
+                                TextSpan(
+                                  text: 'Davao del Norte State College',
+                                  style: TextStyle(color: AppColors.textMid,
+                                      fontWeight: FontWeight.w500),
+                                ),
                               ],
                             ),
                           ),
@@ -183,17 +219,12 @@ class _LoginScreenState extends State<LoginScreen> {
             )),
           ]),
           const SizedBox(height: 28),
-          RichText(text: TextSpan(
-            style: const TextStyle(fontFamily: 'Outfit', fontSize: 28,
-                fontWeight: FontWeight.w700, color: Colors.white, height: 1.2),
-            children: [
-              const TextSpan(text: 'Welcome back,\n'),
-              TextSpan(
-                text: _selectedRole == 'admin' ? 'Admin.' : 'Faculty.',
-                style: const TextStyle(color: AppColors.greenLight),
-              ),
-            ],
-          )),
+          const Text('Welcome back,',
+              style: TextStyle(fontFamily: 'Outfit', fontSize: 28,
+                  fontWeight: FontWeight.w700, color: Colors.white, height: 1.2)),
+          const Text('Sign in to continue.',
+              style: TextStyle(fontFamily: 'Outfit', fontSize: 20,
+                  fontWeight: FontWeight.w400, color: AppColors.greenLight)),
           const SizedBox(height: 8),
           const Text('DNSC Campus Energy Control',
               style: TextStyle(fontSize: 13, color: Color(0xB3C2EDD0))),
@@ -202,15 +233,18 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildField(String label, IconData icon, TextEditingController controller,
-      {String hint = '',
-      TextInputType keyboard = TextInputType.text,
-      String? Function(String?)? validator}) {
+  Widget _buildField(String label, IconData icon,
+      TextEditingController controller, {
+        String hint = '',
+        TextInputType keyboard = TextInputType.text,
+        String? Function(String?)? validator,
+      }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-            color: AppColors.textMid, letterSpacing: 0.8)),
+        Text(label, style: const TextStyle(fontSize: 11,
+            fontWeight: FontWeight.w600, color: AppColors.textMid,
+            letterSpacing: 0.8)),
         const SizedBox(height: 6),
         TextFormField(
           controller: controller,
@@ -228,7 +262,8 @@ class _LoginScreenState extends State<LoginScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text('PASSWORD', style: TextStyle(fontSize: 11,
-            fontWeight: FontWeight.w600, color: AppColors.textMid, letterSpacing: 0.8)),
+            fontWeight: FontWeight.w600, color: AppColors.textMid,
+            letterSpacing: 0.8)),
         const SizedBox(height: 6),
         TextFormField(
           controller: _passwordController,
@@ -279,7 +314,8 @@ class _LoginScreenState extends State<LoginScreen> {
         onPressed: _isLoading ? null : _handleLogin,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.greenDark,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
           elevation: 4,
           shadowColor: AppColors.greenDark.withAlpha(102),
         ),
@@ -294,55 +330,11 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildDivider() {
-    return Row(children: [
-      Expanded(child: Divider(color: AppColors.greenMid.withAlpha(51), thickness: 1)),
-      const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 12),
-        child: Text('sign in as',
-            style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
-      ),
-      Expanded(child: Divider(color: AppColors.greenMid.withAlpha(51), thickness: 1)),
-    ]);
-  }
-
-  Widget _buildRoleSelector() {
-    return Row(children: [
-      Expanded(child: _roleChip('admin',   Icons.star_outline,   'Admin')),
-      const SizedBox(width: 10),
-      Expanded(child: _roleChip('faculty', Icons.person_outline, 'Faculty')),
-    ]);
-  }
-
-  Widget _roleChip(String role, IconData icon, String label) {
-    final isActive = _selectedRole == role;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedRole = role),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        height: 44,
-        decoration: BoxDecoration(
-          color: isActive ? AppColors.greenPale : Colors.white,
-          border: Border.all(
-              color: isActive
-                  ? AppColors.greenMid
-                  : AppColors.greenMid.withAlpha(51),
-              width: isActive ? 1.5 : 1),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(icon, size: 16,
-              color: isActive ? AppColors.greenDark : AppColors.textMid),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
-              color: isActive ? AppColors.greenDark : AppColors.textMid)),
-        ]),
-      ),
-    );
-  }
-
-  InputDecoration _inputDeco(
-      {required String hint, required IconData icon, Widget? suffix}) {
+  InputDecoration _inputDeco({
+    required String hint,
+    required IconData icon,
+    Widget? suffix,
+  }) {
     return InputDecoration(
       hintText: hint,
       hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
@@ -350,28 +342,17 @@ class _LoginScreenState extends State<LoginScreen> {
       suffixIcon: suffix,
       filled: true,
       fillColor: Colors.white,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(
-              color: AppColors.greenMid.withAlpha(51), width: 1.5)),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(
-              color: AppColors.greenMid.withAlpha(51), width: 1.5)),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: AppColors.greenMid, width: 1.5)),
-      errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: AppColors.error, width: 1.5)),
-      focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: AppColors.error, width: 1.5)),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51), width: 1.5)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51), width: 1.5)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: AppColors.greenMid, width: 1.5)),
+      errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: AppColors.error, width: 1.5)),
+      focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: AppColors.error, width: 1.5)),
     );
   }
 }

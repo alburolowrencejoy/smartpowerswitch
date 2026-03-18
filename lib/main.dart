@@ -48,6 +48,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
               buildingCode: args['buildingCode'],
               buildingName: args['buildingName'],
               floors:       args['floors'],
+              role:         args['role'] ?? 'faculty',
             ),
           );
         }
@@ -59,6 +60,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
               utility:  args['utility'],
               building: args['building'],
               floor:    args['floor'],
+              role:     args['role'] ?? 'faculty',
             ),
           );
         }

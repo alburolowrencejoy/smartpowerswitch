@@ -6,6 +6,7 @@ class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
   final String utility;
   final String building;
+  final String role;
   final int floor;
 
   const DeviceDetailScreen({
@@ -13,6 +14,7 @@ class DeviceDetailScreen extends StatefulWidget {
     required this.deviceId,
     required this.utility,
     required this.building,
+    required this.role,
     required this.floor,
   });
 

@@ -1,1 +1,38 @@
-{"flutter":{"platforms":{"dart":{"lib/firebase_options.dart":{"projectId":"smartpowerswitch-e90d0","configurations":{"android":"1:867230118403:android:f54769cd59240f850e5436"}}}}}}
+{
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "smartpowerswitch-e90d0",
+          "configurations": {
+            "android": "1:867230118403:android:8d3f59ff827f2e1a0e5436",
+            "ios": "1:867230118403:ios:4ea9c7f9620aaf6d0e5436",
+            "web": "1:867230118403:web:8f353f32e28392760e5436",
+            "windows": "1:867230118403:web:8df01c5c847fec0c0e5436"
+          }
+        }
+      },
+      "android": {
+        "default": {
+          "projectId": "smartpowerswitch-e90d0",
+          "appId": "1:867230118403:android:8d3f59ff827f2e1a0e5436",
+          "fileOutput": "android/app/google-services.json"
+        }
+      }
+    }
+  }
+}

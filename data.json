@@ -1,0 +1,347 @@
+{
+  "settings": {
+    "electricityRate": 11.5
+  },
+  "users": {
+    "AfUh2j4sxdPnTp8PR7h3vxAYJaf1": {
+      "email": "admin@dnsc.edu.ph",
+      "name": "Admin",
+      "role": "admin"
+    },
+    "JzXV8yT9XEc3NGnxYRdflyYKFfA3": {
+      "email": "faculty@dnsc.edu.ph",
+      "name": "Faculty",
+      "role": "faculty"
+    }
+  },
+  "master_devices": {
+    "DEV-2024-A3F7": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-B1C2": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-C2D3": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-D3E4": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-E4F5": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-F5G6": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-G6H7": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-H7I8": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-I8J9": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-J9K0": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-K0L1": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-L1M2": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-M2N3": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-N3O4": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-O4P5": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-P5Q6": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-Q6R7": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-R7S8": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-S8T9": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-T9U0": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-U0V1": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-V1W2": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-W2X3": {
+      "registered": true,
+      "assignedTo": ""
+    },
+    "DEV-2024-X3Y4": {
+      "registered": true,
+      "assignedTo": ""
+    }
+  },
+  "buildings": {
+    "IC": {
+      "name": "Institute of Computing",
+      "floors": 2,
+      "floorData": {
+        "1": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-A3F7": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-B1C2": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-C2D3": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        },
+        "2": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-D3E4": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-E4F5": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-F5G6": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        }
+      }
+    },
+    "ILEGG": {
+      "name": "Institute of Leadership and Good Governance",
+      "floors": 2,
+      "floorData": {
+        "1": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-G6H7": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-H7I8": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-I8J9": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        },
+        "2": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-J9K0": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-K0L1": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-L1M2": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        }
+      }
+    },
+    "ITED": {
+      "name": "Institute of Teachers Education",
+      "floors": 2,
+      "floorData": {
+        "1": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-M2N3": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-N3O4": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-O4P5": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        },
+        "2": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-P5Q6": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-Q6R7": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-R7S8": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        }
+      }
+    },
+    "IAAS": {
+      "name": "Institute of Aquatic Science",
+      "floors": 1,
+      "floorData": {
+        "1": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-S8T9": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-T9U0": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-U0V1": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        }
+      }
+    },
+    "ADMIN": {
+      "name": "Administrator Building",
+      "floors": 1,
+      "floorData": {
+        "1": {
+          "rooms": [
+            "Room 1"
+          ],
+          "devices": {
+            "DEV-2024-V1W2": {
+              "utility": "lights",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-W2X3": {
+              "utility": "outlets",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            },
+            "DEV-2024-X3Y4": {
+              "utility": "ac",
+              "status": "offline",
+              "relay": false,
+              "room": "Room 1"
+            }
+          }
+        }
+      }
+    }
+  }
+}
