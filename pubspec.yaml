@@ -1,0 +1,32 @@
+name: smart_power_switch
+description: IoT Energy Monitoring and Control for DNSC Campus
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  firebase_database: ^11.1.4
+
+  # Google Fonts (Outfit)
+  google_fonts: ^6.2.1
+
+  # CSV Export
+  csv: ^6.0.0
+  path_provider: ^2.1.4
+  share_plus: ^10.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
