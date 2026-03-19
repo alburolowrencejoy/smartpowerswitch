@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
@@ -27,10 +28,16 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   Map<int, List<String>> _rooms   = {};
   Map<String, dynamic>   _devices = {};
 
-  double _buildingKwh    = 0;
-  double _buildingCost   = 0;
-  int    _buildingOnline = 0;
-  int    _totalDeviceCount = 0;
+  double _buildingKwh           = 0;
+  double _buildingCost          = 0;
+  int    _buildingOnline        = 0;
+  int    _instituteTotalDevices = 0; // assigned devices in this building
+  int    _totalAssigned         = 0; // total assigned across all buildings (for 24-limit check)
+
+  StreamSubscription? _roomsSub;
+  StreamSubscription? _devicesSub;
+  StreamSubscription? _masterSub;
+  StreamSubscription? _energySub;
 
   bool get isAdmin => widget.role == 'admin';
 
@@ -39,7 +46,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     super.initState();
     _loadRooms();
     _listenToDevices();
-    _listenToTotalDevices();
+    _listenToMasterDevices();
+    _listenToBuildingEnergy();
+  }
+
+  @override
+  void dispose() {
+    _roomsSub?.cancel();
+    _devicesSub?.cancel();
+    _masterSub?.cancel();
+    _energySub?.cancel();
+    super.dispose();
   }
 
   // ── Load rooms ───────────────────────────────────────────────
@@ -65,29 +82,62 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   // ── Listen to devices on current floor ──────────────────────
   void _listenToDevices() {
-    FirebaseDatabase.instance
+    _devicesSub?.cancel();
+    _devicesSub = FirebaseDatabase.instance
         .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
         .onValue
         .listen((event) {
       if (!mounted) return;
-      final data = event.snapshot.value as Map<dynamic, dynamic>?;
-      double kwh = 0; int online = 0;
-      final devices = data?.map((k, v) =>
-          MapEntry(k.toString(), Map<String, dynamic>.from(v as Map))) ?? {};
-      setState(() {
-        _devices        = devices;
-        _buildingKwh    = kwh;
-        _buildingCost   = kwh * 11.5;
-        _buildingOnline = online;
-      });
+      final data = event.snapshot.value;
+      final devices = <String, dynamic>{};
+
+      if (data is Map) {
+        data.forEach((k, v) {
+          if (v is Map) {
+            final device = <String, dynamic>{};
+            v.forEach((dk, dv) => device[dk.toString()] = dv);
+            devices[k.toString()] = device;
+          }
+        });
+      }
+
+      setState(() => _devices = devices);
     });
   }
 
-  void _listenToTotalDevices() {
-    FirebaseDatabase.instance.ref('master_devices').onValue.listen((event) {
+  // ── Count devices from master_devices ────────────────────────
+  void _listenToMasterDevices() {
+    _masterSub = FirebaseDatabase.instance
+        .ref('master_devices')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
       final data = event.snapshot.value as Map<dynamic, dynamic>?;
-      setState(() => _totalDeviceCount = data?.length ?? 0);
+      if (data == null) {
+        setState(() { _instituteTotalDevices = 0; _totalAssigned = 0; });
+        return;
+      }
+
+      int buildingCount = 0;
+      int totalAssigned = 0;
+
+      data.forEach((id, val) {
+        if (val is! Map) return;
+        final assignedTo = (val['assignedTo'] ?? '').toString();
+        if (assignedTo.isNotEmpty) {
+          totalAssigned++;
+          // assignedTo format: "IC/1/Comlab 1"
+          final parts = assignedTo.split('/');
+          if (parts.isNotEmpty && parts[0] == widget.buildingCode) {
+            buildingCount++;
+          }
+        }
+      });
+
+      setState(() {
+        _instituteTotalDevices = buildingCount;
+        _totalAssigned         = totalAssigned;
+      });
     });
   }
 
@@ -98,6 +148,37 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       _devices       = {};
     });
     _listenToDevices();
+  }
+
+  // ── Building energy from flat devices node ───────────────────
+  void _listenToBuildingEnergy() {
+    _energySub = FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+      if (!mounted) return;
+      final data = event.snapshot.value;
+      if (data is! Map) {
+        setState(() { _buildingKwh = 0; _buildingCost = 0; _buildingOnline = 0; });
+        return;
+      }
+      double kwh = 0;
+      int online = 0;
+      data.forEach((_, val) {
+        if (val is! Map) return;
+        final device   = Map<String, dynamic>.from(val);
+        final building = (device['building'] ?? '').toString();
+        if (building != widget.buildingCode) return;
+        kwh += (device['kwh'] ?? 0.0) as num;
+        final lastSeen = device['last_seen'];
+        if (lastSeen != null && lastSeen != 0) {
+          final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
+          if (DateTime.now().difference(dt).inMinutes < 2) online++;
+        }
+      });
+      setState(() {
+        _buildingKwh    = kwh;
+        _buildingCost   = kwh * 11.5;
+        _buildingOnline = online;
+      });
+    });
   }
 
   // ── Add room ─────────────────────────────────────────────────
@@ -126,7 +207,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.greenDark,
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.greenDark,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             child: const Text('Add', style: TextStyle(color: Colors.white)),
           ),
@@ -142,9 +224,12 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           const SnackBar(content: Text('Room already exists.')));
       return;
     }
+
+    final updated = [...current, result];
+    final roomMap = { for (int i = 0; i < updated.length; i++) '$i': updated[i] };
     await FirebaseDatabase.instance
         .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set([...current, result]);
+        .set(roomMap);
   }
 
   // ── Delete room ──────────────────────────────────────────────
@@ -163,7 +248,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error,
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             child: const Text('Delete', style: TextStyle(color: Colors.white)),
           ),
@@ -172,30 +258,38 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
     if (confirm != true) return;
 
-    // Remove all devices in this room
-    final roomDevices = _devices.entries
-        .where((e) => e.value['room'] == room)
-        .toList();
-    for (final entry in roomDevices) {
-      await _unassignDevice(entry.key);
+    final snap = await FirebaseDatabase.instance
+        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
+        .get();
+
+    if (snap.exists) {
+      final data = snap.value as Map<dynamic, dynamic>;
+      for (final entry in data.entries) {
+        final val = entry.value as Map?;
+        if (val?['room'] == room) await _unassignDevice(entry.key.toString());
+      }
     }
 
-    // Remove room from list
-    final current = _rooms[_selectedFloor] ?? [];
+    final current = List<String>.from(_rooms[_selectedFloor] ?? []);
+    current.remove(room);
+    final roomMap = { for (int i = 0; i < current.length; i++) '$i': current[i] };
     await FirebaseDatabase.instance
         .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(current.where((r) => r != room).toList());
+        .set(current.isEmpty ? {} : roomMap);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"$room" deleted.')));
   }
 
-  // ── Add utility (admin types device ID manually) ─────────────
+  // ── Add utility ──────────────────────────────────────────────
   Future<void> _addUtility(String room) async {
-    if (_totalDeviceCount >= 24) {
+    if (_totalAssigned >= 24) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Device limit reached (24 max).')));
       return;
     }
 
-    // Step 1 — pick utility type
     String? utility = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
@@ -203,11 +297,11 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         title: const Text('Select Utility Type',
             style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          _utilityPickTile('lights',  Icons.lightbulb_outline,   'Lights',  'Relay 220V',      const Color(0xFFE8922A)),
+          _utilityPickTile('Lights',  Icons.lightbulb_outline,   'Lights',  'Relay 220V',     const Color(0xFFE8922A)),
           const SizedBox(height: 8),
-          _utilityPickTile('outlets', Icons.electrical_services, 'Outlets', 'Relay 220V',      AppColors.greenMid),
+          _utilityPickTile('Outlets', Icons.electrical_services, 'Outlets', 'Relay 220V',     AppColors.greenMid),
           const SizedBox(height: 8),
-          _utilityPickTile('ac',      Icons.ac_unit,             'AC Unit', 'Contactor 220V',  const Color(0xFF2196F3)),
+          _utilityPickTile('AC',      Icons.ac_unit,             'AC Unit', 'Contactor 220V', const Color(0xFF2196F3)),
         ]),
         actions: [
           TextButton(
@@ -218,7 +312,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
     if (utility == null) return;
 
-    // Step 2 — enter device ID
     final deviceIdController = TextEditingController();
     String? errorText;
 
@@ -253,7 +346,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.greenDark,
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenDark,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
               onPressed: () async {
                 final id = deviceIdController.text.trim().toUpperCase();
@@ -261,20 +355,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   setS(() => errorText = 'Please enter a Device ID');
                   return;
                 }
-                // Validate against master_devices
                 final snap = await FirebaseDatabase.instance
                     .ref('master_devices/$id').get();
                 if (!snap.exists) {
                   setS(() => errorText = 'Device ID not found in system');
                   return;
                 }
-                // Check if already assigned
                 final assigned = (snap.value as Map?)?['assignedTo'] as String?;
                 if (assigned != null && assigned.isNotEmpty) {
                   setS(() => errorText = 'Device already assigned to $assigned');
                   return;
                 }
-                // Check if already in this building
                 if (_devices.containsKey(id)) {
                   setS(() => errorText = 'Device already added to this floor');
                   return;
@@ -289,21 +380,43 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
     if (deviceId == null) return;
 
-    // Save to Firebase
+    // Save to buildings node
     await FirebaseDatabase.instance
         .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
-        .set({'utility': utility, 'status': 'offline', 'relay': false, 'room': room});
+        .set({
+          'utility': utility,
+          'status':  'offline',
+          'relay':   false,
+          'room':    room,
+        });
 
+    // Save to flat devices node
+    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
+      'building':     widget.buildingCode,
+      'floor':        '$_selectedFloor',
+      'room':         room,
+      'utility':      utility,
+      'relay':        false,
+      'status':       'offline',
+      'kwh':          0,
+      'voltage':      0,
+      'current':      0,
+      'power':        0,
+      'last_seen':    0,
+      'last_updated': 0,
+    });
+
+    // Update master_devices assignedTo
     await FirebaseDatabase.instance
         .ref('master_devices/$deviceId/assignedTo')
-        .set('${widget.buildingCode}/floor$_selectedFloor/$room');
+        .set('${widget.buildingCode}/$_selectedFloor/$room');
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$deviceId added as ${_utilityLabel(utility)} in $room.')));
+        SnackBar(content: Text('$deviceId added as $utility in $room.')));
   }
 
-  // ── Delete utility / device ──────────────────────────────────
+  // ── Delete device ────────────────────────────────────────────
   Future<void> _deleteDevice(String deviceId, String utility) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -327,7 +440,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error,
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
             child: const Text('Remove', style: TextStyle(color: Colors.white)),
           ),
@@ -342,17 +456,20 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Future<void> _unassignDevice(String deviceId) async {
-    // Remove from building
     await FirebaseDatabase.instance
         .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
         .remove();
-    // Reset in master_devices
     await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId/assignedTo')
-        .set('');
+        .ref('master_devices/$deviceId')
+        .update({'assignedTo': ''});
+    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
+      'building': '',
+      'floor':    '',
+      'room':     '',
+      'status':   'offline',
+    });
   }
 
-  // ── Utility pick tile ────────────────────────────────────────
   Widget _utilityPickTile(String value, IconData icon, String label,
       String sub, Color color) {
     return GestureDetector(
@@ -419,7 +536,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  // ── Header ───────────────────────────────────────────────────
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
@@ -438,16 +554,14 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             decoration: BoxDecoration(
                 color: Colors.white.withAlpha(38),
                 borderRadius: BorderRadius.circular(10)),
-            child: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white, size: 16),
+            child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 16),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(widget.buildingCode,
-                style: const TextStyle(fontSize: 11,
-                    color: AppColors.greenLight,
+                style: const TextStyle(fontSize: 11, color: AppColors.greenLight,
                     fontWeight: FontWeight.w600, letterSpacing: 1)),
             Text(
               _selectedRoom != null
@@ -472,7 +586,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  // ── Building dashboard ───────────────────────────────────────
   Widget _buildBuildingDashboard() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -498,10 +611,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         if (isAdmin) ...[
           const SizedBox(width: 10),
           Expanded(child: _dashCard('Devices',
-              '$_totalDeviceCount / 24',
-              Icons.devices, _totalDeviceCount >= 24
-                  ? AppColors.error
-                  : AppColors.greenLight)),
+              '$_instituteTotalDevices assigned',
+              Icons.devices, AppColors.greenLight)),
         ],
       ]),
     );
@@ -519,13 +630,11 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         const SizedBox(height: 6),
         Text(value, style: TextStyle(fontFamily: 'Outfit', fontSize: 12,
             fontWeight: FontWeight.w700, color: color)),
-        Text(label, style: TextStyle(fontSize: 10,
-            color: color.withAlpha(179))),
+        Text(label, style: TextStyle(fontSize: 10, color: color.withAlpha(179))),
       ]),
     );
   }
 
-  // ── Floor tabs ───────────────────────────────────────────────
   Widget _buildFloorTabs() {
     return Container(
       height: 52,
@@ -560,29 +669,24 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  // ── Rooms list ───────────────────────────────────────────────
   Widget _buildRoomsList() {
     final rooms = _rooms[_selectedFloor] ?? [];
-
     if (rooms.isEmpty) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.meeting_room_outlined,
-              size: 48, color: AppColors.textMuted),
+          const Icon(Icons.meeting_room_outlined, size: 48, color: AppColors.textMuted),
           const SizedBox(height: 12),
           const Text('No rooms yet',
               style: TextStyle(fontFamily: 'Outfit', fontSize: 15,
                   fontWeight: FontWeight.w600, color: AppColors.textDark)),
           const SizedBox(height: 6),
           Text(
-            isAdmin ? 'Tap + Add Room to get started'
-                : 'No rooms have been added yet',
+            isAdmin ? 'Tap + Add Room to get started' : 'No rooms have been added yet',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
           ),
         ]),
       );
     }
-
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -596,12 +700,22 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Widget _buildRoomCard(String room) {
-    final roomDevices = _devices.values
-        .where((d) => (d as Map?)?['room'] == room)
-        .toList();
-    final onlineCount = roomDevices
-        .where((d) => (d as Map?)?['status'] == 'online')
-        .length;
+    int utilityCount = 0;
+    int onlineCount  = 0;
+    bool hasLights   = false;
+    bool hasOutlets  = false;
+    bool hasAc       = false;
+
+    _devices.forEach((id, d) {
+      if (d is Map && d['room']?.toString().trim() == room.trim()) {
+        utilityCount++;
+        if (d['status'] == 'online') onlineCount++;
+        final u = (d['utility'] ?? '').toString().toLowerCase();
+        if (u == 'lights')  hasLights  = true;
+        if (u == 'outlets') hasOutlets = true;
+        if (u == 'ac')      hasAc      = true;
+      }
+    });
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -610,7 +724,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: AppColors.greenMid.withAlpha(26))),
       child: Column(children: [
-        // Room header — tappable
         GestureDetector(
           onTap: () => setState(() => _selectedRoom = room),
           child: Padding(
@@ -632,28 +745,23 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                       color: AppColors.textDark)),
                   const SizedBox(height: 3),
                   Text(
-                    roomDevices.isEmpty
+                    utilityCount == 0
                         ? 'No utilities added'
-                        : '${roomDevices.length} ${roomDevices.length == 1 ? 'utility' : 'utilities'} · $onlineCount online',
+                        : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} · $onlineCount online',
                     style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
                   ),
                 ]),
               ),
-              // Utility icon previews
-              if (roomDevices.any((d) => (d as Map?)?['utility'] == 'lights'))
-                _utilityDot(Icons.lightbulb_outline, const Color(0xFFE8922A)),
-              if (roomDevices.any((d) => (d as Map?)?['utility'] == 'outlets'))
-                Padding(padding: const EdgeInsets.only(left: 5),
-                    child: _utilityDot(Icons.electrical_services, AppColors.greenMid)),
-              if (roomDevices.any((d) => (d as Map?)?['utility'] == 'ac'))
-                Padding(padding: const EdgeInsets.only(left: 5),
-                    child: _utilityDot(Icons.ac_unit, const Color(0xFF2196F3))),
+              if (hasLights)  _utilityDot(Icons.lightbulb_outline,   const Color(0xFFE8922A)),
+              if (hasOutlets) Padding(padding: const EdgeInsets.only(left: 5),
+                  child: _utilityDot(Icons.electrical_services, AppColors.greenMid)),
+              if (hasAc)      Padding(padding: const EdgeInsets.only(left: 5),
+                  child: _utilityDot(Icons.ac_unit, const Color(0xFF2196F3))),
               const SizedBox(width: 8),
               const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 20),
             ]),
           ),
         ),
-        // Admin delete button
         if (isAdmin) ...[
           Divider(height: 1, color: AppColors.greenMid.withAlpha(20)),
           TextButton.icon(
@@ -679,11 +787,13 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  // ── Utilities inside a room ──────────────────────────────────
   Widget _buildUtilitiesInRoom(String room) {
-    final roomDevices = _devices.entries
-        .where((e) => (e.value as Map?)?['room'] == room)
-        .toList();
+    final roomDevices = <MapEntry<String, dynamic>>[];
+    _devices.forEach((id, d) {
+      if (d is Map && d['room']?.toString().trim() == room.trim()) {
+        roomDevices.add(MapEntry(id, d));
+      }
+    });
 
     if (roomDevices.isEmpty) {
       return Center(
@@ -695,8 +805,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   fontWeight: FontWeight.w600, color: AppColors.textDark)),
           const SizedBox(height: 6),
           Text(
-            isAdmin ? 'Tap + Add Utility to add one'
-                : 'No utilities have been added yet',
+            isAdmin ? 'Tap + Add Utility to add one' : 'No utilities have been added yet',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
           ),
         ]),
@@ -716,9 +825,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           crossAxisCount: 2,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-          childAspectRatio: 0.95,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 1.50,
           children: roomDevices.map((entry) =>
               _buildDeviceTile(entry.key,
                   Map<String, dynamic>.from(entry.value))).toList(),
@@ -736,10 +845,10 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final color    = _utilityColor(utility);
 
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: relay && isOnline
               ? color.withAlpha(102)
@@ -750,19 +859,18 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Container(
-            width: 38, height: 38,
+            width: 34, height: 34,
             decoration: BoxDecoration(
                 color: isOnline ? color.withAlpha(31) : AppColors.offline.withAlpha(26),
                 borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, size: 20,
-                color: isOnline ? color : AppColors.offline),
+            child: Icon(icon, size: 18, color: isOnline ? color : AppColors.offline),
           ),
           const Spacer(),
           Container(width: 8, height: 8,
               decoration: BoxDecoration(shape: BoxShape.circle,
                   color: isOnline ? AppColors.success : AppColors.offline)),
         ]),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Text(_utilityLabel(utility),
             style: const TextStyle(fontFamily: 'Outfit', fontSize: 13,
                 fontWeight: FontWeight.w600, color: AppColors.textDark)),
@@ -774,8 +882,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 color: isOnline
                     ? (relay ? AppColors.success : AppColors.textMuted)
                     : AppColors.offline)),
-        // Tap to view + admin delete
-        const SizedBox(height: 8),
+        const Spacer(),
         Row(children: [
           Expanded(
             child: GestureDetector(
@@ -787,30 +894,27 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 'role':     widget.role,
               }),
               child: Container(
-                height: 30,
+                height: 28,
                 decoration: BoxDecoration(
                     color: AppColors.greenPale,
                     borderRadius: BorderRadius.circular(8)),
                 child: const Center(
-                  child: Text('View',
-                      style: TextStyle(fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.greenDark)),
+                  child: Text('View', style: TextStyle(fontSize: 11,
+                      fontWeight: FontWeight.w600, color: AppColors.greenDark)),
                 ),
               ),
             ),
           ),
           if (isAdmin) ...[
-            const SizedBox(width: 6),
+            const SizedBox(width: 4),
             GestureDetector(
               onTap: () => _deleteDevice(deviceId, utility),
               child: Container(
-                width: 30, height: 30,
+                width: 28, height: 28,
                 decoration: BoxDecoration(
                     color: AppColors.error.withAlpha(20),
                     borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.delete_outline,
-                    size: 16, color: AppColors.error),
+                child: const Icon(Icons.delete_outline, size: 16, color: AppColors.error),
               ),
             ),
           ],
@@ -819,9 +923,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  // ── Helpers ──────────────────────────────────────────────────
   IconData _utilityIcon(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
       case 'lights':  return Icons.lightbulb_outline;
       case 'outlets': return Icons.electrical_services;
       case 'ac':      return Icons.ac_unit;
@@ -830,7 +933,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Color _utilityColor(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
       case 'lights':  return const Color(0xFFE8922A);
       case 'outlets': return AppColors.greenMid;
       case 'ac':      return const Color(0xFF2196F3);
@@ -839,7 +942,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   String _utilityLabel(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
       case 'lights':  return 'Lights';
       case 'outlets': return 'Outlets';
       case 'ac':      return 'AC Unit';

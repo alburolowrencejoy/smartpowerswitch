@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -9,24 +11,143 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  String _range = '30d';
+  String _range = 'daily';
+
   final List<Map<String, String>> _ranges = [
-    {'key': '30d',  'label': '30 Days'},
-    {'key': '12w',  'label': '12 Weeks'},
-    {'key': '12mo', 'label': '12 Months'},
-    {'key': '3yr',  'label': '3 Years'},
+    {'key': 'daily',   'label': 'Daily'},
+    {'key': 'weekly',  'label': 'Weekly'},
+    {'key': 'monthly', 'label': 'Monthly'},
+    {'key': 'yearly',  'label': 'Yearly'},
   ];
 
-  // Mock history data — replace with Firebase reads grouped by range
-  final List<Map<String, dynamic>> _mockData = List.generate(30, (i) => {
-    'label': 'Day ${i + 1}',
-    'kwh':   10.0 + (i % 7) * 3.5 + (i % 3) * 1.2,
-    'cost':  (10.0 + (i % 7) * 3.5 + (i % 3) * 1.2) * 11.5,
-  });
+  // ── Realtime listeners ──────────────────────────────────────────────────────
+  StreamSubscription? _devicesSub;
+  StreamSubscription? _historySub;
 
-  double get _totalKwh  => _mockData.fold(0, (sum, d) => sum + (d['kwh'] as double));
-  double get _totalCost => _mockData.fold(0, (sum, d) => sum + (d['cost'] as double));
-  double get _maxKwh    => _mockData.fold(0.0, (max, d) => (d['kwh'] as double) > max ? d['kwh'] as double : max);
+  // Raw device map from Firebase  { deviceId: { building, utility, status, kwh, ... } }
+  Map<String, dynamic> _devicesData = {};
+
+  // History data for line chart  [ { label, kwh, cost } ]
+  List<Map<String, dynamic>> _historyData = [];
+
+  // ── Derived analytics ───────────────────────────────────────────────────────
+  Map<String, double> _utilityTotals  = {};   // e.g. { 'Lights': 45.2, 'Outlets': 30.1, 'AC': 60.5 }
+  Map<String, double> _buildingTotals = {};   // e.g. { 'IC': 80.0, 'ILEGG': 40.0, ... }
+  int _onlineCount  = 0;
+  int _offlineCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenDevices();
+    _listenHistory();
+  }
+
+  @override
+  void dispose() {
+    _devicesSub?.cancel();
+    _historySub?.cancel();
+    super.dispose();
+  }
+
+  // ── Firebase listeners ──────────────────────────────────────────────────────
+
+  void _listenDevices() {
+    final ref = FirebaseDatabase.instance.ref('devices');
+    _devicesSub = ref.onValue.listen((event) {
+      final raw = event.snapshot.value;
+      if (raw == null) return;
+
+      final data = Map<String, dynamic>.from(raw as Map);
+
+      // Derive analytics
+      final Map<String, double> utilityTotals  = {};
+      final Map<String, double> buildingTotals = {};
+      int online  = 0;
+      int offline = 0;
+
+      data.forEach((id, val) {
+        if (val is! Map) return;
+        final device = Map<String, dynamic>.from(val);
+
+        final utility  = (device['utility']  ?? 'Unknown').toString();
+        final building = (device['building'] ?? 'Unknown').toString();
+        final kwh      = (device['kwh']      ?? 0.0) as num;
+
+        utilityTotals[utility]   = (utilityTotals[utility]  ?? 0) + kwh.toDouble();
+        buildingTotals[building] = (buildingTotals[building] ?? 0) + kwh.toDouble();
+
+        final lastSeen = device['last_seen'];
+        final isOnline = lastSeen != null && lastSeen != 0 &&
+            DateTime.now()
+                .difference(DateTime.fromMillisecondsSinceEpoch(lastSeen as int))
+                .inMinutes < 2;
+
+        if (isOnline) {
+          online++;
+        } else {
+          offline++;
+        }
+      });
+
+      if (mounted) {
+        setState(() {
+          _devicesData    = data;
+          _utilityTotals  = utilityTotals;
+          _buildingTotals = buildingTotals;
+          _onlineCount    = online;
+          _offlineCount   = offline;
+        });
+      }
+    });
+  }
+
+  void _listenHistory() {
+    // History stored under: history/{range}/{periodKey}/kwh  &  history/{range}/{periodKey}/cost
+    // e.g. history/daily/2024-06-01/{ kwh: 12.5, cost: 143.75 }
+    _historySub?.cancel();
+    final ref = FirebaseDatabase.instance.ref('history/$_range');
+    _historySub = ref.onValue.listen((event) {
+      final raw = event.snapshot.value;
+      if (raw == null) {
+        if (mounted) setState(() => _historyData = []);
+        return;
+      }
+
+      final data = Map<String, dynamic>.from(raw as Map);
+      final List<Map<String, dynamic>> list = [];
+
+      data.forEach((key, val) {
+        if (val is! Map) return;
+        final entry = Map<String, dynamic>.from(val);
+        list.add({
+          'label': key,
+          'kwh':   (entry['kwh']  ?? 0.0) as num,
+          'cost':  (entry['cost'] ?? 0.0) as num,
+        });
+      });
+
+      // Sort by label (period key) ascending
+      list.sort((a, b) => a['label'].compareTo(b['label']));
+
+      if (mounted) setState(() => _historyData = list);
+    });
+  }
+
+  // Re-attach history listener when range changes
+  void _setRange(String key) {
+    setState(() => _range = key);
+    _listenHistory();
+  }
+
+  // ── Computed helpers ────────────────────────────────────────────────────────
+
+  double get _totalKwh  => _historyData.fold(0, (s, d) => s + (d['kwh'] as num).toDouble());
+  double get _totalCost => _historyData.fold(0, (s, d) => s + (d['cost'] as num).toDouble());
+  double get _maxKwh    =>
+      _historyData.isEmpty ? 1 : _historyData.fold(0.0, (m, d) => (d['kwh'] as num).toDouble() > m ? (d['kwh'] as num).toDouble() : m);
+
+  // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -40,12 +161,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildRangeSelector(),
                     const SizedBox(height: 20),
                     _buildSummaryRow(),
                     const SizedBox(height: 20),
-                    _buildChart(),
+                    _buildLineChart(),
+                    const SizedBox(height: 20),
+                    _buildDeviceStatusCard(),
+                    const SizedBox(height: 20),
+                    _buildTopUtilityCard(),
+                    const SizedBox(height: 20),
+                    _buildTopBuildingCard(),
                     const SizedBox(height: 20),
                     _buildHistoryList(),
                     const SizedBox(height: 20),
@@ -60,13 +188,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
+  // ── Header ──────────────────────────────────────────────────────────────────
+
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
       decoration: const BoxDecoration(
         color: AppColors.greenDark,
         borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28),
+          bottomLeft: Radius.circular(28),
+          bottomRight: Radius.circular(28),
         ),
       ),
       child: Row(children: [
@@ -83,13 +214,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ),
         const SizedBox(width: 12),
         const Expanded(
-          child: Text('Energy History',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 18,
-                  fontWeight: FontWeight.w700, color: Colors.white)),
+          child: Text('Energy Analytics',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
+        ),
+        // Realtime indicator dot
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: Colors.white.withAlpha(38),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(children: [
+            Container(
+              width: 7, height: 7,
+              decoration: const BoxDecoration(
+                color: AppColors.greenLight,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 5),
+            const Text('Live',
+                style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
+          ]),
         ),
       ]),
     );
   }
+
+  // ── Range Selector ──────────────────────────────────────────────────────────
 
   Widget _buildRangeSelector() {
     return Container(
@@ -103,7 +259,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           final isSelected = _range == r['key'];
           return Expanded(
             child: GestureDetector(
-              onTap: () => setState(() => _range = r['key']!),
+              onTap: () => _setRange(r['key']!),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 margin: const EdgeInsets.all(4),
@@ -114,7 +270,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 child: Center(
                   child: Text(r['label']!,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: isSelected ? Colors.white : AppColors.textMid,
                       )),
@@ -126,6 +282,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
+
+  // ── Summary Row ─────────────────────────────────────────────────────────────
 
   Widget _buildSummaryRow() {
     return Row(children: [
@@ -146,15 +304,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(icon, size: 20, color: AppColors.greenMid),
         const SizedBox(height: 10),
-        Text(value, style: const TextStyle(fontFamily: 'Outfit', fontSize: 18,
-            fontWeight: FontWeight.w700, color: AppColors.textDark)),
-        Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+        Text(value,
+            style: const TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textDark)),
+        Text(label,
+            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
       ]),
     );
   }
 
-  Widget _buildChart() {
-    final displayData = _mockData.take(14).toList();
+  // ── Line Chart ──────────────────────────────────────────────────────────────
+
+  Widget _buildLineChart() {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -165,90 +329,331 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Consumption Chart',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 14,
-                  fontWeight: FontWeight.w600, color: AppColors.textDark)),
+          const Text('Consumption Trend',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
           const SizedBox(height: 4),
-          const Text('kWh per period',
+          const Text('kWh over time (realtime)',
               style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
           const SizedBox(height: 20),
-          SizedBox(
-            height: 140,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: displayData.map((d) {
-                final pct = (d['kwh'] as double) / _maxKwh;
-                return Expanded(
+          _historyData.isEmpty
+              ? const Center(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 400),
-                          height: 120 * pct,
-                          decoration: BoxDecoration(
-                            color: pct > 0.8
-                                ? AppColors.warning
-                                : pct > 0.5
-                                    ? AppColors.greenMid
-                                    : AppColors.greenLight,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
-                      ],
+                    padding: EdgeInsets.symmetric(vertical: 30),
+                    child: Text('No data yet',
+                        style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                  ))
+              : SizedBox(
+                  height: 160,
+                  child: CustomPaint(
+                    painter: _LineChartPainter(
+                      data: _historyData
+                          .map((d) => (d['kwh'] as num).toDouble())
+                          .toList(),
+                      maxKwh: _maxKwh,
                     ),
+                    child: Container(),
                   ),
-                );
-              }).toList(),
+                ),
+          const SizedBox(height: 8),
+          // X-axis labels (first, middle, last)
+          if (_historyData.isNotEmpty)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(_historyData.first['label'],
+                    style: const TextStyle(fontSize: 9, color: AppColors.textMuted)),
+                if (_historyData.length > 2)
+                  Text(_historyData[_historyData.length ~/ 2]['label'],
+                      style: const TextStyle(fontSize: 9, color: AppColors.textMuted)),
+                Text(_historyData.last['label'],
+                    style: const TextStyle(fontSize: 9, color: AppColors.textMuted)),
+              ],
             ),
-          ),
         ],
       ),
     );
   }
 
+  // ── Device Status Card ──────────────────────────────────────────────────────
+
+  Widget _buildDeviceStatusCard() {
+    final total = _onlineCount + _offlineCount;
+    final onlinePct = total == 0 ? 0.0 : _onlineCount / total;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Device Status',
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(
+            child: _statusBadge('Online', _onlineCount, AppColors.greenMid, Icons.wifi),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _statusBadge('Offline', _offlineCount, AppColors.warning, Icons.wifi_off),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        // Progress bar
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+            value: onlinePct,
+            minHeight: 8,
+            backgroundColor: AppColors.warning.withAlpha(50),
+            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.greenMid),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text('${(onlinePct * 100).toStringAsFixed(0)}% devices online',
+            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+      ]),
+    );
+  }
+
+  Widget _statusBadge(String label, int count, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withAlpha(20),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withAlpha(50)),
+      ),
+      child: Row(children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('$count',
+              style: TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.w700, color: color, fontFamily: 'Outfit')),
+          Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+        ]),
+      ]),
+    );
+  }
+
+  // ── Top Utility Card ────────────────────────────────────────────────────────
+
+  Widget _buildTopUtilityCard() {
+    if (_utilityTotals.isEmpty) return const SizedBox();
+
+    final sorted = _utilityTotals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final maxVal = sorted.first.value;
+
+    final Map<String, Color> utilityColors = {
+      'Lights':  AppColors.greenMid,
+      'Outlets': AppColors.greenLight,
+      'AC':      AppColors.greenDark,
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Top Consuming Utilities',
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
+        const SizedBox(height: 16),
+        ...sorted.map((e) {
+          final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
+          final color = utilityColors[e.key] ?? AppColors.greenMid;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text(e.key,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.textDark)),
+                Text('${e.value.toStringAsFixed(1)} kWh',
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.greenDark)),
+              ]),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: pct,
+                  minHeight: 8,
+                  backgroundColor: color.withAlpha(30),
+                  valueColor: AlwaysStoppedAnimation<Color>(color),
+                ),
+              ),
+            ]),
+          );
+        }),
+      ]),
+    );
+  }
+
+  // ── Top Building Card ───────────────────────────────────────────────────────
+
+  Widget _buildTopBuildingCard() {
+    if (_buildingTotals.isEmpty) return const SizedBox();
+
+    final sorted = _buildingTotals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final maxVal = sorted.first.value;
+
+    final List<Color> barColors = [
+      AppColors.greenDark,
+      AppColors.greenMid,
+      AppColors.greenLight,
+      AppColors.greenPale.withAlpha(200),
+      Colors.teal.shade400,
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Top Consuming Institutes',
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
+        const SizedBox(height: 16),
+        ...sorted.asMap().entries.map((entry) {
+          final i     = entry.key;
+          final e     = entry.value;
+          final pct   = maxVal == 0 ? 0.0 : e.value / maxVal;
+          final color = barColors[i % barColors.length];
+
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(children: [
+              // Rank badge
+              Container(
+                width: 24, height: 24,
+                decoration: BoxDecoration(
+                  color: i == 0 ? AppColors.greenDark : AppColors.greenPale,
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text('${i + 1}',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: i == 0 ? Colors.white : AppColors.greenDark)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text(e.key,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.textDark)),
+                    Text('${e.value.toStringAsFixed(1)} kWh',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.greenDark)),
+                  ]),
+                  const SizedBox(height: 5),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: pct,
+                      minHeight: 7,
+                      backgroundColor: color.withAlpha(30),
+                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
+                ]),
+              ),
+            ]),
+          );
+        }),
+      ]),
+    );
+  }
+
+  // ── History List ────────────────────────────────────────────────────────────
+
   Widget _buildHistoryList() {
+    if (_historyData.isEmpty) return const SizedBox();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text('Breakdown',
-            style: TextStyle(fontFamily: 'Outfit', fontSize: 15,
-                fontWeight: FontWeight.w600, color: AppColors.textDark)),
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
         const SizedBox(height: 12),
-        ..._mockData.take(10).map((d) => Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: AppColors.cardBg,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.greenMid.withAlpha(20)),
-          ),
-          child: Row(children: [
-            Container(
-              width: 36, height: 36,
+        ..._historyData.take(10).map((d) => Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: AppColors.greenPale,
-                borderRadius: BorderRadius.circular(8),
+                color: AppColors.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.greenMid.withAlpha(20)),
               ),
-              child: const Icon(Icons.calendar_today, size: 16, color: AppColors.greenDark),
-            ),
-            const SizedBox(width: 12),
-            Expanded(child: Text(d['label'],
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
-                    color: AppColors.textDark))),
-            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('${(d['kwh'] as double).toStringAsFixed(1)} kWh',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                      color: AppColors.greenDark)),
-              Text('₱ ${(d['cost'] as double).toStringAsFixed(2)}',
-                  style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-            ]),
-          ]),
-        )),
+              child: Row(children: [
+                Container(
+                  width: 36, height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.greenPale,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.calendar_today, size: 16, color: AppColors.greenDark),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(d['label'],
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textDark)),
+                ),
+                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text('${(d['kwh'] as num).toStringAsFixed(1)} kWh',
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.greenDark)),
+                  Text('₱ ${(d['cost'] as num).toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                ]),
+              ]),
+            )),
       ],
     );
   }
+
+  // ── Export Button ───────────────────────────────────────────────────────────
 
   Widget _buildExportButton() {
     return SizedBox(
@@ -270,4 +675,91 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
+}
+
+// ── Line Chart CustomPainter ─────────────────────────────────────────────────
+
+class _LineChartPainter extends CustomPainter {
+  final List<double> data;
+  final double maxKwh;
+
+  _LineChartPainter({required this.data, required this.maxKwh});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (data.length < 2) return;
+
+    final linePaint = Paint()
+      ..color = const Color(0xFF2E9E52) // greenMid
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final fillPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color(0xFF2E9E52).withAlpha(80),
+          const Color(0xFF2E9E52).withAlpha(0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..style = PaintingStyle.fill;
+
+    final dotPaint = Paint()
+      ..color = const Color(0xFF1A5C35) // greenDark
+      ..style = PaintingStyle.fill;
+
+    final stepX = size.width / (data.length - 1);
+
+    Offset _offset(int i) {
+      final x = i * stepX;
+      final y = size.height - (data[i] / maxKwh) * size.height;
+      return Offset(x, y);
+    }
+
+    // Fill path
+    final fillPath = Path();
+    fillPath.moveTo(0, size.height);
+    fillPath.lineTo(_offset(0).dx, _offset(0).dy);
+    for (int i = 1; i < data.length; i++) {
+      final prev = _offset(i - 1);
+      final curr = _offset(i);
+      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+      fillPath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+    }
+    fillPath.lineTo(size.width, size.height);
+    fillPath.close();
+    canvas.drawPath(fillPath, fillPaint);
+
+    // Line path
+    final linePath = Path();
+    linePath.moveTo(_offset(0).dx, _offset(0).dy);
+    for (int i = 1; i < data.length; i++) {
+      final prev = _offset(i - 1);
+      final curr = _offset(i);
+      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+      linePath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+    }
+    canvas.drawPath(linePath, linePaint);
+
+    // Dots
+    for (int i = 0; i < data.length; i++) {
+      canvas.drawCircle(_offset(i), 3.5, dotPaint);
+      canvas.drawCircle(
+          _offset(i),
+          3.5,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_LineChartPainter old) =>
+      old.data != data || old.maxKwh != maxKwh;
 }

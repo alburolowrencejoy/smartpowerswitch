@@ -1,0 +1,145 @@
+{
+  "buildings": {
+    "ADMIN": {
+      "floorData": [
+        null,
+        {
+          "rooms": [
+            "VP Office"
+          ]
+        }
+      ],
+      "floors": 1,
+      "name": "Administrator Building"
+    },
+    "IAAS": {
+      "floors": 1,
+      "name": "Institute of Aquatic Science"
+    },
+    "IC": {
+      "floors": 2,
+      "name": "Institute of Computing"
+    },
+    "ILEGG": {
+      "floors": 2,
+      "name": "Institute of Leadership and Good Governance"
+    },
+    "ITED": {
+      "floors": 2,
+      "name": "Institute of Teachers Education"
+    }
+  },
+  "master_devices": {
+    "DEV-2024-A3F7": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-B1C2": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-C2D3": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-D3E4": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-E4F5": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-F5G6": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-G6H7": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-H7I8": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-I8J9": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-J9K0": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-K0L1": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-L1M2": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-M2N3": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-N3O4": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-O4P5": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-P5Q6": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-Q6R7": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-R7S8": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-S8T9": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-T9U0": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-U0V1": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-V1W2": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-W2X3": {
+      "assignedTo": "",
+      "registered": true
+    },
+    "DEV-2024-X3Y4": {
+      "assignedTo": "",
+      "registered": true
+    }
+  },
+  "settings": {
+    "electricityRate": 11.5
+  },
+  "users": {
+    "AfUh2j4sxdPnTp8PR7h3vxAYJaf1": {
+      "email": "admin@dnsc.edu.ph",
+      "name": "Admin",
+      "role": "admin"
+    },
+    "JzXV8yT9XEc3NGnxYRdflyYKFfA3": {
+      "email": "faculty@dnsc.edu.ph",
+      "name": "Faculty",
+      "role": "faculty"
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
@@ -23,36 +24,50 @@ class DeviceDetailScreen extends StatefulWidget {
 }
 
 class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
-  Map<String, dynamic> _readings = {};
+  Map<String, dynamic> _deviceData = {};
   bool _relay    = false;
   bool _isOnline = false;
   bool _toggling = false;
   double _ratePhp = 11.5;
 
+  StreamSubscription? _deviceSub;
+  StreamSubscription? _relaySub;
+
   @override
   void initState() {
     super.initState();
-    _listenToReadings();
+    _listenToDevice();
     _listenToRelay();
     _fetchRate();
   }
 
-  void _listenToReadings() {
-    FirebaseDatabase.instance
-        .ref('readings/${widget.deviceId}')
+  @override
+  void dispose() {
+    _deviceSub?.cancel();
+    _relaySub?.cancel();
+    super.dispose();
+  }
+
+  // ── Listen to flat devices node (PZEM + status + last_seen) ─────────────────
+  void _listenToDevice() {
+    _deviceSub = FirebaseDatabase.instance
+        .ref('devices/${widget.deviceId}')
         .onValue
         .listen((event) {
       if (!mounted) return;
-      final data = event.snapshot.value as Map<dynamic, dynamic>?;
+      final raw = event.snapshot.value;
+      if (raw == null) return;
+      final data = Map<String, dynamic>.from(raw as Map);
       setState(() {
-        _readings = data?.map((k, v) => MapEntry(k.toString(), v)) ?? {};
-        _isOnline = _readings.isNotEmpty;
+        _deviceData = data;
+        _isOnline   = _checkOnline(data);
       });
     });
   }
 
+  // ── Listen to relay inside buildings node ────────────────────────────────────
   void _listenToRelay() {
-    FirebaseDatabase.instance
+    _relaySub = FirebaseDatabase.instance
         .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
         .onValue
         .listen((event) {
@@ -62,23 +77,46 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   void _fetchRate() {
-    FirebaseDatabase.instance.ref('settings/electricityRate').once().then((event) {
+    FirebaseDatabase.instance
+        .ref('settings/electricityRate')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
       setState(() => _ratePhp = (event.snapshot.value as num?)?.toDouble() ?? 11.5);
     });
   }
 
+  // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
+  bool _checkOnline(Map<String, dynamic> data) {
+    final lastSeen = data['last_seen'];
+    if (lastSeen == null || lastSeen == 0) return false;
+    final lastSeenTime = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
+    return DateTime.now().difference(lastSeenTime).inMinutes < 2;
+  }
+
+  // ── Toggle relay in BOTH locations ───────────────────────────────────────────
   Future<void> _toggleRelay() async {
+    if (!_isOnline || _toggling) return;
     setState(() => _toggling = true);
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
-        .set(!_relay);
+
+    final newRelay = !_relay;
+    final db = FirebaseDatabase.instance.ref();
+
+    // Write to both paths simultaneously
+    await db.update({
+      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay':
+          newRelay,
+      'devices/${widget.deviceId}/relay': newRelay,
+    });
+
     setState(() => _toggling = false);
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    final energy = (_readings['energy'] as num?)?.toDouble() ?? 0.0;
+    final energy = (_deviceData['kwh']     as num?)?.toDouble() ?? 0.0;
     final cost   = energy * _ratePhp;
 
     return Scaffold(
@@ -152,13 +190,20 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             borderRadius: BorderRadius.circular(20),
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(width: 6, height: 6,
-                decoration: BoxDecoration(shape: BoxShape.circle,
-                    color: _isOnline ? AppColors.greenLight : AppColors.offline)),
+            Container(
+              width: 6, height: 6,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _isOnline ? AppColors.greenLight : AppColors.offline,
+              ),
+            ),
             const SizedBox(width: 5),
             Text(_isOnline ? 'Online' : 'Offline',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                    color: _isOnline ? AppColors.greenLight : AppColors.offline)),
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: _isOnline ? AppColors.greenLight : AppColors.offline,
+                )),
           ]),
         ),
       ]),
@@ -166,6 +211,20 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   Widget _buildStatusCard() {
+    final lastSeen = _deviceData['last_seen'];
+    String lastSeenText = 'Never';
+    if (lastSeen != null && lastSeen != 0) {
+      final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
+      final diff = DateTime.now().difference(dt);
+      if (diff.inSeconds < 60) {
+        lastSeenText = '${diff.inSeconds}s ago';
+      } else if (diff.inMinutes < 60) {
+        lastSeenText = '${diff.inMinutes}m ago';
+      } else {
+        lastSeenText = '${diff.inHours}h ago';
+      }
+    }
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -191,6 +250,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const SizedBox(height: 2),
           Text('${widget.building} · Floor ${widget.floor} · ${_utilityLabel(widget.utility)}',
               style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+          const SizedBox(height: 4),
+          Text('Last seen: $lastSeenText',
+              style: TextStyle(
+                fontSize: 11,
+                color: _isOnline ? AppColors.greenMid : AppColors.offline,
+              )),
         ])),
       ]),
     );
@@ -210,57 +275,80 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       child: Row(children: [
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(isAc ? 'Contactor' : 'Relay',
-              style: TextStyle(fontSize: 12, color: _relay ? AppColors.greenPale : AppColors.textMuted)),
+              style: TextStyle(
+                  fontSize: 12,
+                  color: _relay ? AppColors.greenPale : AppColors.textMuted)),
           const SizedBox(height: 4),
           Text(_relay ? 'Turned ON' : 'Turned OFF',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 20,
-                  fontWeight: FontWeight.w700,
+              style: TextStyle(
+                  fontFamily: 'Outfit', fontSize: 20, fontWeight: FontWeight.w700,
                   color: _relay ? Colors.white : AppColors.textDark)),
           const SizedBox(height: 2),
-          Text(_relay ? 'Tap to turn off' : 'Tap to turn on',
-              style: TextStyle(fontSize: 12,
-                  color: _relay ? AppColors.greenPale.withAlpha(179) : AppColors.textMuted)),
+          Text(
+            !_isOnline
+                ? 'Device is offline'
+                : (_relay ? 'Tap to turn off' : 'Tap to turn on'),
+            style: TextStyle(
+                fontSize: 12,
+                color: _relay
+                    ? AppColors.greenPale.withAlpha(179)
+                    : AppColors.textMuted),
+          ),
         ])),
-        GestureDetector(
-          onTap: _isOnline && !_toggling ? _toggleRelay : null,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
+        // Only show toggle if role is admin
+        if (widget.role == 'admin')
+          GestureDetector(
+            onTap: _isOnline && !_toggling ? _toggleRelay : null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              width: 64, height: 34,
+              decoration: BoxDecoration(
+                color: !_isOnline
+                    ? Colors.grey.withAlpha(80)
+                    : (_relay ? AppColors.greenLight : const Color(0xFFE0E0E0)),
+                borderRadius: BorderRadius.circular(17),
+              ),
+              child: Stack(children: [
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 250),
+                  left: _relay ? 32 : 2,
+                  top: 2, bottom: 2,
+                  child: Container(
+                    width: 30,
+                    decoration: const BoxDecoration(
+                        color: Colors.white, shape: BoxShape.circle),
+                    child: _toggling
+                        ? const Padding(
+                            padding: EdgeInsets.all(6),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: AppColors.greenMid))
+                        : null,
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        // Faculty sees a lock icon instead
+        if (widget.role != 'admin')
+          Container(
             width: 64, height: 34,
             decoration: BoxDecoration(
-              color: _relay ? AppColors.greenLight : const Color(0xFFE0E0E0),
+              color: Colors.grey.withAlpha(40),
               borderRadius: BorderRadius.circular(17),
             ),
-            child: Stack(children: [
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 250),
-                left: _relay ? 32 : 2,
-                top: 2, bottom: 2,
-                child: Container(
-                  width: 30,
-                  decoration: const BoxDecoration(
-                    color: Colors.white, shape: BoxShape.circle,
-                  ),
-                  child: _toggling
-                      ? const Padding(
-                          padding: EdgeInsets.all(6),
-                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.greenMid))
-                      : null,
-                ),
-              ),
-            ]),
+            child: const Icon(Icons.lock_outline, size: 16, color: AppColors.textMuted),
           ),
-        ),
       ]),
     );
   }
 
   Widget _buildReadingsGrid() {
-    final voltage     = (_readings['voltage']     as num?)?.toStringAsFixed(1) ?? '--';
-    final current     = (_readings['current']     as num?)?.toStringAsFixed(2) ?? '--';
-    final power       = (_readings['power']       as num?)?.toStringAsFixed(1) ?? '--';
-    final powerFactor = (_readings['powerFactor'] as num?)?.toStringAsFixed(2) ?? '--';
-    final frequency   = (_readings['frequency']   as num?)?.toStringAsFixed(1) ?? '--';
-    final energy      = (_readings['energy']      as num?)?.toStringAsFixed(2) ?? '--';
+    final voltage     = (_deviceData['voltage']     as num?)?.toStringAsFixed(1) ?? '--';
+    final current     = (_deviceData['current']     as num?)?.toStringAsFixed(2) ?? '--';
+    final power       = (_deviceData['power']       as num?)?.toStringAsFixed(1) ?? '--';
+    final powerFactor = (_deviceData['powerFactor'] as num?)?.toStringAsFixed(2) ?? '--';
+    final frequency   = (_deviceData['frequency']   as num?)?.toStringAsFixed(1) ?? '--';
+    final energy      = (_deviceData['kwh']         as num?)?.toStringAsFixed(2) ?? '--';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,12 +365,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           mainAxisSpacing: 10,
           childAspectRatio: 1.05,
           children: [
-            _readingTile('Voltage', voltage, 'V',    Icons.electrical_services, AppColors.greenMid),
-            _readingTile('Current', current, 'A',    Icons.bolt,                AppColors.warning),
-            _readingTile('Power',   power,   'W',    Icons.power,               AppColors.greenDark),
-            _readingTile('Energy',  energy,  'kWh',  Icons.battery_charging_full, const Color(0xFF2196F3)),
-            _readingTile('Freq.',   frequency,'Hz',  Icons.waves,               AppColors.greenLight),
-            _readingTile('P.Factor',powerFactor,'',  Icons.speed,               const Color(0xFF9C27B0)),
+            _readingTile('Voltage',  voltage,     'V',   Icons.electrical_services,    AppColors.greenMid),
+            _readingTile('Current',  current,     'A',   Icons.bolt,                   AppColors.warning),
+            _readingTile('Power',    power,       'W',   Icons.power,                  AppColors.greenDark),
+            _readingTile('Energy',   energy,      'kWh', Icons.battery_charging_full,  const Color(0xFF2196F3)),
+            _readingTile('Freq.',    frequency,   'Hz',  Icons.waves,                  AppColors.greenLight),
+            _readingTile('P.Factor', powerFactor, '',    Icons.speed,                  const Color(0xFF9C27B0)),
           ],
         ),
       ],
@@ -303,19 +391,21 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         children: [
           Icon(icon, size: 18, color: color),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(value, style: const TextStyle(fontFamily: 'Outfit', fontSize: 16,
-                    fontWeight: FontWeight.w700, color: AppColors.textDark)),
-                if (unit.isNotEmpty) ...[
-                  const SizedBox(width: 2),
-                  Padding(padding: const EdgeInsets.only(bottom: 1),
-                      child: Text(unit, style: const TextStyle(fontSize: 9, color: AppColors.textMuted))),
-                ],
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(value,
+                  style: const TextStyle(fontFamily: 'Outfit', fontSize: 16,
+                      fontWeight: FontWeight.w700, color: AppColors.textDark)),
+              if (unit.isNotEmpty) ...[
+                const SizedBox(width: 2),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 1),
+                  child: Text(unit,
+                      style: const TextStyle(fontSize: 9, color: AppColors.textMuted)),
+                ),
               ],
-            ),
-            Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+            ]),
+            Text(label,
+                style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
           ]),
         ],
       ),
@@ -361,12 +451,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         border: Border.all(color: AppColors.greenMid.withAlpha(26)),
       ),
       child: Column(children: [
-        _infoRow('Device ID',  widget.deviceId),
-        _infoRow('Building',   widget.building),
-        _infoRow('Floor',      'Floor ${widget.floor}'),
-        _infoRow('Utility',    _utilityLabel(widget.utility)),
-        _infoRow('Control',    widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
-        _infoRow('Sensor',     'PZEM-004T + CT Clamp'),
+        _infoRow('Device ID', widget.deviceId),
+        _infoRow('Building',  widget.building),
+        _infoRow('Floor',     'Floor ${widget.floor}'),
+        _infoRow('Utility',   _utilityLabel(widget.utility)),
+        _infoRow('Control',   widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
+        _infoRow('Sensor',    'PZEM-004T + CT Clamp'),
       ]),
     );
   }
@@ -377,8 +467,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       child: Row(children: [
         Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
         const Spacer(),
-        Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-            color: AppColors.textDark)),
+        Text(value,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
       ]),
     );
   }

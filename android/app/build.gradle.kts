@@ -14,7 +14,7 @@ dependencies {
 android {
     namespace = "com.dnsc.edu.smartpowerswitch"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "25.1.8937393"
+    ndkVersion = "27.0.12077973"
  
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -36,6 +36,12 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }

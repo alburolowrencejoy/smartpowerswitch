@@ -24,7 +24,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SmartPowerSwitch',
+      title: 'SmartSwitch',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         fontFamily: 'Outfit',
