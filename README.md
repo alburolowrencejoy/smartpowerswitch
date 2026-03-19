@@ -1,81 +1,166 @@
-# SmartPowerSwitch — Flutter App
+# 🔌 SmartPowerSwitch
 
-IoT Energy Monitoring & Control System for Davao del Norte State College (DNSC) Campus.
+> IoT Energy Monitoring & Control System for **Davao del Norte State College (DNSC)** Campus
 
+Built with Flutter + Firebase Realtime Database. Monitors energy consumption and controls utilities across 5 campus buildings using ESP32 devices with PZEM-004T energy meters.
 
-## **Download**
-https://www.mediafire.com/file/k6mgs9a87plq3n7/app-release.apk/file
 ---
 
-## Project Structure
+## 📥 Download
+
+| File | Link |
+|------|------|
+| 📱 Android APK | [Download app-release.apk](https://www.mediafire.com/file/k6mgs9a87plq3n7/app-release.apk/file) |
+| 🔑 firebase_options.dart | [Download](https://www.mediafire.com/file/qote6y3jsvbqv8f/firebase_options.dart/file) |
+| 🔑 google-services.json | [Download](https://www.mediafire.com/file/fy2cukv42pqov12/google-services.json/file) |
+
+> ⚠️ The key files (`firebase_options.dart` and `google-services.json`) are **not included in this repo** for security reasons. Download them from the links above and place them in the correct directories before running the app.
+
+---
+
+## 🚀 Team Setup Guide
+
+Follow these steps in order to get the app running on your machine.
+
+### Step 1 — Prerequisites
+
+Make sure you have the following installed:
+
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) (3.x or higher)
+- [Android Studio](https://developer.android.com/studio) with NDK `27.0.12077973`
+- [VS Code](https://code.visualstudio.com/) (recommended editor)
+- [Git](https://git-scm.com/)
+- [Firebase CLI](https://firebase.google.com/docs/cli) *(only needed for web deployment)*
+
+---
+
+### Step 2 — Clone the Repository
+
+```bash
+git clone https://github.com/alburolowrencejoy/smartpowerswitch.git
+cd smartpowerswitch
+```
+
+---
+
+### Step 3 — Add the Secret Key Files
+
+These files are **not in the repo**. Download them from the links above and place them here:
+
+| File | Where to put it |
+|------|-----------------|
+| `firebase_options.dart` | `lib/firebase_options.dart` |
+| `google-services.json` | `android/app/google-services.json` |
+
+---
+
+### Step 4 — Install Dependencies
+
+```bash
+flutter pub get
+```
+
+---
+
+### Step 5 — Run the App
+
+**On Android (connected device or emulator):**
+```bash
+flutter run -d RMX3151 --release
+```
+
+**On Chrome (web):**
+```bash
+flutter run -d chrome
+```
+
+**Build APK:**
+```bash
+flutter build apk --release
+```
+APK will be at: `build/app/outputs/flutter-apk/app-release.apk`
+
+**Deploy to Web:**
+```bash
+flutter build web
+firebase deploy
+```
+
+---
+
+### Step 6 — Firebase Setup (first time only)
+
+1. Go to [Firebase Console](https://console.firebase.google.com/project/smartpowerswitch-e90d0/overview)
+2. Make sure **Authentication** (Email/Password) and **Realtime Database** are enabled
+3. Import the database JSON — go to **Realtime Database → ⋮ → Import JSON**
+4. Set the **Security Rules** under **Realtime Database → Rules**
+
+---
+
+## 🔐 Test Accounts
+
+| Role | Email | Password |
+|------|-------|----------|
+| Admin | admin@dnsc.edu.ph | *(ask team lead)* |
+| Faculty | faculty@dnsc.edu.ph | *(ask team lead)* |
+
+---
+
+## 🎨 Color Palette
+
+| Name | Hex | Usage |
+|------|-----|-------|
+| greenDark | `#1A5C35` | Headers, buttons, primary |
+| greenMid | `#2E9E52` | Accents, active states |
+| greenLight | `#6ECB8A` | Highlights, badges |
+| greenPale | `#C2EDD0` | Backgrounds, cards |
+
+---
+
+## 🏫 Buildings & Devices
+
+| Building | Code | Floors | Max Devices |
+|----------|------|--------|-------------|
+| Institute of Computing | IC | 2 | 6 |
+| Institute of Leadership & Good Governance | ILEGG | 2 | 6 |
+| Institute of Teachers Education | ITED | 2 | 6 |
+| Institute of Aquatic Science | IAAS | 1 | 3 |
+| Administrator Building | ADMIN | 1 | 3 |
+| **Total** | | | **24** |
+
+3 utilities per floor: **Lights** (Relay 220V), **Outlets** (Relay 220V), **AC** (Contactor 220V)
+
+---
+
+## 👥 User Roles
+
+| Role | Permissions |
+|------|-------------|
+| **Admin** | Relay control, add/remove devices & rooms, manage users, change electricity rate |
+| **Faculty** | View dashboard, energy readings, history — no control |
+
+---
+
+## 📁 Project Structure
 
 ```
 lib/
 ├── main.dart                        ← Entry point + routing
 ├── theme/
-│   └── app_colors.dart              ← All color constants
+│   └── app_colors.dart              ← Color constants
 └── screens/
-    ├── login_screen.dart            ← Login with Firebase Auth
-    ├── dashboard_screen.dart        ← Energy overview + building list
-    ├── building_floor_screen.dart   ← Floor tabs + device grid
+    ├── login_screen.dart            ← Firebase Auth login
+    ├── dashboard_screen.dart        ← Energy overview + buildings
+    ├── building_floor_screen.dart   ← Floor tabs + rooms + devices
     ├── device_detail_screen.dart    ← PZEM readings + relay toggle
-    ├── history_screen.dart          ← 30d/12w/12mo/3yr charts + CSV export
+    ├── history_screen.dart          ← Analytics + line chart + CSV export
     ├── notifications_screen.dart    ← Alerts (high consumption, offline)
-    └── settings_screen.dart        ← Admin: rate, users, account
+    └── settings_screen.dart         ← Admin: rate, users, account
 ```
 
 ---
 
-## Color Palette
-
-| Name         | Hex       | Usage                         |
-|--------------|-----------|-------------------------------|
-| greenDark    | #1A5C35   | Primary, headers, buttons     |
-| greenMid     | #2E9E52   | Accents, active states        |
-| greenLight   | #6ECB8A   | Highlights, badges            |
-| greenPale    | #C2EDD0   | Backgrounds, cards            |
-
----
-
-## Setup
-
-### 1. Install Flutter
-https://docs.flutter.dev/get-started/install
-
-### 2. Create Firebase Project
-- Go to https://console.firebase.google.com
-- Create project: `SmartPowerSwitch`
-- Enable: Authentication (Email/Password) + Realtime Database
-
-### 3. Connect Firebase to Flutter
-```bash
-dart pub global activate flutterfire_cli
-flutterfire configure
-```
-This generates `firebase_options.dart` — add it to `lib/`.
-
-Then update `main.dart`:
-```dart
-import 'firebase_options.dart';
-
-await Firebase.initializeApp(
-  options: DefaultFirebaseOptions.currentPlatform,
-);
-```
-
-### 4. Install dependencies
-```bash
-flutter pub get
-```
-
-### 5. Run the app
-```bash
-flutter run
-```
-
----
-
-## Screen Navigation Flow
+## 🗺️ Screen Navigation
 
 ```
 LoginScreen
@@ -89,28 +174,39 @@ LoginScreen
 
 ---
 
-## Buildings & Devices
+## 🔥 Firebase Structure
 
-| Building | Floors | Devices |
-|----------|--------|---------|
-| IC       | 2      | 6       |
-| ILEGG    | 2      | 6       |
-| ITED     | 2      | 6       |
-| IAAS     | 1      | 3       |
-| ADMIN    | 1      | 3       |
-| **Total**|        | **24**  |
-
-3 utilities per floor: Lights (Relay), Outlets (Relay), AC (Contactor)
-
----
-
-## User Roles
-
-- **Admin** — full control: relay toggle, settings, user management
-- **Faculty** — view only: dashboard, readings, history
+```
+smartpowerswitch-e90d0/
+├── users/              ← User roles (admin / faculty)
+├── buildings/          ← Floor data, rooms, devices per building
+├── devices/            ← Live PZEM readings from ESP32
+├── master_devices/     ← Device registry & assignment
+├── history/            ← Energy history (daily/weekly/monthly/yearly)
+└── settings/           ← Electricity rate (₱/kWh)
+```
 
 ---
 
-## Firebase Database Structure
+## ⚠️ Files NOT in This Repo
 
-See the Firebase setup guide for the full JSON import.
+These files contain secret keys and must **never be committed to GitHub**:
+
+```
+lib/firebase_options.dart
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+```
+
+They are listed in `.gitignore`. Download them from the links at the top of this README.
+
+---
+
+## 🛠️ Tech Stack
+
+- **Flutter** — cross-platform mobile & web app
+- **Firebase Auth** — user authentication
+- **Firebase Realtime Database** — live data sync
+- **ESP32** — IoT controller *(firmware coming soon)*
+- **PZEM-004T** — energy meter sensor
+- **Twilio SMS + SendGrid** — notifications *(planned)*
