@@ -2,6 +2,9 @@
 
 IoT Energy Monitoring & Control System for Davao del Norte State College (DNSC) Campus.
 
+
+## **Download**
+https://www.mediafire.com/file/k6mgs9a87plq3n7/app-release.apk/file
 ---
 
 ## Project Structure
