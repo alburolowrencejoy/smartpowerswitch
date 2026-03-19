@@ -119,16 +119,13 @@ firebase deploy
 
 ## 🏫 Buildings & Devices
 
-| Building | Code | Floors | Max Devices |
-|----------|------|--------|-------------|
-| Institute of Computing | IC | 2 | 6 |
-| Institute of Leadership & Good Governance | ILEGG | 2 | 6 |
-| Institute of Teachers Education | ITED | 2 | 6 |
-| Institute of Aquatic Science | IAAS | 1 | 3 |
-| Administrator Building | ADMIN | 1 | 3 |
-| **Total** | | | **24** |
-
-3 utilities per floor: **Lights** (Relay 220V), **Outlets** (Relay 220V), **AC** (Contactor 220V)
+| Building | Code | Floors |
+|----------|------|--------|
+| Institute of Computing | IC | 2 |
+| Institute of Leadership & Good Governance | ILEGG | 2 |
+| Institute of Teachers Education | ITED | 2 |
+| Institute of Aquatic Science | IAAS | 1 |
+| Administrator Building | ADMIN | 1 |
 
 ---
 
