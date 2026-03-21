@@ -18,6 +18,12 @@ dependencies:
   # Google Fonts (Outfit)
   google_fonts: ^6.2.1
 
+  # Cloud Functions
+  cloud_functions: ^5.1.0
+
+  # Http
+  http: ^1.2.0
+      
   # CSV Export
   csv: ^6.0.0
   path_provider: ^2.1.4
@@ -30,3 +36,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/campus_map.png

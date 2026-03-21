@@ -31,15 +31,16 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _isLoading = true; _errorMessage = null; });
 
     try {
-      // Step 1: sign in with Firebase Auth
+      // Step 1: Sign in with Firebase Auth
       final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email:    _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      final uid = cred.user!.uid;
+      final uid  = cred.user!.uid;
+      final user = cred.user!;
 
-      // Step 2: read role from Realtime Database
+      // Step 2: Read user data from Realtime Database
       final snap = await FirebaseDatabase.instance.ref('users/$uid').get();
 
       String role = 'faculty';
@@ -49,6 +50,27 @@ class _LoginScreenState extends State<LoginScreen> {
         final data = Map<String, dynamic>.from(snap.value as Map);
         role = data['role'] as String? ?? 'faculty';
         name = data['name'] as String? ?? name;
+
+        // Step 3: Check if admin set a new password for this account
+        final newPassword = data['passwordReset'] as String?;
+        if (newPassword != null && newPassword.isNotEmpty) {
+          try {
+            await user.updatePassword(newPassword);
+            await FirebaseDatabase.instance
+                .ref('users/$uid/passwordReset')
+                .remove();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Your password has been updated by an admin.'),
+                  duration: Duration(seconds: 3),
+                ),
+              );
+            }
+          } catch (_) {
+            // If password update fails, continue login anyway
+          }
+        }
       } else {
         // First login — store as faculty by default
         await FirebaseDatabase.instance.ref('users/$uid').set({
@@ -60,7 +82,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      // Step 3: navigate — pass role directly so dashboard gets it instantly
+      // Step 4: Navigate to dashboard
       Navigator.pushReplacementNamed(
         context,
         '/dashboard',
@@ -80,6 +102,10 @@ class _LoginScreenState extends State<LoginScreen> {
     final email = _emailController.text.trim();
     if (email.isEmpty) {
       setState(() => _errorMessage = 'Enter your email first.');
+      return;
+    }
+    if (!email.endsWith('@dnsc.edu.ph')) {
+      setState(() => _errorMessage = 'Only @dnsc.edu.ph emails are allowed.');
       return;
     }
     try {
@@ -131,6 +157,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           validator: (v) {
                             if (v == null || v.isEmpty) return 'Email is required';
                             if (!v.contains('@')) return 'Enter a valid email';
+                            if (!v.endsWith('@dnsc.edu.ph'))
+                              return 'Only @dnsc.edu.ph emails are allowed';
                             return null;
                           },
                         ),

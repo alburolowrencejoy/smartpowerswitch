@@ -713,7 +713,7 @@ class _LineChartPainter extends CustomPainter {
 
     final stepX = size.width / (data.length - 1);
 
-    Offset _offset(int i) {
+    Offset offset(int i) {
       final x = i * stepX;
       final y = size.height - (data[i] / maxKwh) * size.height;
       return Offset(x, y);
@@ -722,10 +722,10 @@ class _LineChartPainter extends CustomPainter {
     // Fill path
     final fillPath = Path();
     fillPath.moveTo(0, size.height);
-    fillPath.lineTo(_offset(0).dx, _offset(0).dy);
+    fillPath.lineTo(offset(0).dx, offset(0).dy);
     for (int i = 1; i < data.length; i++) {
-      final prev = _offset(i - 1);
-      final curr = _offset(i);
+      final prev = offset(i - 1);
+      final curr = offset(i);
       final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
       final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
       fillPath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
@@ -736,10 +736,10 @@ class _LineChartPainter extends CustomPainter {
 
     // Line path
     final linePath = Path();
-    linePath.moveTo(_offset(0).dx, _offset(0).dy);
+    linePath.moveTo(offset(0).dx, offset(0).dy);
     for (int i = 1; i < data.length; i++) {
-      final prev = _offset(i - 1);
-      final curr = _offset(i);
+      final prev = offset(i - 1);
+      final curr = offset(i);
       final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
       final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
       linePath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
@@ -748,9 +748,9 @@ class _LineChartPainter extends CustomPainter {
 
     // Dots
     for (int i = 0; i < data.length; i++) {
-      canvas.drawCircle(_offset(i), 3.5, dotPaint);
+      canvas.drawCircle(offset(i), 3.5, dotPaint);
       canvas.drawCircle(
-          _offset(i),
+          offset(i),
           3.5,
           Paint()
             ..color = Colors.white

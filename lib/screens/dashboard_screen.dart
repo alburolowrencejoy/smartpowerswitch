@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import 'campus_map_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -28,11 +29,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double              _totalKwh             = 0;
   double              _totalCostPhp         = 0;
   double              _electricityRate      = 11.5;
-  int                 _assignedDevices      = 0;  // from master_devices
-  int                 _unassignedDevices    = 0;  // from master_devices
-  Map<String, int>    _buildingDeviceCounts = {};  // from master_devices
-  Map<String, double> _buildingEnergy       = {};  // from devices node
-  Map<String, double> _utilityTotals        = {};  // from devices node
+  int                 _assignedDevices      = 0;
+  int                 _unassignedDevices    = 0;
+  Map<String, int>    _buildingDeviceCounts = {};
+  Map<String, double> _buildingEnergy       = {};
+  Map<String, double> _utilityTotals        = {};
   String              _analyticsRange       = 'daily';
   List<Map<String, dynamic>> _historyData   = [];
 
@@ -67,7 +68,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // ── Count assigned/unassigned from master_devices ─────────────
   void _listenToMasterDevices() {
     _masterSub = FirebaseDatabase.instance
         .ref('master_devices')
@@ -93,10 +93,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (val is! Map) return;
         final device     = Map<String, dynamic>.from(val);
         final assignedTo = (device['assignedTo'] ?? '').toString();
-
         if (assignedTo.isNotEmpty) {
           assigned++;
-          // assignedTo format: "IC/1/Comlab 1"
           final parts = assignedTo.split('/');
           if (parts.isNotEmpty) {
             bCounts[parts[0]] = (bCounts[parts[0]] ?? 0) + 1;
@@ -114,7 +112,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // ── Energy data from devices node (ESP32 writes here) ─────────
   void _listenToEnergyData() {
     _devicesSub = FirebaseDatabase.instance
         .ref('devices')
@@ -245,7 +242,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               index: _selectedIndex,
               children: [
                 _buildHomeTab(),
-                _buildMapTab(),
+                // ── Map tab — embedded, no AppBar, role passed ──
+                CampusMapScreen(role: _role, showAppBar: false),
                 _buildAnalyticsTab(),
               ],
             ),
@@ -511,29 +509,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildMapTab() {
-    return Center(
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(
-          width: 72, height: 72,
-          decoration: BoxDecoration(
-            color: AppColors.greenPale,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.greenMid.withAlpha(60)),
-          ),
-          child: const Icon(Icons.map_outlined, size: 36, color: AppColors.greenDark),
-        ),
-        const SizedBox(height: 16),
-        const Text('Campus Map',
-            style: TextStyle(fontFamily: 'Outfit', fontSize: 18,
-                fontWeight: FontWeight.w700, color: AppColors.textDark)),
-        const SizedBox(height: 6),
-        const Text('Coming soon',
-            style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
-      ]),
-    );
-  }
-
   Widget _buildAnalyticsTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -665,7 +640,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildDeviceStatusCard() {
-    final total      = _assignedDevices + _unassignedDevices;
+    final total       = _assignedDevices + _unassignedDevices;
     final assignedPct = total == 0 ? 0.0 : _assignedDevices / total;
     return Container(
       padding: const EdgeInsets.all(20),

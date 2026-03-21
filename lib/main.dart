@@ -8,6 +8,7 @@ import 'screens/device_detail_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/campus_map_screen.dart'; // ← added
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -39,6 +40,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
         '/history':       (_) => const HistoryScreen(),
         '/notifications': (_) => const NotificationsScreen(),
         '/settings':      (_) => const SettingsScreen(),
+        '/map':           (_) => const CampusMapScreen(), // ← added
       },
       onGenerateRoute: (settings) {
         if (settings.name == '/building') {

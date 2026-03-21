@@ -25,7 +25,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   int     _selectedFloor = 1;
   String? _selectedRoom;
 
-  Map<int, List<String>> _rooms   = {};
+  final Map<int, List<String>> _rooms   = {};
   Map<String, dynamic>   _devices = {};
 
   double _buildingKwh           = 0;

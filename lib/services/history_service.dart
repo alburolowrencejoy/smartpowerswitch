@@ -35,18 +35,18 @@ class HistoryService {
 
       // Update period totals using transactions (safe for concurrent writes)
       await _db.child('$base/total_kwh').runTransaction((current) {
-        final prev = (current?.value as num?)?.toDouble() ?? 0.0;
+        final prev = (current as num?)?.toDouble() ?? 0.0;
         return Transaction.success(double.parse((prev + kwh).toStringAsFixed(4)));
       });
 
       await _db.child('$base/total_cost').runTransaction((current) {
-        final prev = (current?.value as num?)?.toDouble() ?? 0.0;
+        final prev = (current as num?)?.toDouble() ?? 0.0;
         return Transaction.success(double.parse((prev + cost).toStringAsFixed(4)));
       });
 
       // Update per-building totals
       await _db.child('$base/buildings/$building/kwh').runTransaction((current) {
-        final prev = (current?.value as num?)?.toDouble() ?? 0.0;
+        final prev = (current as num?)?.toDouble() ?? 0.0;
         return Transaction.success(double.parse((prev + kwh).toStringAsFixed(4)));
       });
     }
