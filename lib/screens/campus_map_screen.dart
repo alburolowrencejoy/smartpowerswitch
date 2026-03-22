@@ -58,18 +58,25 @@ class _Hotspot {
 }
 
 const List<_Hotspot> _hotspots = [
-  _Hotspot(buildingId: 'IC',    position: Offset(0.44, 0.294), size: Size(0.13, 0.10)),
-  _Hotspot(buildingId: 'ILEGG', position: Offset(0.65, 0.36), size: Size(0.21, 0.30)),
-  _Hotspot(buildingId: 'ITED',  position: Offset(0.75, 0.07), size: Size(0.11, 0.28)),
-  _Hotspot(buildingId: 'IAAS',  position: Offset(0.61, 0.77), size: Size(0.24, 0.20)),
-  _Hotspot(buildingId: 'ADMIN', position: Offset(0.22, 0.72), size: Size(0.32, 0.17)),
+  _Hotspot(buildingId: 'IC',    position: Offset(0.36, 0.30), size: Size(0.20, 0.09)),
+  _Hotspot(buildingId: 'ILEGG', position: Offset(0.63, 0.36), size: Size(0.34, 0.20)),
+  _Hotspot(buildingId: 'ITED',  position: Offset(0.75, 0.07), size: Size(0.24, 0.12)),
+  _Hotspot(buildingId: 'IAAS',  position: Offset(0.63, 0.84), size: Size(0.34, 0.10)),
+  _Hotspot(buildingId: 'ADMIN', position: Offset(0.08, 0.67), size: Size(0.46, 0.09)),
 ];
+
+const double _mapAspectRatio = 354 / 496;
+
+class _ContainRect {
+  final double left, top, width, height;
+  const _ContainRect({required this.left, required this.top, required this.width, required this.height});
+}
 
 // ─── Campus Map Screen ────────────────────────────────────────────────────────
 
 class CampusMapScreen extends StatefulWidget {
   final String role;
-  final bool showAppBar; // false when embedded in dashboard
+  final bool showAppBar;
   const CampusMapScreen({super.key, this.role = 'faculty', this.showAppBar = false});
 
   @override
@@ -94,20 +101,13 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   }
 
   void _listenToData() {
-    _devicesSub = FirebaseDatabase.instance
-        .ref('devices')
-        .onValue
-        .listen((event) {
+    _devicesSub = FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
 
       final Map<String, Map<String, dynamic>> bData = {};
       for (final id in _buildingMeta.keys) {
-        bData[id] = {
-          'kwh':         0.0,
-          'deviceCount': 0,
-          'rooms':       <String, Map<String, dynamic>>{},
-        };
+        bData[id] = {'kwh': 0.0, 'deviceCount': 0, 'rooms': <String, Map<String, dynamic>>{}};
       }
 
       if (raw != null) {
@@ -124,104 +124,114 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
           if (!bData.containsKey(building)) return;
 
-          bData[building]!['kwh'] =
-              (bData[building]!['kwh'] as double) + kwh.toDouble();
-          bData[building]!['deviceCount'] =
-              (bData[building]!['deviceCount'] as int) + 1;
+          bData[building]!['kwh']         = (bData[building]!['kwh'] as double) + kwh.toDouble();
+          bData[building]!['deviceCount'] = (bData[building]!['deviceCount'] as int) + 1;
 
           if (room.isNotEmpty) {
             final rooms = bData[building]!['rooms'] as Map<String, Map<String, dynamic>>;
-            if (!rooms.containsKey(room)) {
-              rooms[room] = {'utilities': <Map<String, dynamic>>[]};
-            }
+            if (!rooms.containsKey(room)) rooms[room] = {'utilities': <Map<String, dynamic>>[]};
             (rooms[room]!['utilities'] as List<Map<String, dynamic>>).add({
-              'id':      deviceId,
-              'utility': utility,
-              'kwh':     kwh.toDouble(),
-              'status':  status,
-              'relay':   relay,
+              'id': deviceId, 'utility': utility, 'kwh': kwh.toDouble(), 'status': status, 'relay': relay,
             });
           }
         });
       }
-
       setState(() => _buildingData = bData);
     });
   }
 
   void _onBuildingTap(String buildingId) {
     setState(() {
-      _selectedBuildingId =
-          _selectedBuildingId == buildingId ? null : buildingId;
+      _selectedBuildingId = _selectedBuildingId == buildingId ? null : buildingId;
     });
   }
 
   void _dismissPopup() => setState(() => _selectedBuildingId = null);
+
+  // ── KEY FIX: capture values BEFORE setState clears selectedBuildingId ───
+  void _viewBuildingDetails(String buildingId) {
+    final code   = buildingId;
+    final name   = _buildingMeta[buildingId]!['name'] as String;
+    final floors = _buildingMeta[buildingId]!['floors'] as int;
+    final role   = widget.role;
+
+    setState(() => _selectedBuildingId = null);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.pushNamed(context, '/building', arguments: {
+        'buildingCode': code,
+        'buildingName': name,
+        'floors':       floors,
+        'role':         role,
+      });
+    });
+  }
+
+  _ContainRect _computeContainRect(BoxConstraints constraints) {
+    final w = constraints.maxWidth;
+    final h = constraints.maxHeight;
+    final containerAspect = w / h;
+    if (containerAspect > _mapAspectRatio) {
+      final imageH = h;
+      final imageW = h * _mapAspectRatio;
+      return _ContainRect(left: (w - imageW) / 2, top: 0, width: imageW, height: imageH);
+    }
+    final imageW = w;
+    final imageH = w / _mapAspectRatio;
+    return _ContainRect(left: 0, top: (h - imageH) / 2, width: imageW, height: imageH);
+  }
+
+  Widget _buildHotspot(_Hotspot spot, _ContainRect rect) {
+    final bData      = _buildingData[spot.buildingId];
+    final kwh        = (bData?['kwh'] as double?) ?? 0.0;
+    final level      = _energyLevel(kwh);
+    final color      = _energyColor(level);
+    final isSelected = _selectedBuildingId == spot.buildingId;
+
+    return Positioned(
+      left:   rect.left + (spot.position.dx * rect.width),
+      top:    rect.top  + (spot.position.dy * rect.height),
+      width:  spot.size.width  * rect.width,
+      height: spot.size.height * rect.height,
+      child: GestureDetector(
+        onTap: () => _onBuildingTap(spot.buildingId),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          decoration: BoxDecoration(
+            color: color.withAlpha(isSelected ? 120 : 60),
+            border: Border.all(color: color, width: isSelected ? 3 : 1.5),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              decoration: BoxDecoration(color: color.withAlpha(200), borderRadius: BorderRadius.circular(4)),
+              child: Text(spot.buildingId,
+                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildMap() {
     return GestureDetector(
       onTap: _dismissPopup,
       child: Stack(
         children: [
-          // ── Map ──────────────────────────────────────────────
           Positioned.fill(
             child: InteractiveViewer(
               minScale: 0.8,
               maxScale: 4.0,
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final w = constraints.maxWidth;
-                  final h = constraints.maxHeight;
+                  final rect = _computeContainRect(constraints);
                   return Stack(
                     children: [
-                      Positioned.fill(
-                        child: Image.asset(
-                          'assets/images/campus_map.png',
-                          fit: BoxFit.contain,
-                        ),
-                      ),
-                      ..._hotspots.map((spot) {
-                        final bData     = _buildingData[spot.buildingId];
-                        final kwh       = (bData?['kwh'] as double?) ?? 0.0;
-                        final level     = _energyLevel(kwh);
-                        final color     = _energyColor(level);
-                        final isSelected = _selectedBuildingId == spot.buildingId;
-
-                        return Positioned(
-                          left:   spot.position.dx * w,
-                          top:    spot.position.dy * h,
-                          width:  spot.size.width  * w,
-                          height: spot.size.height * h,
-                          child: GestureDetector(
-                            onTap: () => _onBuildingTap(spot.buildingId),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              decoration: BoxDecoration(
-                                color: color.withAlpha(isSelected ? 120 : 60),
-                                border: Border.all(
-                                    color: color,
-                                    width: isSelected ? 3 : 1.5),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Center(
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 4, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: color.withAlpha(200),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(spot.buildingId,
-                                      style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold)),
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      }),
+                      Positioned.fill(child: Image.asset('assets/images/campus_map.png', fit: BoxFit.contain)),
+                      ..._hotspots.map((spot) => _buildHotspot(spot, rect)),
                     ],
                   );
                 },
@@ -229,7 +239,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
             ),
           ),
 
-          // ── Legend (top left) ─────────────────────────────────
+          // Legend
           Positioned(
             top: 12, left: 12,
             child: Container(
@@ -237,9 +247,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
               decoration: BoxDecoration(
                 color: Colors.white.withAlpha(220),
                 borderRadius: BorderRadius.circular(12),
-                boxShadow: [BoxShadow(
-                    color: Colors.black.withAlpha(20),
-                    blurRadius: 8)],
+                boxShadow: const [BoxShadow(color: Color.fromARGB(20, 0, 0, 0), blurRadius: 8)],
               ),
               child: const Row(children: [
                 _LegendDot(color: AppColors.greenMid,      label: 'Low'),
@@ -251,28 +259,21 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
             ),
           ),
 
-          // ── Popup ─────────────────────────────────────────────
+          // Popup
           if (_selectedBuildingId != null)
             Positioned(
               bottom: 0, left: 0, right: 0,
               child: GestureDetector(
                 onTap: () {},
                 child: _BuildingPopup(
-                  buildingId:   _selectedBuildingId!,
-                  buildingName: _buildingMeta[_selectedBuildingId!]!['name'],
-                  floors:       _buildingMeta[_selectedBuildingId!]!['floors'],
-                  data:         _buildingData[_selectedBuildingId!] ?? {},
-                  role:         widget.role,
-                  onClose:      _dismissPopup,
-                  onViewDetails: () {
-                    _dismissPopup();
-                    Navigator.pushNamed(context, '/building', arguments: {
-                      'buildingCode': _selectedBuildingId,
-                      'buildingName': _buildingMeta[_selectedBuildingId!]!['name'],
-                      'floors':       _buildingMeta[_selectedBuildingId!]!['floors'],
-                      'role':         widget.role,
-                    });
-                  },
+                  buildingId:    _selectedBuildingId!,
+                  buildingName:  _buildingMeta[_selectedBuildingId!]!['name'],
+                  floors:        _buildingMeta[_selectedBuildingId!]!['floors'],
+                  data:          _buildingData[_selectedBuildingId!] ?? {},
+                  role:          widget.role,
+                  onClose:       _dismissPopup,
+                  // Pass the ID directly so it's captured before dismiss
+                  onViewDetails: () => _viewBuildingDetails(_selectedBuildingId!),
                 ),
               ),
             ),
@@ -289,17 +290,12 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         appBar: AppBar(
           backgroundColor: AppColors.greenDark,
           title: const Text('Campus Map',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700)),
+              style: TextStyle(fontFamily: 'Outfit', color: Colors.white, fontWeight: FontWeight.w700)),
           iconTheme: const IconThemeData(color: Colors.white),
         ),
         body: _buildMap(),
       );
     }
-
-    // Embedded mode — no AppBar
     return _buildMap();
   }
 }
@@ -314,15 +310,9 @@ class _LegendDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(children: [
-      Container(
-          width: 9, height: 9,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      Container(width: 9, height: 9, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
       const SizedBox(width: 4),
-      Text(label,
-          style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: AppColors.textDark)),
+      Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: AppColors.textDark)),
     ]);
   }
 }
@@ -352,141 +342,101 @@ class _BuildingPopup extends StatelessWidget {
   Widget build(BuildContext context) {
     final kwh         = (data['kwh']         as double?) ?? 0.0;
     final deviceCount = (data['deviceCount'] as int?)    ?? 0;
-    final rooms       = (data['rooms'] as Map<String, Map<String, dynamic>>?) ?? {};
-    final level       = _energyLevel(kwh);
-    final color       = _energyColor(level);
+    final rawRooms    = data['rooms'];
+    final rooms       = rawRooms is Map
+        ? Map<String, Map<String, dynamic>>.from(
+            rawRooms.map((k, v) => MapEntry(k.toString(),
+                v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{})))
+        : <String, Map<String, dynamic>>{};
+    final level = _energyLevel(kwh);
+    final color = _energyColor(level);
 
     return Container(
       constraints: const BoxConstraints(maxHeight: 400),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withAlpha(40),
-              blurRadius: 16,
-              offset: const Offset(0, -4)),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withAlpha(40), blurRadius: 16, offset: const Offset(0, -4))],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Handle
-          Container(
-            margin: const EdgeInsets.only(top: 10),
-            width: 40, height: 4,
-            decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2)),
-          ),
-
-          // Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-            child: Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(buildingName,
-                      style: const TextStyle(
-                          fontFamily: 'Outfit',
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.greenDark)),
-                  const SizedBox(height: 4),
-                  Row(children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: color.withAlpha(30),
-                        border: Border.all(color: color),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(children: [
-                        Icon(Icons.circle, color: color, size: 8),
-                        const SizedBox(width: 4),
-                        Text(_energyLabel(level),
-                            style: TextStyle(
-                                color: color,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold)),
-                      ]),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('${kwh.toStringAsFixed(1)} kWh',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          margin: const EdgeInsets.only(top: 10),
+          width: 40, height: 4,
+          decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+          child: Row(children: [
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(buildingName,
+                  style: const TextStyle(fontFamily: 'Outfit', fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.greenDark)),
+              const SizedBox(height: 4),
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(color: color.withAlpha(30), border: Border.all(color: color), borderRadius: BorderRadius.circular(20)),
+                  child: Row(children: [
+                    Icon(Icons.circle, color: color, size: 8),
+                    const SizedBox(width: 4),
+                    Text(_energyLabel(level), style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
                   ]),
-                ]),
+                ),
+                const SizedBox(width: 8),
+                Text('${kwh.toStringAsFixed(1)} kWh', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+              ]),
+            ])),
+            IconButton(onPressed: onClose, icon: const Icon(Icons.close), color: Colors.grey),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(children: [
+            _StatBox(icon: Icons.layers,              label: 'Floors',  value: '$floors'),
+            const SizedBox(width: 8),
+            _StatBox(icon: Icons.meeting_room,        label: 'Rooms',   value: '${rooms.length}'),
+            const SizedBox(width: 8),
+            _StatBox(icon: Icons.electrical_services, label: 'Devices', value: '$deviceCount'),
+            const SizedBox(width: 8),
+            _StatBox(icon: Icons.bolt,                label: 'kWh',     value: kwh.toStringAsFixed(1)),
+          ]),
+        ),
+        const SizedBox(height: 10),
+        const Divider(height: 1),
+        rooms.isEmpty
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(deviceCount == 0 ? 'No devices assigned yet' : 'No room data',
+                    style: const TextStyle(fontSize: 13, color: AppColors.textMuted)))
+            : Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  children: rooms.entries.map((entry) {
+                    final roomName  = entry.key;
+                    final utilities = (entry.value['utilities'] as List<Map<String, dynamic>>?) ?? [];
+                    final roomKwh   = utilities.fold(0.0, (s, u) => s + (u['kwh'] as double));
+                    return _RoomTile(roomName: roomName, utilities: utilities, roomKwh: roomKwh);
+                  }).toList(),
+                ),
               ),
-              IconButton(
-                  onPressed: onClose,
-                  icon: const Icon(Icons.close),
-                  color: Colors.grey),
-            ]),
-          ),
-
-          // Stats
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(children: [
-              _StatBox(icon: Icons.layers,              label: 'Floors',  value: '$floors'),
-              const SizedBox(width: 8),
-              _StatBox(icon: Icons.meeting_room,        label: 'Rooms',   value: '${rooms.length}'),
-              const SizedBox(width: 8),
-              _StatBox(icon: Icons.electrical_services, label: 'Devices', value: '$deviceCount'),
-              const SizedBox(width: 8),
-              _StatBox(icon: Icons.bolt,                label: 'kWh',     value: kwh.toStringAsFixed(1)),
-            ]),
-          ),
-
-          const SizedBox(height: 10),
-          const Divider(height: 1),
-
-          // Room list
-          rooms.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    deviceCount == 0 ? 'No devices assigned yet' : 'No room data',
-                    style: const TextStyle(fontSize: 13, color: AppColors.textMuted),
-                  ),
-                )
-              : Flexible(
-                  child: ListView(
-                    shrinkWrap: true,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    children: rooms.entries.map((entry) {
-                      final roomName  = entry.key;
-                      final utilities = (entry.value['utilities'] as List<Map<String, dynamic>>?) ?? [];
-                      final roomKwh   = utilities.fold(0.0, (s, u) => s + (u['kwh'] as double));
-                      return _RoomTile(
-                          roomName: roomName,
-                          utilities: utilities,
-                          roomKwh: roomKwh);
-                    }).toList(),
-                  ),
-                ),
-
-          // Button
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: onViewDetails,
-                icon: const Icon(Icons.arrow_forward, size: 16),
-                label: const Text('View Building Details'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.greenDark,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: onViewDetails,
+              icon: const Icon(Icons.arrow_forward, size: 16),
+              label: const Text('View Building Details'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.greenDark,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 }
@@ -504,20 +454,12 @@ class _StatBox extends StatelessWidget {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.greenPale,
-          borderRadius: BorderRadius.circular(10),
-        ),
+        decoration: BoxDecoration(color: AppColors.greenPale, borderRadius: BorderRadius.circular(10)),
         child: Column(children: [
           Icon(icon, color: AppColors.greenDark, size: 16),
           const SizedBox(height: 4),
-          Text(value,
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  color: AppColors.greenDark)),
-          Text(label,
-              style: TextStyle(fontSize: 9, color: Colors.grey[600])),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.greenDark)),
+          Text(label, style: TextStyle(fontSize: 9, color: Colors.grey[600])),
         ]),
       ),
     );
@@ -540,29 +482,23 @@ class _RoomTile extends StatelessWidget {
         Row(children: [
           const Icon(Icons.meeting_room_outlined, size: 14, color: AppColors.greenMid),
           const SizedBox(width: 6),
-          Text(roomName,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.greenDark)),
+          Text(roomName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.greenDark)),
           const Spacer(),
-          Text('${roomKwh.toStringAsFixed(1)} kWh',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          Text('${roomKwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
         ]),
         const SizedBox(height: 4),
         Row(
           children: utilities.map((u) {
-            final status  = (u['status']  as String?) ?? 'offline';
-            final utility = (u['utility'] as String?) ?? '';
-            final kwh     = (u['kwh']     as double?) ?? 0.0;
+            final status   = (u['status']  as String?) ?? 'offline';
+            final utility  = (u['utility'] as String?) ?? '';
+            final kwh      = (u['kwh']     as double?) ?? 0.0;
             final isOnline = status == 'online';
             return Padding(
               padding: const EdgeInsets.only(right: 10),
               child: Row(children: [
-                Icon(_utilityIcon(utility),
-                    size: 12,
-                    color: isOnline ? AppColors.greenMid : AppColors.textMuted),
+                Icon(_utilityIcon(utility), size: 12, color: isOnline ? AppColors.greenMid : AppColors.textMuted),
                 const SizedBox(width: 3),
-                Text('${kwh.toStringAsFixed(1)} kWh',
-                    style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+                Text('${kwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 10, color: Colors.grey[600])),
               ]),
             );
           }).toList(),

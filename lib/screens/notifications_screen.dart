@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
@@ -12,6 +13,8 @@ class NotificationsScreen extends StatefulWidget {
 class _NotificationsScreenState extends State<NotificationsScreen> {
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
+  String? _errorText;
+  StreamSubscription<DatabaseEvent>? _notificationsSub;
 
   @override
   void initState() {
@@ -19,8 +22,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     _listenToNotifications();
   }
 
+  @override
+  void dispose() {
+    _notificationsSub?.cancel();
+    super.dispose();
+  }
+
   void _listenToNotifications() {
-    FirebaseDatabase.instance
+    _notificationsSub?.cancel();
+    _notificationsSub = FirebaseDatabase.instance
         .ref('notifications')
         .orderByChild('timestamp')
         .limitToLast(50)
@@ -29,7 +39,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       if (!mounted) return;
       final data = event.snapshot.value as Map<dynamic, dynamic>?;
       if (data == null) {
-        setState(() { _notifications = []; _loading = false; });
+        setState(() {
+          _notifications = [];
+          _loading = false;
+          _errorText = null;
+        });
         return;
       }
       final list = data.entries.map((e) {
@@ -37,13 +51,37 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         val['id'] = e.key;
         return val;
       }).toList();
-      list.sort((a, b) => (b['timestamp'] as int).compareTo(a['timestamp'] as int));
-      setState(() { _notifications = list; _loading = false; });
+      list.sort(
+          (a, b) => (b['timestamp'] as int).compareTo(a['timestamp'] as int));
+      setState(() {
+        _notifications = list;
+        _loading = false;
+        _errorText = null;
+      });
+    }, onError: (Object error) {
+      if (!mounted) return;
+      final text = error.toString().toLowerCase();
+      final denied = text.contains('permission-denied') ||
+          text.contains('permission_denied');
+      setState(() {
+        _notifications = [];
+        _loading = false;
+        _errorText = denied
+            ? 'You do not have permission to view notifications.'
+            : 'Failed to load notifications. Please try again.';
+      });
     });
   }
 
   Future<void> _clearAll() async {
-    await FirebaseDatabase.instance.ref('notifications').remove();
+    try {
+      await FirebaseDatabase.instance.ref('notifications').remove();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to clear notifications.')),
+      );
+    }
   }
 
   @override
@@ -56,10 +94,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             _buildHeader(),
             Expanded(
               child: _loading
-                  ? const Center(child: CircularProgressIndicator(color: AppColors.greenMid))
-                  : _notifications.isEmpty
-                      ? _buildEmpty()
-                      : _buildList(),
+                  ? const Center(
+                      child:
+                          CircularProgressIndicator(color: AppColors.greenMid))
+                  : _errorText != null
+                      ? _buildError()
+                      : _notifications.isEmpty
+                          ? _buildEmpty()
+                          : _buildList(),
             ),
           ],
         ),
@@ -73,26 +115,32 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       decoration: const BoxDecoration(
         color: AppColors.greenDark,
         borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28),
+          bottomLeft: Radius.circular(28),
+          bottomRight: Radius.circular(28),
         ),
       ),
       child: Row(children: [
         GestureDetector(
           onTap: () => Navigator.pop(context),
           child: Container(
-            width: 36, height: 36,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: Colors.white.withAlpha(38),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 16),
+            child: const Icon(Icons.arrow_back_ios_new,
+                color: Colors.white, size: 16),
           ),
         ),
         const SizedBox(width: 12),
         const Expanded(
           child: Text('Notifications',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 18,
-                  fontWeight: FontWeight.w700, color: Colors.white)),
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
         ),
         if (_notifications.isNotEmpty)
           TextButton(
@@ -110,22 +158,63 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 72, height: 72,
+            width: 72,
+            height: 72,
             decoration: BoxDecoration(
               color: AppColors.greenPale,
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Icon(Icons.notifications_none, size: 36, color: AppColors.greenMid),
+            child: const Icon(Icons.notifications_none,
+                size: 36, color: AppColors.greenMid),
           ),
           const SizedBox(height: 16),
           const Text('No notifications',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 16,
-                  fontWeight: FontWeight.w600, color: AppColors.textDark)),
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
           const SizedBox(height: 6),
-          const Text('Alerts for high consumption\nand offline devices will appear here.',
+          const Text(
+              'Alerts for high consumption\nand offline devices will appear here.',
               style: TextStyle(fontSize: 13, color: AppColors.textMuted),
               textAlign: TextAlign.center),
         ],
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: AppColors.greenPale,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(Icons.lock_outline,
+                  size: 34, color: AppColors.greenMid),
+            ),
+            const SizedBox(height: 16),
+            const Text('Cannot load notifications',
+                style: TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textDark)),
+            const SizedBox(height: 8),
+            Text(_errorText ?? 'Something went wrong.',
+                textAlign: TextAlign.center,
+                style:
+                    const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          ],
+        ),
       ),
     );
   }
@@ -140,17 +229,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildNotifCard(Map<String, dynamic> notif) {
-    final type      = notif['type']     as String? ?? '';
-    final message   = notif['message']  as String? ?? '';
-    final building  = notif['building'] as String? ?? '';
-    final deviceId  = notif['deviceId'] as String? ?? '';
+    final type = notif['type'] as String? ?? '';
+    final message = notif['message'] as String? ?? '';
+    final building = notif['building'] as String? ?? '';
+    final deviceId = notif['deviceId'] as String? ?? '';
     final timestamp = notif['timestamp'] as int? ?? 0;
-    final isHigh    = type == 'high_consumption';
+    final isHigh = type == 'high_consumption';
 
     final color = isHigh ? AppColors.warning : AppColors.error;
-    final icon  = isHigh ? Icons.warning_amber_outlined : Icons.wifi_off;
-    final dt    = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}  ${dt.day}/${dt.month}/${dt.year}';
+    final icon = isHigh ? Icons.warning_amber_outlined : Icons.wifi_off;
+    final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    final timeStr =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}  ${dt.day}/${dt.month}/${dt.year}';
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -161,7 +251,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       ),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
-          width: 40, height: 40,
+          width: 40,
+          height: 40,
           decoration: BoxDecoration(
             color: color.withAlpha(26),
             borderRadius: BorderRadius.circular(10),
@@ -170,14 +261,21 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(message, style: const TextStyle(fontSize: 13,
-                fontWeight: FontWeight.w600, color: AppColors.textDark)),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(message,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textDark)),
             const SizedBox(height: 4),
             Text('$building · $deviceId',
-                style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                style:
+                    const TextStyle(fontSize: 11, color: AppColors.textMuted)),
             const SizedBox(height: 2),
-            Text(timeStr, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+            Text(timeStr,
+                style:
+                    const TextStyle(fontSize: 10, color: AppColors.textMuted)),
           ]),
         ),
       ]),

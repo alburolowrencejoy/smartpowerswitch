@@ -157,8 +157,9 @@ class _LoginScreenState extends State<LoginScreen> {
                           validator: (v) {
                             if (v == null || v.isEmpty) return 'Email is required';
                             if (!v.contains('@')) return 'Enter a valid email';
-                            if (!v.endsWith('@dnsc.edu.ph'))
+                            if (!v.endsWith('@dnsc.edu.ph')) {
                               return 'Only @dnsc.edu.ph emails are allowed';
+                            }
                             return null;
                           },
                         ),

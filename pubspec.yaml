@@ -23,7 +23,7 @@ dependencies:
 
   # Http
   http: ^1.2.0
-      
+
   # CSV Export
   csv: ^6.0.0
   path_provider: ^2.1.4

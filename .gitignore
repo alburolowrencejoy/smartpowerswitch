@@ -46,3 +46,6 @@ app.*.map.json
 
 google-services.json
 firebase_options.dart
+
+# Firebase local cache artifacts
+.firebase/hosting.*.cache

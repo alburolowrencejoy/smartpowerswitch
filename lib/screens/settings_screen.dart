@@ -34,7 +34,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _loadRate() {
-    FirebaseDatabase.instance.ref('settings/electricityRate').onValue.listen((event) {
+    FirebaseDatabase.instance
+        .ref('settings/electricityRate')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
       final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
       setState(() {
@@ -48,7 +51,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     FirebaseDatabase.instance.ref('users').onValue.listen((event) {
       if (!mounted) return;
       final data = event.snapshot.value as Map<dynamic, dynamic>?;
-      if (data == null) { setState(() => _users = []); return; }
+      if (data == null) {
+        setState(() => _users = []);
+        return;
+      }
       final list = data.entries.map((e) {
         final val = Map<String, dynamic>.from(e.value as Map);
         val['uid'] = e.key;
@@ -61,13 +67,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveRate() async {
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Enter a valid rate.')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Enter a valid rate.')));
       return;
     }
     setState(() => _saving = true);
     await FirebaseDatabase.instance.ref('settings/electricityRate').set(rate);
-    setState(() { _saving = false; _currentRate = rate; });
+    setState(() {
+      _saving = false;
+      _currentRate = rate;
+    });
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Electricity rate updated.')));
@@ -78,9 +87,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // ── Create new account via REST API (doesn't sign out admin) ──
   Future<void> _addUser() async {
-    final emailCtrl    = TextEditingController();
+    final emailCtrl = TextEditingController();
     final passwordCtrl = TextEditingController();
-    final nameCtrl     = TextEditingController();
+    final nameCtrl = TextEditingController();
     String selectedRole = 'faculty';
     String? errorText;
     bool obscure = true;
@@ -89,9 +98,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Add New Account',
-              style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style:
+                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               // Name
@@ -105,18 +116,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               TextField(
                 controller: emailCtrl,
                 keyboardType: TextInputType.emailAddress,
-                decoration: _inputDecoration('Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined),
+                decoration: _inputDecoration(
+                    'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined),
               ),
               const SizedBox(height: 12),
               // Password
               TextField(
                 controller: passwordCtrl,
                 obscureText: obscure,
-                decoration: _inputDecoration('Password', Icons.lock_outline).copyWith(
+                decoration:
+                    _inputDecoration('Password', Icons.lock_outline).copyWith(
                   suffixIcon: GestureDetector(
                     onTap: () => setS(() => obscure = !obscure),
-                    child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
-                        size: 18, color: AppColors.textMuted),
+                    child: Icon(
+                        obscure ? Icons.visibility_off : Icons.visibility,
+                        size: 18,
+                        color: AppColors.textMuted),
                   ),
                 ),
               ),
@@ -135,15 +150,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: BoxDecoration(
                           color: selectedRole == 'faculty'
-                              ? AppColors.greenDark : Colors.transparent,
+                              ? AppColors.greenDark
+                              : Colors.transparent,
                           borderRadius: const BorderRadius.only(
                               topLeft: Radius.circular(11),
                               bottomLeft: Radius.circular(11)),
                         ),
-                        child: Center(child: Text('Faculty',
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                                color: selectedRole == 'faculty'
-                                    ? Colors.white : AppColors.textMuted))),
+                        child: Center(
+                            child: Text('Faculty',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: selectedRole == 'faculty'
+                                        ? Colors.white
+                                        : AppColors.textMuted))),
                       ),
                     ),
                   ),
@@ -154,15 +174,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: BoxDecoration(
                           color: selectedRole == 'admin'
-                              ? AppColors.greenDark : Colors.transparent,
+                              ? AppColors.greenDark
+                              : Colors.transparent,
                           borderRadius: const BorderRadius.only(
                               topRight: Radius.circular(11),
                               bottomRight: Radius.circular(11)),
                         ),
-                        child: Center(child: Text('Admin',
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                                color: selectedRole == 'admin'
-                                    ? Colors.white : AppColors.textMuted))),
+                        child: Center(
+                            child: Text('Admin',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: selectedRole == 'admin'
+                                        ? Colors.white
+                                        : AppColors.textMuted))),
                       ),
                     ),
                   ),
@@ -170,33 +195,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               if (errorText != null) ...[
                 const SizedBox(height: 10),
-                Text(errorText!, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+                Text(errorText!,
+                    style:
+                        const TextStyle(fontSize: 12, color: AppColors.error)),
               ],
             ]),
           ),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.textMuted))),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.greenDark,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
               onPressed: () async {
-                final email    = emailCtrl.text.trim();
+                final email = emailCtrl.text.trim();
                 final password = passwordCtrl.text.trim();
-                final name     = nameCtrl.text.trim();
+                final name = nameCtrl.text.trim();
 
                 if (name.isEmpty || email.isEmpty || password.isEmpty) {
                   setS(() => errorText = 'All fields are required');
                   return;
                 }
                 if (!email.endsWith('@dnsc.edu.ph')) {
-                  setS(() => errorText = 'Email must be a @dnsc.edu.ph address');
+                  setS(
+                      () => errorText = 'Email must be a @dnsc.edu.ph address');
                   return;
                 }
                 if (password.length < 6) {
-                  setS(() => errorText = 'Password must be at least 6 characters');
+                  setS(() =>
+                      errorText = 'Password must be at least 6 characters');
                   return;
                 }
 
@@ -227,11 +258,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   // Save user info to Firebase Database
                   await FirebaseDatabase.instance.ref('users/$uid').set({
                     'email': email,
-                    'name':  name,
-                    'role':  selectedRole,
+                    'name': name,
+                    'role': selectedRole,
                   });
 
-                  if (!mounted) return;
+                  if (!ctx.mounted || !mounted) return;
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('$name added as $selectedRole.')));
@@ -239,7 +270,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   setS(() => errorText = 'Failed: $e');
                 }
               },
-              child: const Text('Create', style: TextStyle(color: Colors.white)),
+              child:
+                  const Text('Create', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
@@ -257,17 +289,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Change Password',
-              style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style:
+                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             Text('Account: $email',
-                style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                style:
+                    const TextStyle(fontSize: 12, color: AppColors.textMuted)),
             const SizedBox(height: 12),
             TextField(
               controller: passwordCtrl,
               obscureText: obscure,
-              decoration: _inputDecoration('New Password', Icons.lock_outline).copyWith(
+              decoration:
+                  _inputDecoration('New Password', Icons.lock_outline).copyWith(
                 suffixIcon: GestureDetector(
                   onTap: () => setS(() => obscure = !obscure),
                   child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
@@ -278,29 +314,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             if (errorText != null) ...[
               const SizedBox(height: 8),
-              Text(errorText!, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+              Text(errorText!,
+                  style: const TextStyle(fontSize: 12, color: AppColors.error)),
             ],
           ]),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.textMuted))),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.greenDark,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
               onPressed: () async {
                 final password = passwordCtrl.text.trim();
                 if (password.length < 6) {
-                  setS(() => errorText = 'Password must be at least 6 characters');
+                  setS(() =>
+                      errorText = 'Password must be at least 6 characters');
                   return;
                 }
 
                 try {
-                  // Get fresh ID token of current admin
-                  final token = await FirebaseAuth.instance.currentUser
-                      ?.getIdToken(true);
-
                   // Use Firebase Auth REST API to update password
                   // Note: This updates the CURRENT user's password
                   // For other users, you need Admin SDK (server-side)
@@ -309,10 +345,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       .ref('users/$uid/passwordReset')
                       .set(password);
 
-                  if (!mounted) return;
+                  if (!ctx.mounted || !mounted) return;
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text(
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text(
                           'Password reset saved. User must re-login to apply.')));
                 } catch (e) {
                   setS(() => errorText = 'Failed: $e');
@@ -330,8 +366,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _changeRole(String uid, String currentRole) async {
     final newRole = currentRole == 'admin' ? 'faculty' : 'admin';
     await FirebaseDatabase.instance.ref('users/$uid/role').set(newRole);
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Role changed to $newRole.')));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Role changed to $newRole.')));
   }
 
   // ── Delete user ──────────────────────────────────────────────
@@ -349,17 +386,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Account',
-            style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style:
+                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
         content: Text('Delete account "$email"? This cannot be undone.',
             style: const TextStyle(fontSize: 14)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel', style: TextStyle(color: AppColors.textMuted))),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textMuted))),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
             child: const Text('Delete', style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -372,8 +413,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await FirebaseDatabase.instance.ref('users/$uid').remove();
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$email removed from system.')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$email removed from system.')));
   }
 
   Future<void> _logout() async {
@@ -405,11 +446,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _friendlyError(String code) {
     switch (code) {
-      case 'EMAIL_EXISTS':       return 'This email is already registered.';
-      case 'INVALID_EMAIL':      return 'Invalid email address.';
-      case 'WEAK_PASSWORD':      return 'Password is too weak.';
-      case 'TOO_MANY_ATTEMPTS_TRY_LATER': return 'Too many attempts. Try later.';
-      default:                   return code;
+      case 'EMAIL_EXISTS':
+        return 'This email is already registered.';
+      case 'INVALID_EMAIL':
+        return 'Invalid email address.';
+      case 'WEAK_PASSWORD':
+        return 'Password is too weak.';
+      case 'TOO_MANY_ATTEMPTS_TRY_LATER':
+        return 'Too many attempts. Try later.';
+      default:
+        return code;
     }
   }
 
@@ -425,15 +471,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _buildRateSection(),
-                const SizedBox(height: 24),
-                _buildUsersSection(),
-                const SizedBox(height: 24),
-                _buildAccountSection(),
-                const SizedBox(height: 24),
-                _buildAppInfoSection(),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildRateSection(),
+                    const SizedBox(height: 24),
+                    _buildUsersSection(),
+                    const SizedBox(height: 24),
+                    _buildAccountSection(),
+                    const SizedBox(height: 24),
+                    _buildAppInfoSection(),
+                  ]),
             ),
           ),
         ]),
@@ -447,26 +495,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
       decoration: const BoxDecoration(
         color: AppColors.greenDark,
         borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28),
+          bottomLeft: Radius.circular(28),
+          bottomRight: Radius.circular(28),
         ),
       ),
       child: Row(children: [
         GestureDetector(
           onTap: () => Navigator.pop(context),
           child: Container(
-            width: 36, height: 36,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: Colors.white.withAlpha(38),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 16),
+            child: const Icon(Icons.arrow_back_ios_new,
+                color: Colors.white, size: 16),
           ),
         ),
         const SizedBox(width: 12),
         const Expanded(
           child: Text('Settings',
-              style: TextStyle(fontFamily: 'Outfit', fontSize: 18,
-                  fontWeight: FontWeight.w700, color: Colors.white)),
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
         ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -475,7 +529,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             borderRadius: BorderRadius.circular(20),
           ),
           child: const Text('Admin',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
                   color: AppColors.greenLight)),
         ),
       ]),
@@ -494,7 +550,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Expanded(
             child: TextField(
               controller: _rateController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
               style: const TextStyle(fontSize: 14, color: AppColors.textDark),
               decoration: InputDecoration(
                 prefixText: '₱ ',
@@ -502,12 +559,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 hintStyle: const TextStyle(color: AppColors.textMuted),
                 filled: true,
                 fillColor: Colors.white,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51))),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51))),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide:
+                        BorderSide(color: AppColors.greenMid.withAlpha(51))),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide:
+                        BorderSide(color: AppColors.greenMid.withAlpha(51))),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
                     borderSide: const BorderSide(color: AppColors.greenMid)),
               ),
             ),
@@ -517,13 +580,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             height: 46,
             child: ElevatedButton(
               onPressed: _saving ? null : _saveRate,
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.greenDark,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenDark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
               child: _saving
-                  ? const SizedBox(width: 18, height: 18,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white,
-                      fontWeight: FontWeight.w600)),
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
+                  : const Text('Save',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600)),
             ),
           ),
         ]),
@@ -542,12 +611,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           height: 44,
           child: ElevatedButton.icon(
             onPressed: _addUser,
-            icon: const Icon(Icons.person_add_outlined, size: 18, color: Colors.white),
+            icon: const Icon(Icons.person_add_outlined,
+                size: 18, color: Colors.white),
             label: const Text('Add New Account',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w600)),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.greenDark,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         ),
@@ -559,10 +631,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 13, color: AppColors.textMuted))
         else
           ..._users.map((user) {
-            final role  = user['role']  as String? ?? 'faculty';
+            final role = user['role'] as String? ?? 'faculty';
             final email = user['email'] as String? ?? '';
-            final name  = user['name']  as String? ?? '';
-            final uid   = user['uid']   as String? ?? '';
+            final name = user['name'] as String? ?? '';
+            final uid = user['uid'] as String? ?? '';
             final isCurrentUser = uid == FirebaseAuth.instance.currentUser?.uid;
 
             return Container(
@@ -573,112 +645,136 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: AppColors.greenMid.withAlpha(26)),
               ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Container(
-                    width: 40, height: 40,
-                    decoration: BoxDecoration(
-                      color: role == 'admin'
-                          ? AppColors.greenDark.withAlpha(20)
-                          : AppColors.greenPale,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Center(
-                      child: Text(
-                        email.isNotEmpty ? email[0].toUpperCase() : 'U',
-                        style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w700,
-                            color: role == 'admin'
-                                ? AppColors.greenDark : AppColors.greenMid),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(name.isNotEmpty ? name : email,
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                            color: AppColors.textDark),
-                        overflow: TextOverflow.ellipsis),
-                    Text(email,
-                        style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
-                        overflow: TextOverflow.ellipsis),
-                  ])),
-                  // Role badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: role == 'admin'
-                          ? AppColors.greenDark.withAlpha(20)
-                          : AppColors.greenPale,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(role,
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
-                            color: role == 'admin'
-                                ? AppColors.greenDark : AppColors.textMid)),
-                  ),
-                ]),
-                const SizedBox(height: 10),
-                // Action buttons
-                Row(children: [
-                  // Change role
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: isCurrentUser ? null : () => _changeRole(uid, role),
-                      child: Container(
-                        height: 32,
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Container(
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
-                          color: isCurrentUser
-                              ? AppColors.greenPale.withAlpha(100)
+                          color: role == 'admin'
+                              ? AppColors.greenDark.withAlpha(20)
                               : AppColors.greenPale,
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(12),
                         ),
                         child: Center(
                           child: Text(
-                            'Change Role',
-                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                                color: isCurrentUser
-                                    ? AppColors.textMuted : AppColors.greenDark),
+                            email.isNotEmpty ? email[0].toUpperCase() : 'U',
+                            style: TextStyle(
+                                fontFamily: 'Outfit',
+                                fontWeight: FontWeight.w700,
+                                color: role == 'admin'
+                                    ? AppColors.greenDark
+                                    : AppColors.greenMid),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Change password
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () => _changePassword(uid, email),
-                      child: Container(
-                        height: 32,
+                      const SizedBox(width: 10),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            Text(name.isNotEmpty ? name : email,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textDark),
+                                overflow: TextOverflow.ellipsis),
+                            Text(email,
+                                style: const TextStyle(
+                                    fontSize: 11, color: AppColors.textMuted),
+                                overflow: TextOverflow.ellipsis),
+                          ])),
+                      // Role badge
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: AppColors.greenMid.withAlpha(20),
+                          color: role == 'admin'
+                              ? AppColors.greenDark.withAlpha(20)
+                              : AppColors.greenPale,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Center(
-                          child: Text('Change Password',
-                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                                  color: AppColors.greenMid)),
+                        child: Text(role,
+                            style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: role == 'admin'
+                                    ? AppColors.greenDark
+                                    : AppColors.textMid)),
+                      ),
+                    ]),
+                    const SizedBox(height: 10),
+                    // Action buttons
+                    Row(children: [
+                      // Change role
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: isCurrentUser
+                              ? null
+                              : () => _changeRole(uid, role),
+                          child: Container(
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: isCurrentUser
+                                  ? AppColors.greenPale.withAlpha(100)
+                                  : AppColors.greenPale,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Change Role',
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: isCurrentUser
+                                        ? AppColors.textMuted
+                                        : AppColors.greenDark),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Delete
-                  if (!isCurrentUser)
-                    GestureDetector(
-                      onTap: () => _deleteUser(uid, email),
-                      child: Container(
-                        width: 32, height: 32,
-                        decoration: BoxDecoration(
-                          color: AppColors.error.withAlpha(20),
-                          borderRadius: BorderRadius.circular(8),
+                      const SizedBox(width: 8),
+                      // Change password
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => _changePassword(uid, email),
+                          child: Container(
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: AppColors.greenMid.withAlpha(20),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Center(
+                              child: Text('Change Password',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.greenMid)),
+                            ),
+                          ),
                         ),
-                        child: const Icon(Icons.delete_outline,
-                            size: 16, color: AppColors.error),
                       ),
-                    ),
-                ]),
-              ]),
+                      const SizedBox(width: 8),
+                      // Delete
+                      if (!isCurrentUser)
+                        GestureDetector(
+                          onTap: () => _deleteUser(uid, email),
+                          child: Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: AppColors.error.withAlpha(20),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(Icons.delete_outline,
+                                size: 16, color: AppColors.error),
+                          ),
+                        ),
+                    ]),
+                  ]),
             );
           }),
       ]),
@@ -694,7 +790,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _settingRow(Icons.email_outlined, 'Email', user?.email ?? ''),
         const SizedBox(height: 12),
         SizedBox(
-          width: double.infinity, height: 46,
+          width: double.infinity,
+          height: 46,
           child: OutlinedButton.icon(
             onPressed: _logout,
             icon: const Icon(Icons.logout, size: 18),
@@ -702,7 +799,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.error,
               side: BorderSide(color: AppColors.error.withAlpha(102)),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
           ),
         ),
@@ -715,20 +813,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       title: 'App Info',
       icon: Icons.info_outline,
       child: Column(children: [
-        _settingRow(Icons.business, 'Institution', 'Davao del Norte State College'),
-        _settingRow(Icons.location_on_outlined, 'Location', 'Davao del Norte, PH'),
+        _settingRow(
+            Icons.business, 'Institution', 'Davao del Norte State College'),
+        _settingRow(
+            Icons.location_on_outlined, 'Location', 'Davao del Norte, PH'),
         _settingRow(Icons.tag, 'Version', '1.0.0'),
       ]),
     );
   }
 
-  Widget _section({required String title, required IconData icon, required Widget child}) {
+  Widget _section(
+      {required String title, required IconData icon, required Widget child}) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Icon(icon, size: 16, color: AppColors.greenMid),
         const SizedBox(width: 6),
-        Text(title, style: const TextStyle(fontFamily: 'Outfit', fontSize: 15,
-            fontWeight: FontWeight.w600, color: AppColors.textDark)),
+        Text(title,
+            style: const TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
       ]),
       const SizedBox(height: 12),
       Container(
@@ -750,11 +855,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Row(children: [
         Icon(icon, size: 16, color: AppColors.textMuted),
         const SizedBox(width: 10),
-        Text(label, style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+        Text(label,
+            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
         const Spacer(),
         Flexible(
           child: Text(value,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
                   color: AppColors.textDark),
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right),

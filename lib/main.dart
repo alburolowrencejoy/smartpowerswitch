@@ -8,7 +8,7 @@ import 'screens/device_detail_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/settings_screen.dart';
-import 'screens/campus_map_screen.dart'; // ← added
+import 'screens/campus_map_screen.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -35,12 +35,12 @@ class SmartPowerSwitchApp extends StatelessWidget {
       ),
       initialRoute: '/login',
       routes: {
-        '/login':         (_) => const LoginScreen(),
-        '/dashboard':     (_) => const DashboardScreen(),
-        '/history':       (_) => const HistoryScreen(),
+        '/login': (_) => const LoginScreen(),
+        '/dashboard': (_) => const DashboardScreen(),
+        '/history': (_) => const HistoryScreen(),
         '/notifications': (_) => const NotificationsScreen(),
-        '/settings':      (_) => const SettingsScreen(),
-        '/map':           (_) => const CampusMapScreen(), // ← added
+        '/settings': (_) => const SettingsScreen(),
+        '/map': (_) => const CampusMapScreen(),
       },
       onGenerateRoute: (settings) {
         if (settings.name == '/building') {
@@ -49,8 +49,8 @@ class SmartPowerSwitchApp extends StatelessWidget {
             builder: (_) => BuildingFloorScreen(
               buildingCode: args['buildingCode'],
               buildingName: args['buildingName'],
-              floors:       args['floors'],
-              role:         args['role'] ?? 'faculty',
+              floors: args['floors'],
+              role: args['role'] ?? 'faculty',
             ),
           );
         }
@@ -59,10 +59,10 @@ class SmartPowerSwitchApp extends StatelessWidget {
           return MaterialPageRoute(
             builder: (_) => DeviceDetailScreen(
               deviceId: args['deviceId'],
-              utility:  args['utility'],
+              utility: args['utility'],
               building: args['building'],
-              floor:    args['floor'],
-              role:     args['role'] ?? 'faculty',
+              floor: args['floor'],
+              role: args['role'] ?? 'faculty',
             ),
           );
         }
