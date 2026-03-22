@@ -60,7 +60,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     super.dispose();
   }
 
-  // ── Load rooms ───────────────────────────────────────────────
+  // â”€â”€ Load rooms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _loadRooms() {
     for (int f = 1; f <= widget.floors; f++) {
       final floor = f;
@@ -81,7 +81,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     }
   }
 
-  // ── Listen to devices on current floor ──────────────────────
+  // â”€â”€ Listen to devices on current floor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _listenToDevices() {
     _devicesSub?.cancel();
     _devicesSub = FirebaseDatabase.instance
@@ -107,7 +107,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     });
   }
 
-  // ── Count devices from master_devices ────────────────────────
+  // â”€â”€ Count devices from master_devices â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _listenToMasterDevices() {
     _masterSub =
         FirebaseDatabase.instance.ref('master_devices').onValue.listen((event) {
@@ -153,7 +153,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _listenToDevices();
   }
 
-  // ── Building energy from flat devices node ───────────────────
+  // â”€â”€ Building energy from flat devices node â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _listenToBuildingEnergy() {
     _energySub =
         FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
@@ -189,7 +189,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     });
   }
 
-  // ── Add room ─────────────────────────────────────────────────
+  // â”€â”€ Add room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _addRoom() async {
     final controller = TextEditingController();
     final result = await showDialog<String>(
@@ -243,7 +243,92 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         .set(roomMap);
   }
 
-  // ── Delete room ──────────────────────────────────────────────
+  // â”€â”€ Edit room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  Future<void> _editRoom(String oldRoom) async {
+    final controller = TextEditingController(text: oldRoom);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Edit Room Name',
+            style:
+                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            hintText: 'e.g. Room 2, Lab 1, Office',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: AppColors.greenMid)),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textMuted))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.greenDark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            child: const Text('Save', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == null || result.isEmpty || result == oldRoom) return;
+
+    final current = _rooms[_selectedFloor] ?? [];
+    if (current.contains(result)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Room name already exists.')));
+      return;
+    }
+
+    // Update room name in the list
+    final updated = current.map((r) => r == oldRoom ? result : r).toList();
+    final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
+    await FirebaseDatabase.instance
+        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
+        .set(roomMap);
+
+    // Update all devices in this room
+    final snap = await FirebaseDatabase.instance
+        .ref(
+            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
+        .get();
+
+    if (snap.exists) {
+      final data = snap.value as Map<dynamic, dynamic>;
+      for (final entry in data.entries) {
+        final val = entry.value as Map?;
+        if (val?['room'] == oldRoom) {
+          final deviceId = entry.key.toString();
+          // Update in buildings node
+          await FirebaseDatabase.instance
+              .ref(
+                  'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/room')
+              .set(result);
+          // Update in flat devices node
+          await FirebaseDatabase.instance
+              .ref('devices/$deviceId/room')
+              .set(result);
+        }
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('"$oldRoom" renamed to "$result".')));
+  }
+
+  // â”€â”€ Delete room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _deleteRoom(String room) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -297,7 +382,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         .showSnackBar(SnackBar(content: Text('"$room" deleted.')));
   }
 
-  // ── Add utility ──────────────────────────────────────────────
+  // â”€â”€ Add utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _addUtility(String room) async {
     if (_totalAssigned >= 24) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -447,7 +532,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         SnackBar(content: Text('$deviceId added as $utility in $room.')));
   }
 
-  // ── Delete device ────────────────────────────────────────────
+  // â”€â”€ Delete device â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _deleteDevice(String deviceId, String utility) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -614,7 +699,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                     letterSpacing: 1)),
             Text(
               _selectedRoom != null
-                  ? '${widget.buildingName} · $_selectedRoom'
+                  ? '${widget.buildingName} Â· $_selectedRoom'
                   : widget.buildingName,
               style: const TextStyle(
                   fontFamily: 'Outfit',
@@ -656,7 +741,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 Icons.bolt, AppColors.greenLight)),
         const SizedBox(width: 10),
         Expanded(
-            child: _dashCard('Cost', '₱ ${_buildingCost.toStringAsFixed(0)}',
+            child: _dashCard('Cost', 'â‚± ${_buildingCost.toStringAsFixed(0)}',
                 Icons.payments_outlined, AppColors.greenPale)),
         const SizedBox(width: 10),
         Expanded(
@@ -759,7 +844,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(
-            'Floor $_selectedFloor · ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
+            'Floor $_selectedFloor Â· ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
             style: const TextStyle(
                 fontFamily: 'Outfit',
                 fontSize: 15,
@@ -825,7 +910,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                       Text(
                         utilityCount == 0
                             ? 'No utilities added'
-                            : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} · $onlineCount online',
+                            : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} Â· $onlineCount online',
                         style: const TextStyle(
                             fontSize: 12, color: AppColors.textMuted),
                       ),
@@ -850,15 +935,36 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         ),
         if (isAdmin) ...[
           Divider(height: 1, color: AppColors.greenMid.withAlpha(20)),
-          TextButton.icon(
-            onPressed: () => _deleteRoom(room),
-            icon: const Icon(Icons.delete_outline,
-                size: 16, color: AppColors.error),
-            label: const Text('Delete Room',
-                style: TextStyle(fontSize: 12, color: AppColors.error)),
-            style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10)),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(children: [
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () => _editRoom(room),
+                  icon: const Icon(Icons.edit_outlined,
+                      size: 16, color: AppColors.greenDark),
+                  label: const Text('Edit',
+                      style: TextStyle(
+                          fontSize: 12, color: AppColors.greenDark)),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 10)),
+                ),
+              ),
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () => _deleteRoom(room),
+                  icon: const Icon(Icons.delete_outline,
+                      size: 16, color: AppColors.error),
+                  label: const Text('Delete',
+                      style:
+                          TextStyle(fontSize: 12, color: AppColors.error)),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 10)),
+                ),
+              ),
+            ]),
           ),
         ],
       ]),
