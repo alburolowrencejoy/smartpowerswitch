@@ -10,7 +10,7 @@ Built with Flutter + Firebase Realtime Database. Monitors energy consumption and
 
 | File | Link |
 |------|------|
-| 📱 Android APK | [Download app-release.apk](https://www.mediafire.com/file/k6mgs9a87plq3n7/app-release.apk/file) |
+| 📱 Android APK | [Download app-release.apk](https://www.mediafire.com/file/w62gsxvk3cpghja/app-release.apk/file) |
 | 🔑 firebase_options.dart | [Download](https://www.mediafire.com/file/qote6y3jsvbqv8f/firebase_options.dart/file) |
 | 🔑 google-services.json | [Download](https://www.mediafire.com/file/fy2cukv42pqov12/google-services.json/file) |
 
