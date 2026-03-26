@@ -699,7 +699,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                     letterSpacing: 1)),
             Text(
               _selectedRoom != null
-                  ? '${widget.buildingName} Â· $_selectedRoom'
+                  ? '${widget.buildingName} - $_selectedRoom'
                   : widget.buildingName,
               style: const TextStyle(
                   fontFamily: 'Outfit',
@@ -741,7 +741,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 Icons.bolt, AppColors.greenLight)),
         const SizedBox(width: 10),
         Expanded(
-            child: _dashCard('Cost', 'â‚± ${_buildingCost.toStringAsFixed(0)}',
+          child: _dashCard('Cost', 'PHP ${_buildingCost.toStringAsFixed(0)}',
                 Icons.payments_outlined, AppColors.greenPale)),
         const SizedBox(width: 10),
         Expanded(
@@ -844,7 +844,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(
-            'Floor $_selectedFloor Â· ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
+          'Floor $_selectedFloor - ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
             style: const TextStyle(
                 fontFamily: 'Outfit',
                 fontSize: 15,
@@ -910,7 +910,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                       Text(
                         utilityCount == 0
                             ? 'No utilities added'
-                            : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} Â· $onlineCount online',
+                          : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} - $onlineCount online',
                         style: const TextStyle(
                             fontSize: 12, color: AppColors.textMuted),
                       ),
