@@ -54,6 +54,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _masterSub = _devicesSub = _rateSub = _historySub = _buildingsSub = null;
   }
 
+  Future<void> _hydrateSessionFromAuth() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final snap = await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final data = snap.value;
+      if (data is! Map) return;
+
+      final map = Map<String, dynamic>.from(data);
+      final role = (map['role'] as String?) ?? 'faculty';
+      final name = (map['name'] as String?) ?? user.email?.split('@').first ?? '';
+
+      if (!mounted) return;
+      setState(() {
+        _role = role;
+        _userName = name;
+      });
+    } catch (_) {
+      // Keep existing role defaults if role hydration fails.
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -62,6 +85,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (args is Map<String, dynamic>) {
         _role     = args['role'] as String? ?? 'faculty';
         _userName = args['name'] as String? ?? '';
+      } else {
+        _hydrateSessionFromAuth();
       }
       _roleLoaded = true;
       _listenToBuildings();
@@ -898,8 +923,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
           return Padding(padding: const EdgeInsets.only(bottom: 14),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Row(children: [Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)), const SizedBox(width: 8),
-                  Text(e.key, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.textDark))]),
+                Expanded(
+                  child: Row(children: [
+                    Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        e.key,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.textDark),
+                      ),
+                    ),
+                  ]),
+                ),
+                const SizedBox(width: 8),
                 Text('${e.value.toStringAsFixed(1)} kWh', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.greenDark)),
               ]),
               const SizedBox(height: 6),

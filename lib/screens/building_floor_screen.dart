@@ -35,12 +35,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   int _totalAssigned =
       0; // total assigned across all buildings (for 24-limit check)
 
-  StreamSubscription? _roomsSub;
+  final List<StreamSubscription<DatabaseEvent>> _roomSubs = [];
   StreamSubscription? _devicesSub;
   StreamSubscription? _masterSub;
   StreamSubscription? _energySub;
 
   bool get isAdmin => widget.role == 'admin';
+
+  bool _isPermissionDenied(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('permission-denied') || text.contains('permission_denied');
+  }
 
   @override
   void initState() {
@@ -53,7 +58,10 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   @override
   void dispose() {
-    _roomsSub?.cancel();
+    for (final sub in _roomSubs) {
+      sub.cancel();
+    }
+    _roomSubs.clear();
     _devicesSub?.cancel();
     _masterSub?.cancel();
     _energySub?.cancel();
@@ -62,9 +70,14 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   // â”€â”€ Load rooms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _loadRooms() {
+    for (final sub in _roomSubs) {
+      sub.cancel();
+    }
+    _roomSubs.clear();
+
     for (int f = 1; f <= widget.floors; f++) {
       final floor = f;
-      FirebaseDatabase.instance
+      final sub = FirebaseDatabase.instance
           .ref('buildings/${widget.buildingCode}/floorData/$floor/rooms')
           .onValue
           .listen((event) {
@@ -77,7 +90,10 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           roomList = data.values.whereType<String>().toList();
         }
         setState(() => _rooms[floor] = roomList);
+      }, onError: (Object error) {
+        if (!mounted || _isPermissionDenied(error)) return;
       });
+      _roomSubs.add(sub);
     }
   }
 
@@ -104,6 +120,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       }
 
       setState(() => _devices = devices);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -141,6 +159,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         _instituteTotalDevices = buildingCount;
         _totalAssigned = totalAssigned;
       });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -186,6 +206,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         _buildingCost = kwh * 11.5;
         _buildingOnline = online;
       });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -1026,17 +1048,23 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             '${roomDevices.length} ${roomDevices.length == 1 ? 'utility' : 'utilities'}',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
         const SizedBox(height: 16),
-        GridView.count(
-          crossAxisCount: 2,
+        GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 10,
-          mainAxisSpacing: 10,
-          childAspectRatio: 1.50,
-          children: roomDevices
-              .map((entry) => _buildDeviceTile(
-                  entry.key, Map<String, dynamic>.from(entry.value)))
-              .toList(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 1.10,
+          ),
+          itemCount: roomDevices.length,
+          itemBuilder: (context, index) {
+            final entry = roomDevices[index];
+            return _buildDeviceTile(
+              entry.key,
+              Map<String, dynamic>.from(entry.value),
+            );
+          },
         ),
       ]),
     );

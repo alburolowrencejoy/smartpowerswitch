@@ -137,6 +137,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         });
       }
       setState(() => _buildingData = bData);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -153,6 +155,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         info[code] = {'name': (b['name'] ?? code).toString(), 'floors': (b['floors'] ?? 1) as int};
       });
       setState(() => _buildingsInfo = info);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -177,6 +181,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         });
       }
       setState(() => _hotspots = spots);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -187,17 +193,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   Future<void> _addHotspot(String buildingId) async {
     // Place in center by default
     final spot = _HotspotData(buildingId: buildingId, x: 0.35, y: 0.35, w: 0.22, h: 0.10);
-    if (mounted) {
-      setState(() => _hotspots[buildingId] = spot);
-    }
-    try {
-      await FirebaseDatabase.instance.ref('hotspots/$buildingId').set(spot.toMap());
-    } catch (e) {
-      if (mounted) {
-        setState(() => _hotspots.remove(buildingId));
-      }
-      rethrow;
-    }
+    await FirebaseDatabase.instance.ref('hotspots/$buildingId').set(spot.toMap());
   }
 
   Future<void> _deleteHotspot(String buildingId) async {
@@ -493,20 +489,11 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                         trailing: const Icon(Icons.add_circle_outline, color: AppColors.greenMid),
                         onTap: () async {
                           Navigator.pop(context);
+                          await _addHotspot(id);
                           if (!mounted) return;
-                          try {
-                            await _addHotspot(id);
-                            if (!mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Hotspot added for $id. Drag to position it.')),
-                            );
-                          } catch (e) {
-                            if (!mounted) return;
-                            final msg = _isPermissionDenied(e)
-                                ? 'Permission denied. You do not have access to create hotspot zones.'
-                                : 'Failed to add hotspot: $e';
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-                          }
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Hotspot added for $id. Drag to position it.')),
+                          );
                         },
                       );
                     }).toList(),
@@ -868,24 +855,33 @@ class _RoomTile extends StatelessWidget {
         Row(children: [
           const Icon(Icons.meeting_room_outlined, size: 14, color: AppColors.greenMid),
           const SizedBox(width: 6),
-          Text(roomName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.greenDark)),
-          const Spacer(),
+          Expanded(
+            child: Text(
+              roomName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.greenDark),
+            ),
+          ),
+          const SizedBox(width: 8),
           Text('${roomKwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
         ]),
         const SizedBox(height: 4),
-        Row(
+        Wrap(
+          spacing: 10,
+          runSpacing: 4,
           children: utilities.map((u) {
             final status   = (u['status']  as String?) ?? 'offline';
             final utility  = (u['utility'] as String?) ?? '';
             final kwh      = (u['kwh']     as double?) ?? 0.0;
             final isOnline = status == 'online';
-            return Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: Row(children: [
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 Icon(_utilityIcon(utility), size: 12, color: isOnline ? AppColors.greenMid : AppColors.textMuted),
                 const SizedBox(width: 3),
                 Text('${kwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 10, color: Colors.grey[600])),
-              ]),
+              ],
             );
           }).toList(),
         ),
