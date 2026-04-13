@@ -1048,21 +1048,29 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             '${roomDevices.length} ${roomDevices.length == 1 ? 'utility' : 'utilities'}',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
         const SizedBox(height: 16),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 1.10,
-          ),
-          itemCount: roomDevices.length,
-          itemBuilder: (context, index) {
-            final entry = roomDevices[index];
-            return _buildDeviceTile(
-              entry.key,
-              Map<String, dynamic>.from(entry.value),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
+            final crossAxisCount = width >= 1100 ? 4 : width >= 760 ? 3 : 2;
+            final aspectRatio = width < 420 ? 1.0 : 1.1;
+
+            return GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: crossAxisCount,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+                childAspectRatio: aspectRatio,
+              ),
+              itemCount: roomDevices.length,
+              itemBuilder: (context, index) {
+                final entry = roomDevices[index];
+                return _buildDeviceTile(
+                  entry.key,
+                  Map<String, dynamic>.from(entry.value),
+                );
+              },
             );
           },
         ),
