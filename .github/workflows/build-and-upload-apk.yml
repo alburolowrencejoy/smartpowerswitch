@@ -1,16 +1,18 @@
 name: Build And Upload APK
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows:
+      - Auto Version Bump
+    types:
+      - completed
 
 permissions:
   contents: write
 
 jobs:
   release-apk:
-    if: github.actor == 'github-actions[bot]' && contains(github.event.head_commit.message, 'chore: bump app version')
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
     runs-on: ubuntu-latest
 
     steps:
