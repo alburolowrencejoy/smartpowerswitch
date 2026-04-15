@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../widgets/top_toast.dart';
 
 class BuildingFloorScreen extends StatefulWidget {
   final String buildingCode;
@@ -31,6 +32,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   double _buildingKwh = 0;
   double _buildingCost = 0;
   int _buildingOnline = 0;
+  bool _hasMonthlyBuildingEnergy = false;
   int _instituteTotalDevices = 0; // assigned devices in this building
   int _totalAssigned =
       0; // total assigned across all buildings (for 24-limit check)
@@ -39,12 +41,15 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   StreamSubscription? _devicesSub;
   StreamSubscription? _masterSub;
   StreamSubscription? _energySub;
+  StreamSubscription? _historySub;
+  StreamSubscription? _onlineSub;
 
   bool get isAdmin => widget.role == 'admin';
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
-    return text.contains('permission-denied') || text.contains('permission_denied');
+    return text.contains('permission-denied') ||
+        text.contains('permission_denied');
   }
 
   @override
@@ -54,6 +59,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _listenToDevices();
     _listenToMasterDevices();
     _listenToBuildingEnergy();
+    _listenToBuildingOnline();
   }
 
   @override
@@ -65,6 +71,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _devicesSub?.cancel();
     _masterSub?.cancel();
     _energySub?.cancel();
+    _historySub?.cancel();
+    _onlineSub?.cancel();
     super.dispose();
   }
 
@@ -173,39 +181,92 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _listenToDevices();
   }
 
-  // â”€â”€ Building energy from flat devices node â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Building energy from current-month history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   void _listenToBuildingEnergy() {
+    _energySub?.cancel();
+    _historySub?.cancel();
+    final monthKey = _monthKey(DateTime.now());
+    _historySub = FirebaseDatabase.instance
+        .ref('history/monthly/$monthKey/buildings/${widget.buildingCode}/kwh')
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final raw = event.snapshot.value;
+      if (raw is num) {
+        final kwh = raw.toDouble();
+        setState(() {
+          _hasMonthlyBuildingEnergy = true;
+          _buildingKwh = kwh;
+          _buildingCost = kwh * 11.5;
+        });
+      } else {
+        if (_hasMonthlyBuildingEnergy) {
+          setState(() => _hasMonthlyBuildingEnergy = false);
+        }
+      }
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
+
     _energySub =
         FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      if (!mounted) return;
+      if (!mounted || _hasMonthlyBuildingEnergy) return;
       final data = event.snapshot.value;
       if (data is! Map) {
         setState(() {
           _buildingKwh = 0;
           _buildingCost = 0;
-          _buildingOnline = 0;
         });
         return;
       }
+
       double kwh = 0;
+      data.forEach((_, val) {
+        if (val is! Map) return;
+        final device = Map<String, dynamic>.from(val);
+        final building = (device['building'] ?? '').toString();
+        if (building != widget.buildingCode) return;
+        kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
+      });
+
+      setState(() {
+        _buildingKwh = kwh;
+        _buildingCost = kwh * 11.5;
+      });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
+  }
+
+  String _monthKey(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}';
+
+  // ── Live online count from flat devices node ───────────────────────────────
+  void _listenToBuildingOnline() {
+    _onlineSub?.cancel();
+    _onlineSub =
+        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+      if (!mounted) return;
+      final data = event.snapshot.value;
+      if (data is! Map) {
+        setState(() => _buildingOnline = 0);
+        return;
+      }
+
       int online = 0;
       data.forEach((_, val) {
         if (val is! Map) return;
         final device = Map<String, dynamic>.from(val);
         final building = (device['building'] ?? '').toString();
         if (building != widget.buildingCode) return;
-        kwh += (device['kwh'] ?? 0.0) as num;
         final lastSeen = device['last_seen'];
         if (lastSeen != null && lastSeen != 0) {
           final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
           if (DateTime.now().difference(dt).inMinutes < 2) online++;
         }
       });
-      setState(() {
-        _buildingKwh = kwh;
-        _buildingCost = kwh * 11.5;
-        _buildingOnline = online;
-      });
+
+      setState(() => _buildingOnline = online);
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
@@ -253,8 +314,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final current = _rooms[_selectedFloor] ?? [];
     if (current.contains(result)) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Room already exists.')));
+      TopToast.error(context, 'Room already exists.');
       return;
     }
 
@@ -308,8 +368,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final current = _rooms[_selectedFloor] ?? [];
     if (current.contains(result)) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Room name already exists.')));
+      TopToast.error(context, 'Room name already exists.');
       return;
     }
 
@@ -346,8 +405,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     }
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('"$oldRoom" renamed to "$result".')));
+    TopToast.success(context, '"$oldRoom" renamed to "$result".');
   }
 
   // â”€â”€ Delete room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -400,15 +458,13 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         .set(current.isEmpty ? {} : roomMap);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('"$room" deleted.')));
+    TopToast.success(context, '"$room" deleted.');
   }
 
   // â”€â”€ Add utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _addUtility(String room) async {
     if (_totalAssigned >= 24) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Device limit reached (24 max).')));
+      TopToast.threshold(context, 'Device limit reached (24 max).');
       return;
     }
 
@@ -550,8 +606,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         .set('${widget.buildingCode}/$_selectedFloor/$room');
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$deviceId added as $utility in $room.')));
+    TopToast.success(context, '$deviceId added as $utility in $room.');
   }
 
   // â”€â”€ Delete device â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -593,8 +648,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     if (confirm != true) return;
     await _unassignDevice(deviceId);
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$deviceId removed.')));
+    TopToast.success(context, '$deviceId removed.');
   }
 
   Future<void> _unassignDevice(String deviceId) async {
@@ -763,7 +817,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 Icons.bolt, AppColors.greenLight)),
         const SizedBox(width: 10),
         Expanded(
-          child: _dashCard('Cost', 'PHP ${_buildingCost.toStringAsFixed(0)}',
+            child: _dashCard('Cost', 'PHP ${_buildingCost.toStringAsFixed(0)}',
                 Icons.payments_outlined, AppColors.greenPale)),
         const SizedBox(width: 10),
         Expanded(
@@ -866,7 +920,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(
-          'Floor $_selectedFloor - ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
+            'Floor $_selectedFloor - ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
             style: const TextStyle(
                 fontFamily: 'Outfit',
                 fontSize: 15,
@@ -932,7 +986,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                       Text(
                         utilityCount == 0
                             ? 'No utilities added'
-                          : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} - $onlineCount online',
+                            : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} - $onlineCount online',
                         style: const TextStyle(
                             fontSize: 12, color: AppColors.textMuted),
                       ),
@@ -966,8 +1020,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   icon: const Icon(Icons.edit_outlined,
                       size: 16, color: AppColors.greenDark),
                   label: const Text('Edit',
-                      style: TextStyle(
-                          fontSize: 12, color: AppColors.greenDark)),
+                      style:
+                          TextStyle(fontSize: 12, color: AppColors.greenDark)),
                   style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 10)),
@@ -979,8 +1033,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   icon: const Icon(Icons.delete_outline,
                       size: 16, color: AppColors.error),
                   label: const Text('Delete',
-                      style:
-                          TextStyle(fontSize: 12, color: AppColors.error)),
+                      style: TextStyle(fontSize: 12, color: AppColors.error)),
                   style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 10)),
@@ -1048,29 +1101,21 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             '${roomDevices.length} ${roomDevices.length == 1 ? 'utility' : 'utilities'}',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
         const SizedBox(height: 16),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final width = constraints.maxWidth;
-            final crossAxisCount = width >= 1100 ? 4 : width >= 760 ? 3 : 2;
-            final aspectRatio = width < 420 ? 1.0 : 1.1;
-
-            return GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: crossAxisCount,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: aspectRatio,
-              ),
-              itemCount: roomDevices.length,
-              itemBuilder: (context, index) {
-                final entry = roomDevices[index];
-                return _buildDeviceTile(
-                  entry.key,
-                  Map<String, dynamic>.from(entry.value),
-                );
-              },
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 1.10,
+          ),
+          itemCount: roomDevices.length,
+          itemBuilder: (context, index) {
+            final entry = roomDevices[index];
+            return _buildDeviceTile(
+              entry.key,
+              Map<String, dynamic>.from(entry.value),
             );
           },
         ),

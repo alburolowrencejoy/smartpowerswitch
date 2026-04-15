@@ -15,6 +15,7 @@ const Icon = ({ name, size = 20, color = 'currentColor', strokeWidth = 1.8 }) =>
     chevronR:   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>,
     arrowRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>,
     users:      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    github:     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20.14 4.77 5.07 5.07 0 0 0 20.05 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 4.95 1 4.95 1a5.07 5.07 0 0 0-.09 3.77A5.44 5.44 0 0 0 3.5 8.52c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>,
     settings:   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
     building:   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>,
     cpu:        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="6" height="6"/><rect x="2" y="2" width="20" height="20" rx="2" ry="2"/><line x1="9" y1="2" x2="9" y2="9"/><line x1="15" y1="2" x2="15" y2="9"/><line x1="9" y1="15" x2="9" y2="22"/><line x1="15" y1="15" x2="15" y2="22"/><line x1="2" y1="9" x2="9" y2="9"/><line x1="2" y1="15" x2="9" y2="15"/><line x1="15" y1="9" x2="22" y2="9"/><line x1="15" y1="15" x2="22" y2="15"/></svg>,
@@ -128,8 +129,8 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
         {/* Hotspots */}
         <rect x="110" y="55" width="60" height="30" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
         <text x="140" y="75" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">IC</text>
-        <rect x="185" y="75" width="80" height="55" rx="6" fill="#E8922A40" stroke="#E8922A" strokeWidth="2" />
-        <text x="225" y="107" textAnchor="middle" fontSize="9" fontWeight="700" fill="#C47018">ILEGG</text>
+        <rect x="185" y="75" width="80" height="55" rx="6" fill="#E8922A40" stroke="#2E9E52" strokeWidth="2" />
+        <text x="225" y="107" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">ILEGG</text>
         <rect x="225" y="15" width="70" height="35" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
         <text x="260" y="37" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">ITED</text>
         <rect x="185" y="155" width="90" height="28" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
@@ -404,8 +405,8 @@ const App = () => {
           </div>
           <span className="nav-logo-text">Smart<span>Power</span>Switch</span>
         </a>
-        <a className="nav-cta" href="https://smartpowerswitch-e90d0.web.app" target="_blank">
-          Launch App <Icon name="arrowRight" size={14} />
+        <a className="nav-cta" href="#" aria-label="GitHub" title="GitHub">
+          <Icon name="github" size={16} />
         </a>
       </nav>
 
@@ -612,8 +613,8 @@ const App = () => {
           <p className="cta-desc">
             Access the SmartPowerSwitch system with your DNSC account. Monitor your campus, automate your schedules, and take control of energy usage today.
           </p>
-          <a className="cta-btn" href="https://smartpowerswitch-e90d0.web.app" target="_blank">
-            Launch the App <Icon name="arrowRight" size={16} color="var(--green-dark)" />
+          <a className="cta-btn" href="">
+            Buy Now <Icon name="arrowRight" size={16} color="var(--green-dark)" />
           </a>
         </div>
       </div>
@@ -630,12 +631,43 @@ const App = () => {
               <div className="footer-text">DNSC Campus Energy Control System</div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {['IC', 'ILEGG', 'ITED', 'IAAS', 'ADMIN'].map(b => (
-              <div key={b} style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(194,237,208,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <span style={{ fontSize: '7px', fontFamily: 'Syne, sans-serif', fontWeight: 700, color: 'rgba(194,237,208,0.5)' }}>{b}</span>
+          <div className="footer-team">
+            <div className="team-avatars">
+              {[
+                { id: 'operating', fullName: 'Aaron Jason F Lanos', role: 'Chief Operating Officer', image: 'operating.jpg' },
+                { id: 'tech', fullName: 'Lowrence Joy M. Alburo', role: 'Chief Technology Officer', image: 'tech.jpg' },
+                { id: 'sherwin', fullName: 'Sherwin Adam A Montealto', role: 'Chief Marketing Officer', image: 'sherwin.jpg' },
+                { id: 'joren', fullName: 'Joren R Naungayan', role: 'Chief Executive Officer', image: 'joren.jpg' },
+              ].map(member => (
+                <div key={member.id} className="team-avatar" title={member.fullName}>
+                  <img src={`./${member.image}`} alt={member.fullName} loading="lazy" />
+                </div>
+              ))}
+            </div>
+            <details className="team-details">
+              <summary className="team-btn">Learn About the Team</summary>
+              <div className="team-card">
+                <div className="team-card-title">SmartPowerSwitch Team</div>
+                <div className="team-card-grid">
+                  {[
+                    { id: 'operating', fullName: 'Aaron Jason F Lanos', role: 'Chief Operating Officer', image: 'operating.jpg' },
+                    { id: 'tech', fullName: 'Lowrence Joy M. Alburo', role: 'Chief Technology Officer', image: 'tech.jpg' },
+                    { id: 'sherwin', fullName: 'Sherwin Adam A Montealto', role: 'Chief Marketing Officer', image: 'sherwin.jpg' },
+                    { id: 'joren', fullName: 'Joren R Naungayan', role: 'Chief Executive Officer', image: 'joren.jpg' },
+                  ].map(member => (
+                    <div key={member.id} className="team-person">
+                      <div className="team-person-avatar">
+                        <img src={`./${member.image}`} alt={member.fullName} loading="lazy" />
+                      </div>
+                      <div>
+                        <div className="team-person-name">{member.fullName}</div>
+                        <div className="team-person-role">{member.role}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            </details>
           </div>
         </div>
         <hr className="footer-divider" style={{ maxWidth: '1200px', margin: '28px auto 24px', borderTop: '1px solid rgba(255,255,255,0.06)' }} />

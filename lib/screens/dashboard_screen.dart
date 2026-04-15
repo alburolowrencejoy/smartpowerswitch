@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../widgets/top_toast.dart';
 import 'campus_map_screen.dart';
 import 'automation_screen.dart';
 
@@ -32,6 +33,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, double> _buildingEnergy = {};
   Map<String, double> _utilityTotals = {};
   String _analyticsRange = 'daily';
+  String _trendChartType = 'line';
   List<Map<String, dynamic>> _historyData = [];
 
   StreamSubscription? _masterSub;
@@ -112,29 +114,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
         FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
-      if (raw == null) {
+      
+      if (raw == null || raw is! Map) {
+        debugPrint('[Buildings] Expected Map, got ${raw.runtimeType}: $raw');
         setState(() => _buildings = []);
         return;
       }
 
-      final data = Map<String, dynamic>.from(raw as Map);
-      final List<Map<String, dynamic>> list = [];
+      try {
+        final data = Map<String, dynamic>.from(raw);
+        debugPrint('[Buildings] Got ${data.length} buildings');
+        final List<Map<String, dynamic>> list = [];
 
-      data.forEach((code, val) {
-        if (val is! Map) return;
-        final b = Map<String, dynamic>.from(val);
-        list.add({
-          'code': code,
-          'name': (b['name'] ?? code).toString(),
-          'floors': (b['floors'] ?? 1) as int,
+        data.forEach((code, val) {
+          if (val is! Map) {
+            return;
+          }
+          final b = Map<String, dynamic>.from(val);
+          list.add({
+            'code': code,
+            'name': (b['name'] ?? code).toString(),
+            'floors': (b['floors'] ?? 1) as int,
+          });
         });
-      });
 
-      // Sort by code
-      list.sort((a, b) => (a['code'] as String).compareTo(b['code'] as String));
-      setState(() => _buildings = list);
+        list.sort((a, b) => (a['code'] as String).compareTo(b['code'] as String));
+        setState(() => _buildings = list);
+      } catch (e, st) {
+        debugPrint('[Buildings] Exception: $e\n$st');
+        setState(() => _buildings = []);
+      }
     }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
+      debugPrint('[Buildings] Listen error: $error');
     });
   }
 
@@ -187,31 +198,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() {
           _totalKwh = 0;
           _totalCostPhp = 0;
-          _buildingEnergy = {};
           _utilityTotals = {};
         });
         return;
       }
       final data = Map<String, dynamic>.from(raw as Map);
       double totalKwh = 0;
-      Map<String, double> bEnergy = {}, uTotals = {};
+      Map<String, double> uTotals = {};
       data.forEach((id, val) {
         if (val is! Map) return;
         final device = Map<String, dynamic>.from(val);
         final building = (device['building'] ?? '').toString();
         final utility = (device['utility'] ?? '').toString();
         final kwh = (device['kwh'] ?? 0.0) as num;
-        if (building.isNotEmpty) {
-          bEnergy[building] = (bEnergy[building] ?? 0) + kwh.toDouble();
-          totalKwh += kwh.toDouble();
-        }
+        if (building.isNotEmpty) totalKwh += kwh.toDouble();
         final n = _capitalizeFirst(utility);
         if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh.toDouble();
       });
       setState(() {
         _totalKwh = totalKwh;
         _totalCostPhp = totalKwh * _electricityRate;
-        _buildingEnergy = bEnergy;
         _utilityTotals = uTotals;
       });
     }, onError: (Object error) {
@@ -237,17 +243,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _listenToHistory() {
     _historySub?.cancel();
-    _historySub = FirebaseDatabase.instance
-        .ref('history/$_analyticsRange')
-        .onValue
-        .listen((event) {
+    _historySub =
+        FirebaseDatabase.instance.ref('history').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
       if (raw == null) {
         setState(() => _historyData = []);
         return;
       }
-      final data = Map<String, dynamic>.from(raw as Map);
+      final root = Map<String, dynamic>.from(raw as Map);
+      final data = _pickRangeNode(root, _analyticsRange);
       final List<Map<String, dynamic>> list = [];
       data.forEach((key, val) {
         if (val is! Map) return;
@@ -259,15 +264,97 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       });
       list.sort((a, b) => a['label'].compareTo(b['label']));
-      setState(() => _historyData = list);
+      setState(() {
+        _historyData = list;
+        _buildingEnergy = _currentMonthBuildingEnergy(root);
+      });
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
+  Map<String, double> _currentMonthBuildingEnergy(Map<String, dynamic> root) {
+    final monthKey = _monthKey(DateTime.now());
+    final monthlyNode = root['monthly'];
+
+    if (monthlyNode is! Map) return {};
+
+    final monthlyMap = Map<String, dynamic>.from(monthlyNode);
+    final monthNode = monthlyMap[monthKey];
+    if (monthNode is! Map) return {};
+
+    final monthMap = Map<String, dynamic>.from(monthNode);
+    final buildingsNode = monthMap['buildings'];
+    if (buildingsNode is! Map) return {};
+
+    final result = <String, double>{};
+    final buildingsMap = Map<String, dynamic>.from(buildingsNode);
+    buildingsMap.forEach((building, value) {
+      if (value is Map) {
+        final data = Map<String, dynamic>.from(value);
+        final kwh = (data['kwh'] ?? 0.0) as num;
+        result[building.toString()] = kwh.toDouble();
+      } else if (value is num) {
+        result[building.toString()] = value.toDouble();
+      }
+    });
+
+    return result;
+  }
+
   void _setAnalyticsRange(String range) {
     setState(() => _analyticsRange = range);
     _listenToHistory();
+  }
+
+  Map<String, dynamic> _pickRangeNode(
+      Map<String, dynamic> root, String targetRange) {
+    final direct = root[targetRange];
+    if (direct is Map) {
+      final directMap = Map<String, dynamic>.from(direct);
+      if (_matchingKeyCount(directMap, targetRange) > 0) return directMap;
+    }
+
+    final keys = ['daily', 'weekly', 'monthly', 'yearly'];
+    String bestKey = targetRange;
+    int bestScore = -1;
+
+    for (final k in keys) {
+      final node = root[k];
+      if (node is! Map) continue;
+      final map = Map<String, dynamic>.from(node);
+      final score = _matchingKeyCount(map, targetRange);
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = k;
+      }
+    }
+
+    final best = root[bestKey];
+    return best is Map ? Map<String, dynamic>.from(best) : <String, dynamic>{};
+  }
+
+  int _matchingKeyCount(Map<String, dynamic> node, String range) {
+    int count = 0;
+    for (final k in node.keys) {
+      if (_isExpectedKeyForRange(k, range)) count++;
+    }
+    return count;
+  }
+
+  bool _isExpectedKeyForRange(String key, String range) {
+    switch (range) {
+      case 'daily':
+        return RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(key);
+      case 'weekly':
+        return RegExp(r'^\d{4}-W\d{2}$').hasMatch(key);
+      case 'monthly':
+        return RegExp(r'^\d{4}-\d{2}$').hasMatch(key);
+      case 'yearly':
+        return RegExp(r'^\d{4}$').hasMatch(key);
+      default:
+        return false;
+    }
   }
 
   double get _maxKwh => _historyData.isEmpty
@@ -287,6 +374,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
+
+  String _monthKey(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
   String _energyLevel(String code) {
     final kwh = _buildingEnergy[code] ?? 0;
@@ -389,8 +479,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   });
                   if (!mounted || !ctx.mounted) return;
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text('$code added.')));
+                  TopToast.show(context, '$code added.');
                 } catch (e) {
                   setS(() => error = 'Failed: $e');
                 }
@@ -403,9 +492,124 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Future<void> _editBuildingName(Map<String, dynamic> building) async {
+    final code = building['code'] as String;
+    final currentName = (building['name'] ?? code).toString();
+    final nameCtrl = TextEditingController(text: currentName);
+    String? error;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Edit Building Name',
+              style:
+                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Code: $code',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMuted,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: nameCtrl,
+                decoration: _inputDeco('Building Name', Icons.business),
+                autofocus: true,
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 10),
+                Text(error!,
+                    style:
+                        const TextStyle(fontSize: 12, color: AppColors.error)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.textMuted))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenDark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              onPressed: () async {
+                final newName = nameCtrl.text.trim();
+                if (newName.isEmpty) {
+                  setS(() => error = 'Name is required');
+                  return;
+                }
+                if (newName == currentName) {
+                  if (!ctx.mounted) return;
+                  Navigator.pop(ctx);
+                  return;
+                }
+
+                try {
+                  await FirebaseDatabase.instance
+                      .ref('buildings/$code/name')
+                      .set(newName);
+                  if (!mounted || !ctx.mounted) return;
+                  Navigator.pop(ctx);
+                  TopToast.show(context, '$code renamed.');
+                } catch (e) {
+                  setS(() => error = 'Failed: $e');
+                }
+              },
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Delete Building ───────────────────────────────────────────────────────
   Future<void> _deleteBuilding(Map<String, dynamic> building) async {
     final code = building['code'] as String;
+
+    final assignedDeviceIds = <String>{};
+
+    final devicesSnap = await FirebaseDatabase.instance.ref('devices').get();
+    if (devicesSnap.value is Map) {
+      final devices = Map<String, dynamic>.from(devicesSnap.value as Map);
+      devices.forEach((id, val) {
+        if (val is! Map) return;
+        final device = Map<String, dynamic>.from(val);
+        final buildingCode = (device['building'] ?? '').toString();
+        if (buildingCode == code) {
+          assignedDeviceIds.add(id.toString());
+        }
+      });
+    }
+
+    final masterSnap =
+        await FirebaseDatabase.instance.ref('master_devices').get();
+    if (masterSnap.value is Map) {
+      final masters = Map<String, dynamic>.from(masterSnap.value as Map);
+      masters.forEach((id, val) {
+        if (val is! Map) return;
+        final master = Map<String, dynamic>.from(val);
+        final assignedTo = (master['assignedTo'] ?? '').toString();
+        if (assignedTo.startsWith('$code/')) {
+          assignedDeviceIds.add(id.toString());
+        }
+      });
+    }
+
+    final assignedCount = assignedDeviceIds.length;
+    final warning = assignedCount > 0
+        ? 'This building has $assignedCount assigned device${assignedCount == 1 ? '' : 's'}. Deleting will unassign them from rooms.'
+        : 'This will also remove its hotspot from the map.';
+
+    if (!mounted) return;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -413,8 +617,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: const Text('Delete Building',
             style:
                 TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Text(
-            'Delete "$code"? This will also remove its hotspot from the map.'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Delete "$code"?'),
+            const SizedBox(height: 8),
+            Text(
+              warning,
+              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -432,11 +646,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     if (confirm != true) return;
-    await FirebaseDatabase.instance.ref('buildings/$code').remove();
-    await FirebaseDatabase.instance.ref('hotspots/$code').remove();
+
+    final updates = <String, dynamic>{
+      'buildings/$code': null,
+      'hotspots/$code': null,
+    };
+
+    for (final deviceId in assignedDeviceIds) {
+      updates['master_devices/$deviceId/assignedTo'] = '';
+      updates['devices/$deviceId/building'] = '';
+      updates['devices/$deviceId/floor'] = '';
+      updates['devices/$deviceId/room'] = '';
+      updates['devices/$deviceId/status'] = 'offline';
+    }
+
+    await FirebaseDatabase.instance.ref().update(updates);
+
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$code removed.')));
+    TopToast.show(
+      context,
+      assignedCount > 0
+          ? '$code removed. $assignedCount device${assignedCount == 1 ? '' : 's'} unassigned.'
+          : '$code removed.',
+    );
   }
 
   // ── Manage Buildings Sheet ────────────────────────────────────────────────
@@ -545,21 +777,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           fontSize: 11,
                                           color: AppColors.textMuted)),
                                 ])),
-                            GestureDetector(
-                              onTap: () async {
-                                Navigator.pop(ctx);
-                                await _deleteBuilding(b);
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: AppColors.error.withAlpha(15),
-                                  borderRadius: BorderRadius.circular(8),
+                            Row(mainAxisSize: MainAxisSize.min, children: [
+                              GestureDetector(
+                                onTap: () async {
+                                  Navigator.pop(ctx);
+                                  await _editBuildingName(b);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.greenPale,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(Icons.edit_outlined,
+                                      size: 18, color: AppColors.greenDark),
                                 ),
-                                child: const Icon(Icons.delete_outline,
-                                    size: 18, color: AppColors.error),
                               ),
-                            ),
+                              const SizedBox(width: 6),
+                              GestureDetector(
+                                onTap: () async {
+                                  Navigator.pop(ctx);
+                                  await _deleteBuilding(b);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.error.withAlpha(15),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(Icons.delete_outline,
+                                      size: 18, color: AppColors.error),
+                                ),
+                              ),
+                            ]),
                           ]),
                         );
                       },
@@ -621,7 +871,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       color: AppColors.greenDark,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final isCompact = constraints.maxWidth < 760;
+          final isCompact = constraints.maxWidth < 430;
           return Row(children: [
             Container(
               width: 34,
@@ -770,86 +1020,95 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildHomeTab() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final horizontal = constraints.maxWidth < 640 ? 14.0 : 20.0;
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(horizontal: horizontal, vertical: 20),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1200),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    final sortedBuildings = [..._buildings]..sort((a, b) {
+        final aCode = (a['code'] as String?) ?? '';
+        final bCode = (b['code'] as String?) ?? '';
+        final aKwh = _buildingEnergy[aCode] ?? 0;
+        final bKwh = _buildingEnergy[bCode] ?? 0;
+        final byKwh = bKwh.compareTo(aKwh);
+        if (byKwh != 0) return byKwh;
+        return aCode.compareTo(bCode);
+      });
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildGreeting(),
+        const SizedBox(height: 20),
+        _buildEnergyCards(),
+        const SizedBox(height: 24),
+        // ── Buildings header with edit action ──────────────
+        Row(children: [
+          const Text('Campus Buildings',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
+          const SizedBox(width: 6),
+          if (_role == 'admin')
+            GestureDetector(
+              onTap: _showManageBuildings,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.greenPale,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    _buildGreeting(),
-                    const SizedBox(height: 20),
-                    _buildEnergyCards(),
-                    const SizedBox(height: 24),
-                    // ── Buildings header with settings icon ──────────────
-                    Row(children: [
-                      const Text('Campus Buildings',
-                          style: TextStyle(
-                              fontFamily: 'Outfit',
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textDark)),
-                      const SizedBox(width: 6),
-                      if (_role == 'admin')
-                        GestureDetector(
-                          onTap: _showManageBuildings,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: AppColors.greenPale,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(Icons.settings,
-                                size: 16, color: AppColors.greenDark),
-                          ),
-                        ),
-                      const Spacer(),
-                      Text('${_buildings.length} buildings',
-                          style: const TextStyle(
-                              fontSize: 12, color: AppColors.textMuted)),
-                    ]),
-                    const SizedBox(height: 12),
-                    if (_buildings.isEmpty)
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: AppColors.cardBg,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                              color: AppColors.greenMid.withAlpha(31)),
-                        ),
-                        child: Center(
-                          child: Column(children: [
-                            const Icon(Icons.business_outlined,
-                                size: 32, color: AppColors.textMuted),
-                            const SizedBox(height: 8),
-                            const Text('No buildings yet',
-                                style: TextStyle(
-                                    fontSize: 13, color: AppColors.textMuted)),
-                            if (_role == 'admin') ...[
-                              const SizedBox(height: 8),
-                              TextButton.icon(
-                                onPressed: _addBuilding,
-                                icon: const Icon(Icons.add, size: 16),
-                                label: const Text('Add Building'),
-                                style: TextButton.styleFrom(
-                                    foregroundColor: AppColors.greenDark),
-                              ),
-                            ],
-                          ]),
-                        ),
-                      )
-                    else
-                      ..._buildings.map(_buildBuildingCard),
-                  ]),
+                    Icon(Icons.edit_outlined,
+                        size: 14, color: AppColors.greenDark),
+                    SizedBox(width: 4),
+                    Text(
+                      'Edit',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.greenDark,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-        );
-      },
+          const Spacer(),
+          Text('${_buildings.length} buildings',
+              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+        ]),
+        const SizedBox(height: 12),
+        if (_buildings.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: AppColors.cardBg,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.greenMid.withAlpha(31)),
+            ),
+            child: Center(
+              child: Column(children: [
+                const Icon(Icons.business_outlined,
+                    size: 32, color: AppColors.textMuted),
+                const SizedBox(height: 8),
+                const Text('No buildings yet',
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                if (_role == 'admin') ...[
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _addBuilding,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Add Building'),
+                    style: TextButton.styleFrom(
+                        foregroundColor: AppColors.greenDark),
+                  ),
+                ],
+              ]),
+            ),
+          )
+        else
+          ...sortedBuildings.map(_buildBuildingCard),
+      ]),
     );
   }
 
@@ -897,115 +1156,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildEnergyCards() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 560;
-        final cardWidth = constraints.maxWidth >= 980
-            ? (constraints.maxWidth - 20) / 3
-            : constraints.maxWidth >= 640
-                ? (constraints.maxWidth - 10) / 2
-                : constraints.maxWidth;
-
-        return Column(children: [
+    return Column(children: [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [AppColors.greenDark, Color(0xFF1E7A42)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(22),
+          boxShadow: [
+            BoxShadow(
+                color: AppColors.greenDark.withAlpha(77),
+                blurRadius: 20,
+                offset: const Offset(0, 8))
+          ],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Total Energy Consumed',
+              style: TextStyle(fontSize: 12, color: Color(0xB3C2EDD0))),
+          const SizedBox(height: 6),
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(_totalKwh.toStringAsFixed(1),
+                style: const TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 40,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white)),
+            const Padding(
+                padding: EdgeInsets.only(bottom: 6, left: 6),
+                child: Text('kWh',
+                    style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.greenLight,
+                        fontWeight: FontWeight.w500))),
+          ]),
+          const SizedBox(height: 16),
           Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [AppColors.greenDark, Color(0xFF1E7A42)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight),
-              borderRadius: BorderRadius.circular(22),
-              boxShadow: [
-                BoxShadow(
-                    color: AppColors.greenDark.withAlpha(77),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8))
-              ],
-            ),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Total Energy Today',
-                  style: TextStyle(fontSize: 12, color: Color(0xB3C2EDD0))),
-              const SizedBox(height: 6),
-              Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text(_totalKwh.toStringAsFixed(1),
-                    style: const TextStyle(
-                        fontFamily: 'Outfit',
-                        fontSize: 40,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white)),
-                const Padding(
-                    padding: EdgeInsets.only(bottom: 6, left: 6),
-                    child: Text('kWh',
-                        style: TextStyle(
-                            fontSize: 14,
-                            color: AppColors.greenLight,
-                            fontWeight: FontWeight.w500))),
-              ]),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                    color: Colors.white.withAlpha(15),
-                    borderRadius: BorderRadius.circular(12)),
-                child: isNarrow
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                            _miniStat('Est. Cost',
-                                '₱ ${_totalCostPhp.toStringAsFixed(2)}'),
-                            const SizedBox(height: 8),
-                            Divider(
-                                color: Colors.white.withAlpha(30), height: 1),
-                            const SizedBox(height: 8),
-                            _miniStat('Assigned', '$_assignedDevices devices'),
-                            const SizedBox(height: 8),
-                            Divider(
-                                color: Colors.white.withAlpha(30), height: 1),
-                            const SizedBox(height: 8),
-                            _miniStat(
-                                'Unassigned', '$_unassignedDevices devices'),
-                          ])
-                    : Row(children: [
-                        Expanded(
-                            child: _miniStat('Est. Cost',
-                                '₱ ${_totalCostPhp.toStringAsFixed(2)}')),
-                        _vertDivider(),
-                        Expanded(
-                            child: _miniStat(
-                                'Assigned', '$_assignedDevices devices')),
-                        _vertDivider(),
-                        Expanded(
-                            child: _miniStat(
-                                'Unassigned', '$_unassignedDevices devices')),
-                      ]),
-              ),
+                color: Colors.white.withAlpha(15),
+                borderRadius: BorderRadius.circular(12)),
+            child: Row(children: [
+              _miniStat('Est. Cost', '₱ ${_totalCostPhp.toStringAsFixed(2)}'),
+              _vertDivider(),
+              _miniStat('Assigned', '$_assignedDevices devices'),
+              _vertDivider(),
+              _miniStat('Unassigned', '$_unassignedDevices devices'),
             ]),
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              SizedBox(
-                  width: cardWidth,
-                  child: _statCard('Voltage', '220 V',
-                      Icons.electrical_services, AppColors.greenMid)),
-              SizedBox(
-                  width: cardWidth,
-                  child: _statCard(
-                      'Frequency', '60 Hz', Icons.waves, AppColors.greenLight)),
-              SizedBox(
-                  width: cardWidth,
-                  child: _statCard(
-                      'Power Factor', '0.98', Icons.speed, AppColors.greenPale,
-                      textColor: AppColors.greenDark)),
-            ],
-          ),
-        ]);
-      },
-    );
+        ]),
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(
+            child: _statCard('Voltage', '220 V', Icons.electrical_services,
+                AppColors.greenMid)),
+        const SizedBox(width: 10),
+        Expanded(
+            child: _statCard(
+                'Frequency', '60 Hz', Icons.waves, AppColors.greenLight)),
+        const SizedBox(width: 10),
+        Expanded(
+            child: _statCard(
+                'Power Factor', '0.98', Icons.speed, AppColors.greenPale,
+                textColor: AppColors.greenDark)),
+      ]),
+    ]);
   }
 
   Widget _vertDivider() => Container(
@@ -1015,14 +1233,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       color: Colors.white.withAlpha(30));
 
   Widget _miniStat(String label, String value) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    return Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label,
           style: const TextStyle(fontSize: 10, color: Color(0x99C2EDD0))),
       const SizedBox(height: 2),
       Text(value,
           style: const TextStyle(
               fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-    ]);
+    ]));
   }
 
   Widget _statCard(String label, String value, IconData icon, Color bg,
@@ -1107,7 +1326,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       fontSize: 10, fontWeight: FontWeight.w700, color: color)),
             ),
             const SizedBox(height: 3),
-            Text('${(_buildingEnergy[code] ?? 0).toStringAsFixed(1)} kWh',
+            Text(
+                '${(_buildingEnergy[code] ?? 0).toStringAsFixed(1)} kWh this month',
                 style:
                     const TextStyle(fontSize: 10, color: AppColors.textMuted)),
           ]),
@@ -1119,59 +1339,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildAnalyticsTab() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final horizontal = constraints.maxWidth < 640 ? 14.0 : 20.0;
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(horizontal: horizontal, vertical: 20),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1200),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Analytics',
-                        style: TextStyle(
-                            fontFamily: 'Outfit',
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textDark)),
-                    const SizedBox(height: 4),
-                    const Text('Realtime energy insights',
-                        style: TextStyle(
-                            fontSize: 12, color: AppColors.textMuted)),
-                    const SizedBox(height: 20),
-                    _buildRangeSelector(),
-                    const SizedBox(height: 20),
-                    _buildLineChart(),
-                    const SizedBox(height: 16),
-                    _buildDeviceStatusCard(),
-                    const SizedBox(height: 16),
-                    _buildTopUtilityCard(),
-                    const SizedBox(height: 16),
-                    _buildTopBuildingCard(),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: OutlinedButton.icon(
-                        onPressed: () =>
-                            Navigator.pushNamed(context, '/history'),
-                        icon: const Icon(Icons.history, size: 18),
-                        label: const Text('View Full History'),
-                        style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.greenDark,
-                            side: const BorderSide(
-                                color: AppColors.greenMid, width: 1.5),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14))),
-                      ),
-                    ),
-                  ]),
-            ),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Analytics',
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textDark)),
+        const SizedBox(height: 4),
+        const Text('Realtime energy insights',
+            style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+        const SizedBox(height: 20),
+        _buildRangeSelector(),
+        const SizedBox(height: 20),
+        _buildLineChart(),
+        const SizedBox(height: 16),
+        _buildDeviceStatusCard(),
+        const SizedBox(height: 16),
+        _buildTopUtilityCard(),
+        const SizedBox(height: 16),
+        _buildTopBuildingCard(),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          height: 50,
+          child: OutlinedButton.icon(
+            onPressed: () => Navigator.pushNamed(context, '/history'),
+            icon: const Icon(Icons.history, size: 18),
+            label: const Text('View Full History'),
+            style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.greenDark,
+                side: const BorderSide(color: AppColors.greenMid, width: 1.5),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14))),
           ),
-        );
-      },
+        ),
+      ]),
     );
   }
 
@@ -1212,6 +1417,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildLineChart() {
+    final canSwitchChart = _historyData.length > 1;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1234,6 +1440,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Text('kWh over time · realtime',
                     style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
               ])),
+          if (canSwitchChart) ...[
+            _chartTypeButton('line', Icons.show_chart),
+            const SizedBox(width: 6),
+            _chartTypeButton('bar', Icons.bar_chart),
+            const SizedBox(width: 10),
+          ],
           Container(
               width: 8,
               height: 8,
@@ -1257,11 +1469,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
             : SizedBox(
                 height: 160,
                 child: CustomPaint(
-                    painter: _LineChartPainter(
-                        data: _historyData
-                            .map((d) => (d['kwh'] as num).toDouble())
-                            .toList(),
-                        maxKwh: _maxKwh),
+                    painter: _trendChartType == 'bar'
+                        ? _BarChartPainter(
+                            data: _historyData
+                                .map((d) => (d['kwh'] as num).toDouble())
+                                .toList(),
+                            maxKwh: _maxKwh)
+                        : _LineChartPainter(
+                            data: _historyData
+                                .map((d) => (d['kwh'] as num).toDouble())
+                                .toList(),
+                            maxKwh: _maxKwh),
                     child: Container())),
         if (_historyData.isNotEmpty) ...[
           const SizedBox(height: 8),
@@ -1279,6 +1497,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ]),
         ],
       ]),
+    );
+  }
+
+  Widget _chartTypeButton(String type, IconData icon) {
+    final isSelected = _trendChartType == type;
+    return GestureDetector(
+      onTap: () {
+        if (_trendChartType == type) return;
+        setState(() => _trendChartType = type);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.greenDark : AppColors.greenPale,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: isSelected
+                  ? AppColors.greenDark
+                  : AppColors.greenMid.withAlpha(80)),
+        ),
+        child: Icon(
+          icon,
+          size: 14,
+          color: isSelected ? Colors.white : AppColors.greenDark,
+        ),
+      ),
     );
   }
 
@@ -1426,8 +1671,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildTopBuildingCard() {
-    if (_buildingDeviceCounts.isEmpty) return const SizedBox();
-    final sorted = _buildingDeviceCounts.entries.toList()
+    if (_buildingEnergy.isEmpty) return const SizedBox();
+    final sorted = _buildingEnergy.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final maxVal = sorted.first.value;
     final List<Color> barColors = [
@@ -1444,7 +1689,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: AppColors.greenMid.withAlpha(26))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Devices per Institute',
+        const Text('Top Consuming Institutes This Month',
             style: TextStyle(
                 fontFamily: 'Outfit',
                 fontSize: 14,
@@ -1487,7 +1732,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     fontSize: 13,
                                     fontWeight: FontWeight.w500,
                                     color: AppColors.textDark)),
-                            Text('${e.value} devices',
+                            Text('${e.value.toStringAsFixed(1)} kWh',
                                 style: const TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
@@ -1559,6 +1804,7 @@ class _LineChartPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (data.length < 2) return;
+    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
     final linePaint = Paint()
       ..color = AppColors.greenMid
       ..strokeWidth = 2.5
@@ -1577,7 +1823,7 @@ class _LineChartPainter extends CustomPainter {
     final stepX = size.width / (data.length - 1);
     Offset off(int i) => Offset(
         i * stepX,
-        (size.height - (data[i] / maxKwh) * size.height)
+        (size.height - (data[i] / safeMaxKwh) * size.height)
             .clamp(0.0, size.height));
     final gridPaint = Paint()
       ..color = AppColors.greenMid.withAlpha(20)
@@ -1626,5 +1872,45 @@ class _LineChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_LineChartPainter old) =>
+      old.data != data || old.maxKwh != maxKwh;
+}
+
+class _BarChartPainter extends CustomPainter {
+  final List<double> data;
+  final double maxKwh;
+  _BarChartPainter({required this.data, required this.maxKwh});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (data.isEmpty) return;
+    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
+    final gridPaint = Paint()
+      ..color = AppColors.greenMid.withAlpha(20)
+      ..strokeWidth = 1;
+
+    for (int i = 1; i < 4; i++) {
+      canvas.drawLine(Offset(0, size.height * i / 4),
+          Offset(size.width, size.height * i / 4), gridPaint);
+    }
+
+    final slotWidth = size.width / data.length;
+    final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
+    final barPaint = Paint()..color = AppColors.greenMid;
+
+    for (int i = 0; i < data.length; i++) {
+      final normalized = (data[i] / safeMaxKwh).clamp(0.0, 1.0);
+      final barHeight = normalized * size.height;
+      final left = i * slotWidth + (slotWidth - barWidth) / 2;
+      final top = size.height - barHeight;
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, barWidth, barHeight),
+        const Radius.circular(4),
+      );
+      canvas.drawRRect(rect, barPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_BarChartPainter old) =>
       old.data != data || old.maxKwh != maxKwh;
 }

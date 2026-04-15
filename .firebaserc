@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "smartpowerswitch-e90d0"
-  }
+  },
+  "targets": {
+    "smartpowerswitch-e90d0": {
+      "hosting": {
+        "app": [
+          "smartpowerswitch-e90d0"
+        ],
+        "promo": [
+          "smartpowerswitch-promo-5cba2"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

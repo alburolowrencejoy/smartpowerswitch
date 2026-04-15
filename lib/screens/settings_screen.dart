@@ -1,10 +1,16 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_colors.dart';
 import '../firebase_options.dart';
+import '../services/github_update_service.dart';
+import '../services/runtime_mode_service.dart';
+import '../widgets/top_toast.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -14,36 +20,181 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const String _fixedGithubRepo = 'alburolowrencejoy/smartpowerswitch';
+
   final _rateController = TextEditingController();
   bool _saving = false;
   double _currentRate = 11.5;
+  String _appMode = 'normal';
+  String _appVersion = '';
+  GithubReleaseInfo? _githubRelease;
+  bool _githubChecking = false;
+  bool _modeSaving = false;
+  StreamSubscription<DatabaseEvent>? _modeSub;
 
   List<Map<String, dynamic>> _users = [];
+
+  bool _isPermissionDenied(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('permission-denied') ||
+        text.contains('permission_denied');
+  }
 
   @override
   void initState() {
     super.initState();
     _loadRate();
     _listenUsers();
+    _listenAppMode();
+    _loadAppVersion();
+    _checkGithubRelease(silent: true);
   }
 
   @override
   void dispose() {
     _rateController.dispose();
+    _modeSub?.cancel();
     super.dispose();
   }
 
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (!mounted) return;
+    setState(() => _appVersion = info.version);
+  }
+
+  void _listenAppMode() {
+    _modeSub?.cancel();
+    _modeSub =
+        FirebaseDatabase.instance.ref('settings/appMode').onValue.listen((event) {
+      if (!mounted) return;
+      final raw = (event.snapshot.value ?? 'normal').toString().toLowerCase();
+      setState(() {
+        _appMode = raw == 'demo' ? 'demo' : 'normal';
+      });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
+  }
+
+  Future<bool> _isCurrentUserAdmin() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final uid = user?.uid;
+    final email = (user?.email ?? '').toLowerCase().trim();
+
+    if (uid == null) return false;
+
+    // Fast path: users node keyed by auth UID.
+    final roleByUidSnap =
+        await FirebaseDatabase.instance.ref('users/$uid/role').get();
+    final roleByUid = (roleByUidSnap.value ?? '').toString().toLowerCase().trim();
+    if (roleByUid == 'admin') {
+      return true;
+    }
+
+    // Main admin email fallback.
+    if (email == 'admin@dnsc.edu.ph') {
+      return true;
+    }
+
+    // Fallback for schemas where users are not keyed by auth UID.
+    final usersSnap = await FirebaseDatabase.instance.ref('users').get();
+    if (usersSnap.value is! Map) return false;
+
+    final users = Map<String, dynamic>.from(usersSnap.value as Map);
+    for (final entry in users.entries) {
+      if (entry.value is! Map) continue;
+      final data = Map<String, dynamic>.from(entry.value as Map);
+      final rowEmail = (data['email'] ?? '').toString().toLowerCase().trim();
+      final rowRole = (data['role'] ?? '').toString().toLowerCase().trim();
+      final isMainAdmin = data['isMainAdmin'] == true;
+      if (rowEmail == email && (rowRole == 'admin' || isMainAdmin)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  Future<void> _setAppMode(String nextMode) async {
+    if (_modeSaving || nextMode == _appMode) return;
+
+    // Settings page is admin-facing in this app flow. Avoid false negatives
+    // from schema differences in user records that can block real admins.
+    try {
+      await _isCurrentUserAdmin();
+    } catch (_) {
+      // Continue; mode write itself may still be allowed by current rules.
+    }
+    if (!mounted) return;
+
+    final isDemo = nextMode == 'demo';
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(isDemo ? 'Enable Demo Mode?' : 'Switch To Normal Mode?',
+            style:
+                const TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+        content: Text(
+          isDemo
+              ? 'Demo mode will start mock live feed and reseed demo data.'
+              : 'Normal mode will stop mock live feed and clear demo-generated telemetry/history.',
+          style: const TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textMuted))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: isDemo ? AppColors.greenDark : AppColors.warning,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+            child: Text(isDemo ? 'Enable Demo' : 'Switch',
+                style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _modeSaving = true);
+    try {
+      await RuntimeModeService.setMode(nextMode);
+      if (!mounted) return;
+      setState(() {
+        _modeSaving = false;
+        _appMode = nextMode;
+      });
+      TopToast.show(
+        context,
+        nextMode == 'demo' ? 'Demo mode enabled.' : 'Normal mode enabled.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _modeSaving = false);
+      final msg = _isPermissionDenied(e)
+          ? 'Permission denied while changing app mode.'
+          : 'Failed to change app mode: $e';
+      TopToast.show(context, msg, isError: true);
+    }
+  }
+
   void _loadRate() {
-    FirebaseDatabase.instance
-        .ref('settings/electricityRate')
-        .onValue
-        .listen((event) {
+    FirebaseDatabase.instance.ref('settings/electricityRate').onValue.listen(
+        (event) {
       if (!mounted) return;
       final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
       setState(() {
         _currentRate = rate;
         _rateController.text = rate.toString();
       });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -61,25 +212,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return val;
       }).toList();
       setState(() => _users = list);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
   Future<void> _saveRate() async {
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Enter a valid rate.')));
+        TopToast.show(context, 'Enter a valid rate.', isError: true);
       return;
     }
     setState(() => _saving = true);
-    await FirebaseDatabase.instance.ref('settings/electricityRate').set(rate);
-    setState(() {
-      _saving = false;
-      _currentRate = rate;
-    });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Electricity rate updated.')));
+    try {
+      await FirebaseDatabase.instance.ref('settings/electricityRate').set(rate);
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _currentRate = rate;
+      });
+        TopToast.show(context, 'Electricity rate updated.');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      final msg = _isPermissionDenied(e)
+          ? 'Permission denied while saving rate.'
+          : 'Failed to save rate: $e';
+      TopToast.show(context, msg, isError: true);
+    }
+  }
+
+  Future<void> _checkGithubRelease({bool silent = false}) async {
+    setState(() => _githubChecking = true);
+    try {
+      final info = await GithubUpdateService.fetchLatestRelease(
+        repositoryInput: _fixedGithubRepo,
+        currentVersion: _appVersion.isEmpty ? '0.0.0' : _appVersion,
+      );
+      if (!mounted) return;
+      setState(() => _githubRelease = info);
+      if (!silent) {
+        TopToast.success(
+          context,
+          info.updateAvailable
+              ? 'Update found: ${info.latestVersion}.'
+              : 'You are already on the latest version.',
+        );
+      }
+    } catch (e) {
+      if (!mounted || silent) return;
+      final msg = e is FormatException
+          ? e.message
+          : 'Unable to check GitHub releases: $e';
+      TopToast.show(context, msg, isError: true);
+    } finally {
+      if (mounted) setState(() => _githubChecking = false);
+    }
+  }
+
+  Future<void> _openGithubDownload() async {
+    final release = _githubRelease;
+    if (release == null) {
+      TopToast.show(context, 'Check for an update first.', isError: true);
+      return;
+    }
+
+    final url = release.assetUrl ?? release.releaseUrl;
+    final launched = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && mounted) {
+      TopToast.show(context, 'Could not open the download link.', isError: true);
+    }
   }
 
   // ── Get Web API Key from firebase options ────────────────────
@@ -264,8 +469,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                   if (!ctx.mounted || !mounted) return;
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('$name added as $selectedRole.')));
+                    TopToast.show(context, '$name added as $selectedRole.');
                 } catch (e) {
                   setS(() => errorText = 'Failed: $e');
                 }
@@ -347,9 +551,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                   if (!ctx.mounted || !mounted) return;
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text(
-                          'Password reset saved. User must re-login to apply.')));
+                  TopToast.show(
+                    context,
+                    'Password reset saved. User must re-login to apply.',
+                  );
                 } catch (e) {
                   setS(() => errorText = 'Failed: $e');
                 }
@@ -364,11 +569,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // ── Change role ──────────────────────────────────────────────
   Future<void> _changeRole(String uid, String currentRole) async {
+    final userSnap = await FirebaseDatabase.instance.ref('users/$uid').get();
+    final userData = userSnap.value is Map
+        ? Map<String, dynamic>.from(userSnap.value as Map)
+        : <String, dynamic>{};
+    final email = (userData['email'] ?? '').toString().toLowerCase();
+    final isMainAdminFlag = userData['isMainAdmin'] == true;
+    final isMainAdminEmail = email == 'admin@dnsc.edu.ph';
+
+    if (currentRole == 'admin' && (isMainAdminFlag || isMainAdminEmail)) {
+      if (!mounted) return;
+      TopToast.show(
+        context,
+        'Main admin role is protected and cannot be changed.',
+        isError: true,
+      );
+      return;
+    }
+
     final newRole = currentRole == 'admin' ? 'faculty' : 'admin';
     await FirebaseDatabase.instance.ref('users/$uid/role').set(newRole);
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Role changed to $newRole.')));
+    TopToast.show(context, 'Role changed to $newRole.');
   }
 
   // ── Delete user ──────────────────────────────────────────────
@@ -376,8 +598,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Prevent deleting own account
     final currentUid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == currentUid) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('You cannot delete your own account.')));
+        TopToast.show(context, 'You cannot delete your own account.',
+          isError: true);
       return;
     }
 
@@ -413,8 +635,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await FirebaseDatabase.instance.ref('users/$uid').remove();
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$email removed from system.')));
+    TopToast.show(context, '$email removed from system.');
   }
 
   Future<void> _logout() async {
@@ -474,9 +695,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _buildModeSection(),
+                    const SizedBox(height: 24),
                     _buildRateSection(),
                     const SizedBox(height: 24),
                     _buildUsersSection(),
+                    const SizedBox(height: 24),
+                    _buildUpdaterSection(),
                     const SizedBox(height: 24),
                     _buildAccountSection(),
                     const SizedBox(height: 24),
@@ -486,6 +711,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ]),
       ),
+    );
+  }
+
+  Widget _buildModeSection() {
+    final isDemo = _appMode == 'demo';
+    return _section(
+      title: 'App Mode',
+      icon: Icons.tune,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+          isDemo
+              ? 'Demo mode is active. Mock live feed is running.'
+              : 'Normal mode is active. Mock live feed is stopped.',
+          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+        ),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: _modeSaving ? null : () => _setAppMode('normal'),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                height: 42,
+                decoration: BoxDecoration(
+                  color: !isDemo ? AppColors.greenDark : AppColors.greenPale,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Center(
+                  child: Text('Normal',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: !isDemo ? Colors.white : AppColors.textMid)),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: GestureDetector(
+              onTap: _modeSaving ? null : () => _setAppMode('demo'),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                height: 42,
+                decoration: BoxDecoration(
+                  color: isDemo ? AppColors.greenDark : AppColors.greenPale,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Center(
+                  child: _modeSaving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2),
+                        )
+                      : Text('Demo',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isDemo
+                                  ? Colors.white
+                                  : AppColors.textMid)),
+                ),
+              ),
+            ),
+          ),
+        ]),
+      ]),
     );
   }
 
@@ -636,6 +930,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final name = user['name'] as String? ?? '';
             final uid = user['uid'] as String? ?? '';
             final isCurrentUser = uid == FirebaseAuth.instance.currentUser?.uid;
+            final normalizedEmail = email.toLowerCase();
+            final isProtectedMainAdmin =
+              role == 'admin' &&
+              ((user['isMainAdmin'] == true) ||
+                normalizedEmail == 'admin@dnsc.edu.ph');
+            final canChangeRole = !isCurrentUser && !isProtectedMainAdmin;
 
             return Container(
               margin: const EdgeInsets.only(bottom: 10),
@@ -711,24 +1011,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       // Change role
                       Expanded(
                         child: GestureDetector(
-                          onTap: isCurrentUser
-                              ? null
-                              : () => _changeRole(uid, role),
+                          onTap:
+                              canChangeRole ? () => _changeRole(uid, role) : null,
                           child: Container(
                             height: 32,
                             decoration: BoxDecoration(
-                              color: isCurrentUser
+                              color: !canChangeRole
                                   ? AppColors.greenPale.withAlpha(100)
                                   : AppColors.greenPale,
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Center(
                               child: Text(
-                                'Change Role',
+                                isProtectedMainAdmin
+                                    ? 'Main Admin (Locked)'
+                                    : 'Change Role',
                                 style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: isCurrentUser
+                                    color: !canChangeRole
                                         ? AppColors.textMuted
                                         : AppColors.greenDark),
                               ),
@@ -809,6 +1110,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildAppInfoSection() {
+    final version = _appVersion.isEmpty ? 'Loading...' : _appVersion;
     return _section(
       title: 'App Info',
       icon: Icons.info_outline,
@@ -817,8 +1119,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Icons.business, 'Institution', 'Davao del Norte State College'),
         _settingRow(
             Icons.location_on_outlined, 'Location', 'Davao del Norte, PH'),
-        _settingRow(Icons.tag, 'Version', '1.0.0'),
+        _settingRow(Icons.tag, 'Version', version),
       ]),
+    );
+  }
+
+  Widget _buildUpdaterSection() {
+    final release = _githubRelease;
+    final latestLabel = release == null
+        ? 'Not checked yet'
+        : release.releaseName.isNotEmpty
+            ? release.releaseName
+            : release.latestVersion;
+    final statusLabel = release == null
+      ? 'Ready to check latest release.'
+      : release.updateAvailable
+        ? 'Update available: ${release.latestVersion}'
+        : 'Already on the latest version.';
+
+    return _section(
+      title: 'App Updater',
+      icon: Icons.system_update_alt_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Updates are sourced from the fixed project GitHub Releases.',
+            style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: OutlinedButton.icon(
+              onPressed: _githubChecking ? null : _checkGithubRelease,
+              icon: _githubChecking
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.greenDark,
+                      ),
+                    )
+                  : const Icon(Icons.search_outlined, size: 18),
+              label: Text(
+                _githubChecking ? 'Checking...' : 'Check Latest',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.greenDark,
+                side: BorderSide(color: AppColors.greenDark.withAlpha(90)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _settingRow(Icons.phone_android_outlined, 'Current version',
+              _appVersion.isEmpty ? 'Loading...' : _appVersion),
+          _settingRow(Icons.source_outlined, 'GitHub repo',
+              _fixedGithubRepo),
+          _settingRow(Icons.system_update_alt, 'Latest release', latestLabel),
+          _settingRow(Icons.info_outline, 'Status', statusLabel),
+          if (release?.assetUrl != null) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: ElevatedButton.icon(
+                onPressed: _openGithubDownload,
+                icon: Icon(
+                  release!.updateAvailable
+                      ? Icons.download_rounded
+                      : Icons.open_in_new,
+                  size: 18,
+                  color: Colors.white,
+                ),
+                label: Text(
+                  release.updateAvailable ? 'Download Update' : 'Open APK',
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.w600),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: release.updateAvailable
+                      ? AppColors.greenDark
+                      : AppColors.greenMid,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              release.assetName ?? release.releaseUrl,
+              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ],
+      ),
     );
   }
 

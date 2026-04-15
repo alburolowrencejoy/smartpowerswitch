@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../widgets/top_toast.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -78,9 +79,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await FirebaseDatabase.instance.ref('notifications').remove();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to clear notifications.')),
-      );
+      TopToast.error(context, 'Unable to clear notifications.');
     }
   }
 

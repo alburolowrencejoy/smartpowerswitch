@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../widgets/top_toast.dart';
 
 // ─── Energy Level ─────────────────────────────────────────────────────────────
 
@@ -9,32 +10,42 @@ enum EnergyLevel { low, mid, high }
 
 EnergyLevel _energyLevel(double kwh) {
   if (kwh >= 100) return EnergyLevel.high;
-  if (kwh >= 50)  return EnergyLevel.mid;
+  if (kwh >= 50) return EnergyLevel.mid;
   return EnergyLevel.low;
 }
 
 Color _energyColor(EnergyLevel level) {
   switch (level) {
-    case EnergyLevel.high: return const Color(0xFFD64A4A);
-    case EnergyLevel.mid:  return const Color(0xFFE8922A);
-    case EnergyLevel.low:  return AppColors.greenMid;
+    case EnergyLevel.high:
+      return const Color(0xFFD64A4A);
+    case EnergyLevel.mid:
+      return const Color(0xFFE8922A);
+    case EnergyLevel.low:
+      return AppColors.greenMid;
   }
 }
 
 String _energyLabel(EnergyLevel level) {
   switch (level) {
-    case EnergyLevel.high: return 'HIGH';
-    case EnergyLevel.mid:  return 'MID';
-    case EnergyLevel.low:  return 'LOW';
+    case EnergyLevel.high:
+      return 'HIGH';
+    case EnergyLevel.mid:
+      return 'MID';
+    case EnergyLevel.low:
+      return 'LOW';
   }
 }
 
 IconData _utilityIcon(String type) {
   switch (type.toLowerCase()) {
-    case 'lights':  return Icons.lightbulb_outline;
-    case 'outlets': return Icons.electrical_services;
-    case 'ac':      return Icons.ac_unit;
-    default:        return Icons.device_unknown;
+    case 'lights':
+      return Icons.lightbulb_outline;
+    case 'outlets':
+      return Icons.electrical_services;
+    case 'ac':
+      return Icons.ac_unit;
+    default:
+      return Icons.device_unknown;
   }
 }
 
@@ -42,7 +53,11 @@ const double _mapAspectRatio = 354 / 496;
 
 class _ContainRect {
   final double left, top, width, height;
-  const _ContainRect({required this.left, required this.top, required this.width, required this.height});
+  const _ContainRect(
+      {required this.left,
+      required this.top,
+      required this.width,
+      required this.height});
 }
 
 // ─── Hotspot Model ────────────────────────────────────────────────────────────
@@ -51,7 +66,12 @@ class _HotspotData {
   final String buildingId;
   double x, y, w, h; // all 0.0–1.0 fractions
 
-  _HotspotData({required this.buildingId, required this.x, required this.y, required this.w, required this.h});
+  _HotspotData(
+      {required this.buildingId,
+      required this.x,
+      required this.y,
+      required this.w,
+      required this.h});
 
   Map<String, dynamic> toMap() => {'x': x, 'y': y, 'w': w, 'h': h};
 }
@@ -61,7 +81,8 @@ class _HotspotData {
 class CampusMapScreen extends StatefulWidget {
   final String role;
   final bool showAppBar;
-  const CampusMapScreen({super.key, this.role = 'faculty', this.showAppBar = false});
+  const CampusMapScreen(
+      {super.key, this.role = 'faculty', this.showAppBar = false});
 
   @override
   State<CampusMapScreen> createState() => _CampusMapScreenState();
@@ -69,22 +90,25 @@ class CampusMapScreen extends StatefulWidget {
 
 class _CampusMapScreenState extends State<CampusMapScreen> {
   String? _selectedBuildingId;
-  bool    _editMode = false;
+  bool _editMode = false;
 
   // From Firebase
-  Map<String, Map<String, dynamic>> _buildingData  = {}; // energy data
+  Map<String, Map<String, dynamic>> _buildingData = {}; // energy data
   Map<String, Map<String, dynamic>> _buildingsInfo = {}; // name, floors
-  Map<String, _HotspotData>         _hotspots      = {}; // hotspot positions
+  Map<String, _HotspotData> _hotspots = {}; // hotspot positions
+  Map<String, double> _monthlyBuildingKwh = {};
 
   StreamSubscription? _devicesSub;
   StreamSubscription? _buildingsSub;
   StreamSubscription? _hotspotsSub;
+  StreamSubscription? _historySub;
 
   bool get isAdmin => widget.role == 'admin';
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
-    return text.contains('permission-denied') || text.contains('permission_denied');
+    return text.contains('permission-denied') ||
+        text.contains('permission_denied');
   }
 
   @override
@@ -93,6 +117,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     _listenDevices();
     _listenBuildings();
     _listenHotspots();
+    _listenMonthlyBuildingTotals();
   }
 
   @override
@@ -100,59 +125,148 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     _devicesSub?.cancel();
     _buildingsSub?.cancel();
     _hotspotsSub?.cancel();
+    _historySub?.cancel();
     super.dispose();
   }
 
   void _listenDevices() {
-    _devicesSub = FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+    _devicesSub =
+        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
       final Map<String, Map<String, dynamic>> bData = {};
       for (final id in _buildingsInfo.keys) {
-        bData[id] = {'kwh': 0.0, 'deviceCount': 0, 'rooms': <String, Map<String, dynamic>>{}};
+        bData[id] = {
+          'kwh': 0.0,
+          'deviceCount': 0,
+          'rooms': <String, Map<String, dynamic>>{}
+        };
       }
       if (raw != null) {
         final devices = Map<String, dynamic>.from(raw as Map);
         devices.forEach((deviceId, val) {
           if (val is! Map) return;
-          final device   = Map<String, dynamic>.from(val);
+          final device = Map<String, dynamic>.from(val);
           final building = (device['building'] ?? '').toString();
-          final room     = (device['room']     ?? '').toString();
-          final utility  = (device['utility']  ?? '').toString();
-          final kwh      = (device['kwh']      ?? 0.0) as num;
-          final status   = (device['status']   ?? 'offline').toString();
-          final relay    = (device['relay']    ?? false) as bool;
+          final room = (device['room'] ?? '').toString();
+          final utility = (device['utility'] ?? '').toString();
+          final kwh = (device['kwh'] ?? 0.0) as num;
+          final status = (device['status'] ?? 'offline').toString();
+          final relay = (device['relay'] ?? false) as bool;
           if (!bData.containsKey(building)) {
-            bData[building] = {'kwh': 0.0, 'deviceCount': 0, 'rooms': <String, Map<String, dynamic>>{}};
+            bData[building] = {
+              'kwh': 0.0,
+              'deviceCount': 0,
+              'rooms': <String, Map<String, dynamic>>{}
+            };
           }
-          bData[building]!['kwh']         = (bData[building]!['kwh'] as double) + kwh.toDouble();
-          bData[building]!['deviceCount'] = (bData[building]!['deviceCount'] as int) + 1;
+          bData[building]!['kwh'] =
+              (bData[building]!['kwh'] as double) + kwh.toDouble();
+          bData[building]!['deviceCount'] =
+              (bData[building]!['deviceCount'] as int) + 1;
           if (room.isNotEmpty) {
-            final rooms = bData[building]!['rooms'] as Map<String, Map<String, dynamic>>;
-            if (!rooms.containsKey(room)) rooms[room] = {'utilities': <Map<String, dynamic>>[]};
+            final rooms =
+                bData[building]!['rooms'] as Map<String, Map<String, dynamic>>;
+            if (!rooms.containsKey(room)) {
+              rooms[room] = {'utilities': <Map<String, dynamic>>[]};
+            }
             (rooms[room]!['utilities'] as List<Map<String, dynamic>>).add({
-              'id': deviceId, 'utility': utility, 'kwh': kwh.toDouble(), 'status': status, 'relay': relay,
+              'id': deviceId,
+              'utility': utility,
+              'kwh': (device['kwh'] ?? 0.0) as num,
+              'status': status,
+              'relay': relay,
             });
           }
         });
       }
+
+      // If monthly totals are available, force hotspot/building kWh to monthly values.
+      _monthlyBuildingKwh.forEach((building, monthlyKwh) {
+        final existing = bData[building] ??
+            {
+              'kwh': 0.0,
+              'deviceCount': 0,
+              'rooms': <String, Map<String, dynamic>>{},
+            };
+        existing['kwh'] = monthlyKwh;
+        bData[building] = existing;
+      });
+
       setState(() => _buildingData = bData);
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
-  void _listenBuildings() {
-    _buildingsSub = FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
+  void _listenMonthlyBuildingTotals() {
+    _historySub?.cancel();
+    final monthKey = _monthKey(DateTime.now());
+    _historySub = FirebaseDatabase.instance
+        .ref('history/monthly/$monthKey/buildings')
+        .onValue
+        .listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
-      if (raw == null) { setState(() => _buildingsInfo = {}); return; }
+      if (raw is! Map) {
+        setState(() => _monthlyBuildingKwh = {});
+        return;
+      }
+
+      final totals = Map<String, dynamic>.from(raw);
+      final monthlyKwh = <String, double>{};
+      final updated = Map<String, Map<String, dynamic>>.from(_buildingData);
+
+      totals.forEach((building, value) {
+        final existing =
+            Map<String, dynamic>.from(updated[building.toString()] ??
+                {
+                  'deviceCount': 0,
+                  'rooms': <String, Map<String, dynamic>>{},
+                  'kwh': 0.0,
+                });
+
+        if (value is Map) {
+          final data = Map<String, dynamic>.from(value);
+          final kwh = ((data['kwh'] ?? 0.0) as num).toDouble();
+          existing['kwh'] = kwh;
+          monthlyKwh[building.toString()] = kwh;
+        } else if (value is num) {
+          final kwh = value.toDouble();
+          existing['kwh'] = kwh;
+          monthlyKwh[building.toString()] = kwh;
+        }
+
+        updated[building.toString()] = existing;
+      });
+
+      setState(() {
+        _monthlyBuildingKwh = monthlyKwh;
+        _buildingData = updated;
+      });
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
+  }
+
+  void _listenBuildings() {
+    _buildingsSub =
+        FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
+      if (!mounted) return;
+      final raw = event.snapshot.value;
+      if (raw == null) {
+        setState(() => _buildingsInfo = {});
+        return;
+      }
       final data = Map<String, dynamic>.from(raw as Map);
       final Map<String, Map<String, dynamic>> info = {};
       data.forEach((code, val) {
         if (val is! Map) return;
         final b = Map<String, dynamic>.from(val);
-        info[code] = {'name': (b['name'] ?? code).toString(), 'floors': (b['floors'] ?? 1) as int};
+        info[code] = {
+          'name': (b['name'] ?? code).toString(),
+          'floors': (b['floors'] ?? 1) as int
+        };
       });
       setState(() => _buildingsInfo = info);
     }, onError: (Object error) {
@@ -161,7 +275,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   }
 
   void _listenHotspots() {
-    _hotspotsSub = FirebaseDatabase.instance.ref('hotspots').onValue.listen((event) {
+    _hotspotsSub =
+        FirebaseDatabase.instance.ref('hotspots').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
       final Map<String, _HotspotData> spots = {};
@@ -186,14 +301,20 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     });
   }
 
+  String _monthKey(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}';
+
   // Buildings that exist but have no hotspot yet
   List<String> get _buildingsWithoutHotspot =>
       _buildingsInfo.keys.where((id) => !_hotspots.containsKey(id)).toList();
 
   Future<void> _addHotspot(String buildingId) async {
     // Place in center by default
-    final spot = _HotspotData(buildingId: buildingId, x: 0.35, y: 0.35, w: 0.22, h: 0.10);
-    await FirebaseDatabase.instance.ref('hotspots/$buildingId').set(spot.toMap());
+    final spot = _HotspotData(
+        buildingId: buildingId, x: 0.35, y: 0.35, w: 0.22, h: 0.10);
+    await FirebaseDatabase.instance
+        .ref('hotspots/$buildingId')
+        .set(spot.toMap());
   }
 
   Future<void> _deleteHotspot(String buildingId) async {
@@ -203,29 +324,35 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   Future<void> _saveHotspot(String buildingId) async {
     final spot = _hotspots[buildingId];
     if (spot == null) return;
-    await FirebaseDatabase.instance.ref('hotspots/$buildingId').set(spot.toMap());
+    await FirebaseDatabase.instance
+        .ref('hotspots/$buildingId')
+        .set(spot.toMap());
   }
 
   void _onBuildingTap(String buildingId) {
     if (_editMode) return;
     setState(() {
-      _selectedBuildingId = _selectedBuildingId == buildingId ? null : buildingId;
+      _selectedBuildingId =
+          _selectedBuildingId == buildingId ? null : buildingId;
     });
   }
 
   void _dismissPopup() => setState(() => _selectedBuildingId = null);
 
   void _viewBuildingDetails(String buildingId) {
-    final code   = buildingId;
-    final info   = _buildingsInfo[buildingId] ?? {};
-    final name   = info['name'] as String? ?? buildingId;
+    final code = buildingId;
+    final info = _buildingsInfo[buildingId] ?? {};
+    final name = info['name'] as String? ?? buildingId;
     final floors = info['floors'] as int? ?? 1;
-    final role   = widget.role;
+    final role = widget.role;
     setState(() => _selectedBuildingId = null);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       Navigator.pushNamed(context, '/building', arguments: {
-        'buildingCode': code, 'buildingName': name, 'floors': floors, 'role': role,
+        'buildingCode': code,
+        'buildingName': name,
+        'floors': floors,
+        'role': role,
       });
     });
   }
@@ -244,16 +371,16 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   // ── Build hotspot widget (view mode) ──────────────────────────────────────
   Widget _buildViewHotspot(_HotspotData spot, _ContainRect rect) {
-    final bData      = _buildingData[spot.buildingId];
-    final kwh        = (bData?['kwh'] as double?) ?? 0.0;
-    final level      = _energyLevel(kwh);
-    final color      = _energyColor(level);
+    final bData = _buildingData[spot.buildingId];
+    final kwh = (bData?['kwh'] as double?) ?? 0.0;
+    final level = _energyLevel(kwh);
+    final color = _energyColor(level);
     final isSelected = _selectedBuildingId == spot.buildingId;
 
     return Positioned(
-      left:   rect.left + spot.x * rect.width,
-      top:    rect.top  + spot.y * rect.height,
-      width:  spot.w * rect.width,
+      left: rect.left + spot.x * rect.width,
+      top: rect.top + spot.y * rect.height,
+      width: spot.w * rect.width,
       height: spot.h * rect.height,
       child: GestureDetector(
         onTap: () => _onBuildingTap(spot.buildingId),
@@ -267,9 +394,14 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           child: Center(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-              decoration: BoxDecoration(color: color.withAlpha(200), borderRadius: BorderRadius.circular(4)),
+              decoration: BoxDecoration(
+                  color: color.withAlpha(200),
+                  borderRadius: BorderRadius.circular(4)),
               child: Text(spot.buildingId,
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold)),
             ),
           ),
         ),
@@ -282,16 +414,18 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     const double handleSize = 18.0;
 
     return Positioned(
-      left:   rect.left + spot.x * rect.width,
-      top:    rect.top  + spot.y * rect.height,
-      width:  spot.w * rect.width,
+      left: rect.left + spot.x * rect.width,
+      top: rect.top + spot.y * rect.height,
+      width: spot.w * rect.width,
       height: spot.h * rect.height,
       child: GestureDetector(
         // Drag the whole zone
         onPanUpdate: (details) {
           setState(() {
-            spot.x = (spot.x + details.delta.dx / rect.width).clamp(0.0, 1.0 - spot.w);
-            spot.y = (spot.y + details.delta.dy / rect.height).clamp(0.0, 1.0 - spot.h);
+            spot.x = (spot.x + details.delta.dx / rect.width)
+                .clamp(0.0, 1.0 - spot.w);
+            spot.y = (spot.y + details.delta.dy / rect.height)
+                .clamp(0.0, 1.0 - spot.h);
           });
         },
         onPanEnd: (_) => _saveHotspot(spot.buildingId),
@@ -307,24 +441,34 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
               // Label
               Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                  decoration: BoxDecoration(color: AppColors.greenDark, borderRadius: BorderRadius.circular(4)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: AppColors.greenDark,
+                      borderRadius: BorderRadius.circular(4)),
                   child: Text(spot.buildingId,
-                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold)),
                 ),
               ),
 
               // Delete button top-left
               Positioned(
-                top: -10, left: -10,
+                top: -10,
+                left: -10,
                 child: GestureDetector(
                   onTap: () async {
                     await _deleteHotspot(spot.buildingId);
                   },
                   child: Container(
-                    width: 22, height: 22,
-                    decoration: const BoxDecoration(color: AppColors.error, shape: BoxShape.circle),
-                    child: const Icon(Icons.close, color: Colors.white, size: 14),
+                    width: 22,
+                    height: 22,
+                    decoration: const BoxDecoration(
+                        color: AppColors.error, shape: BoxShape.circle),
+                    child:
+                        const Icon(Icons.close, color: Colors.white, size: 14),
                   ),
                 ),
               ),
@@ -333,12 +477,15 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
               // Bottom-right corner
               Positioned(
-                right: -handleSize / 2, bottom: -handleSize / 2,
+                right: -handleSize / 2,
+                bottom: -handleSize / 2,
                 child: GestureDetector(
                   onPanUpdate: (d) {
                     setState(() {
-                      spot.w = (spot.w + d.delta.dx / rect.width).clamp(0.05, 1.0 - spot.x);
-                      spot.h = (spot.h + d.delta.dy / rect.height).clamp(0.03, 1.0 - spot.y);
+                      spot.w = (spot.w + d.delta.dx / rect.width)
+                          .clamp(0.05, 1.0 - spot.x);
+                      spot.h = (spot.h + d.delta.dy / rect.height)
+                          .clamp(0.03, 1.0 - spot.y);
                     });
                   },
                   onPanEnd: (_) => _saveHotspot(spot.buildingId),
@@ -348,15 +495,18 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
               // Bottom-left corner
               Positioned(
-                left: -handleSize / 2, bottom: -handleSize / 2,
+                left: -handleSize / 2,
+                bottom: -handleSize / 2,
                 child: GestureDetector(
                   onPanUpdate: (d) {
                     setState(() {
-                      final newW = (spot.w - d.delta.dx / rect.width).clamp(0.05, spot.x + spot.w);
-                      final dx   = spot.w - newW;
-                      spot.x    = (spot.x + dx).clamp(0.0, 1.0);
-                      spot.w    = newW;
-                      spot.h    = (spot.h + d.delta.dy / rect.height).clamp(0.03, 1.0 - spot.y);
+                      final newW = (spot.w - d.delta.dx / rect.width)
+                          .clamp(0.05, spot.x + spot.w);
+                      final dx = spot.w - newW;
+                      spot.x = (spot.x + dx).clamp(0.0, 1.0);
+                      spot.w = newW;
+                      spot.h = (spot.h + d.delta.dy / rect.height)
+                          .clamp(0.03, 1.0 - spot.y);
                     });
                   },
                   onPanEnd: (_) => _saveHotspot(spot.buildingId),
@@ -366,15 +516,18 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
               // Top-right corner
               Positioned(
-                right: -handleSize / 2, top: -handleSize / 2,
+                right: -handleSize / 2,
+                top: -handleSize / 2,
                 child: GestureDetector(
                   onPanUpdate: (d) {
                     setState(() {
-                      spot.w    = (spot.w + d.delta.dx / rect.width).clamp(0.05, 1.0 - spot.x);
-                      final newH = (spot.h - d.delta.dy / rect.height).clamp(0.03, spot.y + spot.h);
-                      final dy   = spot.h - newH;
-                      spot.y    = (spot.y + dy).clamp(0.0, 1.0);
-                      spot.h    = newH;
+                      spot.w = (spot.w + d.delta.dx / rect.width)
+                          .clamp(0.05, 1.0 - spot.x);
+                      final newH = (spot.h - d.delta.dy / rect.height)
+                          .clamp(0.03, spot.y + spot.h);
+                      final dy = spot.h - newH;
+                      spot.y = (spot.y + dy).clamp(0.0, 1.0);
+                      spot.h = newH;
                     });
                   },
                   onPanEnd: (_) => _saveHotspot(spot.buildingId),
@@ -384,18 +537,21 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
               // Top-left corner
               Positioned(
-                left: -handleSize / 2, top: -handleSize / 2,
+                left: -handleSize / 2,
+                top: -handleSize / 2,
                 child: GestureDetector(
                   onPanUpdate: (d) {
                     setState(() {
-                      final newW = (spot.w - d.delta.dx / rect.width).clamp(0.05, spot.x + spot.w);
-                      final dx   = spot.w - newW;
-                      spot.x    = (spot.x + dx).clamp(0.0, 1.0);
-                      spot.w    = newW;
-                      final newH = (spot.h - d.delta.dy / rect.height).clamp(0.03, spot.y + spot.h);
-                      final dy   = spot.h - newH;
-                      spot.y    = (spot.y + dy).clamp(0.0, 1.0);
-                      spot.h    = newH;
+                      final newW = (spot.w - d.delta.dx / rect.width)
+                          .clamp(0.05, spot.x + spot.w);
+                      final dx = spot.w - newW;
+                      spot.x = (spot.x + dx).clamp(0.0, 1.0);
+                      spot.w = newW;
+                      final newH = (spot.h - d.delta.dy / rect.height)
+                          .clamp(0.03, spot.y + spot.h);
+                      final dy = spot.h - newH;
+                      spot.y = (spot.y + dy).clamp(0.0, 1.0);
+                      spot.h = newH;
                     });
                   },
                   onPanEnd: (_) => _saveHotspot(spot.buildingId),
@@ -411,7 +567,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
 
   Widget _resizeHandle() {
     return Container(
-      width: 18, height: 18,
+      width: 18,
+      height: 18,
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border.all(color: AppColors.greenDark, width: 2),
@@ -424,15 +581,15 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   void _showAddHotspotPicker() {
     final available = _buildingsWithoutHotspot;
     if (available.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('All buildings already have hotspots.')));
+      TopToast.threshold(context, 'All buildings already have hotspots.');
       return;
     }
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) {
         final maxHeight = MediaQuery.of(context).size.height * 0.75;
         return SafeArea(
@@ -446,7 +603,9 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                   margin: const EdgeInsets.only(top: 10),
                   width: 40,
                   height: 4,
-                  decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                  decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2)),
                 ),
                 const Padding(
                   padding: EdgeInsets.fromLTRB(20, 14, 20, 8),
@@ -454,7 +613,11 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                     alignment: Alignment.centerLeft,
                     child: Text(
                       'Add Hotspot Zone',
-                      style: TextStyle(fontFamily: 'Outfit', fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textDark),
+                      style: TextStyle(
+                          fontFamily: 'Outfit',
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textDark),
                     ),
                   ),
                 ),
@@ -476,24 +639,36 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                         leading: Container(
                           width: 40,
                           height: 40,
-                          decoration: BoxDecoration(color: AppColors.greenPale, borderRadius: BorderRadius.circular(10)),
+                          decoration: BoxDecoration(
+                              color: AppColors.greenPale,
+                              borderRadius: BorderRadius.circular(10)),
                           child: Center(
                             child: Text(
                               id,
-                              style: const TextStyle(fontFamily: 'Outfit', fontSize: 9, fontWeight: FontWeight.w700, color: AppColors.greenDark),
+                              style: const TextStyle(
+                                  fontFamily: 'Outfit',
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.greenDark),
                             ),
                           ),
                         ),
-                        title: Text(info['name'] ?? id, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textDark)),
-                        subtitle: Text('${info['floors'] ?? 1} floors', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-                        trailing: const Icon(Icons.add_circle_outline, color: AppColors.greenMid),
+                        title: Text(info['name'] ?? id,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textDark)),
+                        subtitle: Text('${info['floors'] ?? 1} floors',
+                            style: const TextStyle(
+                                fontSize: 11, color: AppColors.textMuted)),
+                        trailing: const Icon(Icons.add_circle_outline,
+                            color: AppColors.greenMid),
                         onTap: () async {
                           Navigator.pop(context);
                           await _addHotspot(id);
                           if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Hotspot added for $id. Drag to position it.')),
-                          );
+                          TopToast.success(context,
+                              'Hotspot added for $id. Drag to position it.');
                         },
                       );
                     }).toList(),
@@ -517,7 +692,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           Positioned.fill(
             child: InteractiveViewer(
               // Disable pan/zoom in edit mode so drags work correctly
-              panEnabled:  !_editMode,
+              panEnabled: !_editMode,
               scaleEnabled: !_editMode,
               minScale: 0.8,
               maxScale: 4.0,
@@ -526,12 +701,13 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                   final rect = _computeContainRect(constraints);
                   return Stack(
                     children: [
-                      Positioned.fill(child: Image.asset('assets/images/campus_map.png', fit: BoxFit.contain)),
+                      Positioned.fill(
+                          child: Image.asset('assets/images/campus_map.png',
+                              fit: BoxFit.contain)),
                       // Render hotspots
-                      ..._hotspots.values.map((spot) =>
-                          _editMode
-                              ? _buildEditHotspot(spot, rect)
-                              : _buildViewHotspot(spot, rect)),
+                      ..._hotspots.values.map((spot) => _editMode
+                          ? _buildEditHotspot(spot, rect)
+                          : _buildViewHotspot(spot, rect)),
                     ],
                   );
                 },
@@ -542,16 +718,20 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           // ── Legend (top left) ─────────────────────────────────
           if (!_editMode)
             Positioned(
-              top: 12, left: 12,
+              top: 12,
+              left: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: Colors.white.withAlpha(220),
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: const [BoxShadow(color: Color.fromARGB(20, 0, 0, 0), blurRadius: 8)],
+                  boxShadow: const [
+                    BoxShadow(color: Color.fromARGB(20, 0, 0, 0), blurRadius: 8)
+                  ],
                 ),
                 child: const Row(children: [
-                  _LegendDot(color: AppColors.greenMid,      label: 'Low'),
+                  _LegendDot(color: AppColors.greenMid, label: 'Low'),
                   SizedBox(width: 8),
                   _LegendDot(color: Color(0xFFE8922A), label: 'Mid'),
                   SizedBox(width: 8),
@@ -563,23 +743,33 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           // ── Edit Mode toolbar (top right) ─────────────────────
           if (isAdmin)
             Positioned(
-              top: 12, right: 12,
+              top: 12,
+              right: 12,
               child: _editMode
                   ? Row(children: [
                       // Add hotspot button
                       GestureDetector(
                         onTap: _showAddHotspotPicker,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 7),
                           decoration: BoxDecoration(
                             color: AppColors.greenMid,
                             borderRadius: BorderRadius.circular(10),
-                            boxShadow: [BoxShadow(color: Colors.black.withAlpha(30), blurRadius: 8)],
+                            boxShadow: [
+                              BoxShadow(
+                                  color: Colors.black.withAlpha(30),
+                                  blurRadius: 8)
+                            ],
                           ),
                           child: const Row(children: [
                             Icon(Icons.add, color: Colors.white, size: 16),
                             SizedBox(width: 4),
-                            Text('Add Zone', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                            Text('Add Zone',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
                           ]),
                         ),
                       ),
@@ -588,33 +778,55 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                       GestureDetector(
                         onTap: () => setState(() => _editMode = false),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 7),
                           decoration: BoxDecoration(
                             color: AppColors.greenDark,
                             borderRadius: BorderRadius.circular(10),
-                            boxShadow: [BoxShadow(color: Colors.black.withAlpha(30), blurRadius: 8)],
+                            boxShadow: [
+                              BoxShadow(
+                                  color: Colors.black.withAlpha(30),
+                                  blurRadius: 8)
+                            ],
                           ),
                           child: const Row(children: [
                             Icon(Icons.check, color: Colors.white, size: 16),
                             SizedBox(width: 4),
-                            Text('Done', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                            Text('Done',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
                           ]),
                         ),
                       ),
                     ])
                   : GestureDetector(
-                      onTap: () => setState(() { _editMode = true; _selectedBuildingId = null; }),
+                      onTap: () => setState(() {
+                        _editMode = true;
+                        _selectedBuildingId = null;
+                      }),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 7),
                         decoration: BoxDecoration(
                           color: Colors.white.withAlpha(220),
                           borderRadius: BorderRadius.circular(10),
-                          boxShadow: [BoxShadow(color: Colors.black.withAlpha(20), blurRadius: 8)],
+                          boxShadow: [
+                            BoxShadow(
+                                color: Colors.black.withAlpha(20),
+                                blurRadius: 8)
+                          ],
                         ),
                         child: const Row(children: [
-                          Icon(Icons.edit_location_alt_outlined, color: AppColors.greenDark, size: 16),
+                          Icon(Icons.edit_location_alt_outlined,
+                              color: AppColors.greenDark, size: 16),
                           SizedBox(width: 4),
-                          Text('Edit Zones', style: TextStyle(color: AppColors.greenDark, fontSize: 12, fontWeight: FontWeight.w600)),
+                          Text('Edit Zones',
+                              style: TextStyle(
+                                  color: AppColors.greenDark,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600)),
                         ]),
                       ),
                     ),
@@ -623,9 +835,12 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           // ── Edit mode hint banner ─────────────────────────────
           if (_editMode)
             Positioned(
-              bottom: 16, left: 16, right: 16,
+              bottom: 16,
+              left: 16,
+              right: 16,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
                   color: AppColors.greenDark.withAlpha(230),
                   borderRadius: BorderRadius.circular(12),
@@ -633,8 +848,10 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                 child: const Row(children: [
                   Icon(Icons.info_outline, color: Colors.white, size: 14),
                   SizedBox(width: 8),
-                  Expanded(child: Text('Drag zone to move · Drag corners to resize · Tap ✕ to delete',
-                      style: TextStyle(color: Colors.white, fontSize: 11))),
+                  Expanded(
+                      child: Text(
+                          'Drag zone to move · Drag corners to resize · Tap ✕ to delete',
+                          style: TextStyle(color: Colors.white, fontSize: 11))),
                 ]),
               ),
             ),
@@ -642,17 +859,21 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           // ── Popup ─────────────────────────────────────────────
           if (_selectedBuildingId != null && !_editMode)
             Positioned(
-              bottom: 0, left: 0, right: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
               child: GestureDetector(
                 onTap: () {},
                 child: _BuildingPopup(
-                  buildingId:   _selectedBuildingId!,
-                  buildingName: _buildingsInfo[_selectedBuildingId!]?['name'] ?? _selectedBuildingId!,
-                  floors:       _buildingsInfo[_selectedBuildingId!]?['floors'] ?? 1,
-                  data:         _buildingData[_selectedBuildingId!] ?? {},
-                  role:         widget.role,
-                  onClose:      _dismissPopup,
-                  onViewDetails: () => _viewBuildingDetails(_selectedBuildingId!),
+                  buildingId: _selectedBuildingId!,
+                  buildingName: _buildingsInfo[_selectedBuildingId!]?['name'] ??
+                      _selectedBuildingId!,
+                  floors: _buildingsInfo[_selectedBuildingId!]?['floors'] ?? 1,
+                  data: _buildingData[_selectedBuildingId!] ?? {},
+                  role: widget.role,
+                  onClose: _dismissPopup,
+                  onViewDetails: () =>
+                      _viewBuildingDetails(_selectedBuildingId!),
                 ),
               ),
             ),
@@ -669,7 +890,10 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         appBar: AppBar(
           backgroundColor: AppColors.greenDark,
           title: const Text('Campus Map',
-              style: TextStyle(fontFamily: 'Outfit', color: Colors.white, fontWeight: FontWeight.w700)),
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700)),
           iconTheme: const IconThemeData(color: Colors.white),
         ),
         body: _buildMap(),
@@ -689,9 +913,16 @@ class _LegendDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(children: [
-      Container(width: 9, height: 9, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
       const SizedBox(width: 4),
-      Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: AppColors.textDark)),
+      Text(label,
+          style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textDark)),
     ]);
   }
 }
@@ -719,12 +950,13 @@ class _BuildingPopup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final kwh         = (data['kwh']         as double?) ?? 0.0;
-    final deviceCount = (data['deviceCount'] as int?)    ?? 0;
-    final rawRooms    = data['rooms'];
-    final rooms       = rawRooms is Map
+    final kwh = (data['kwh'] as double?) ?? 0.0;
+    final deviceCount = (data['deviceCount'] as int?) ?? 0;
+    final rawRooms = data['rooms'];
+    final rooms = rawRooms is Map
         ? Map<String, Map<String, dynamic>>.from(rawRooms.map((k, v) =>
-            MapEntry(k.toString(), v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{})))
+            MapEntry(k.toString(),
+                v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{})))
         : <String, Map<String, dynamic>>{};
     final level = _energyLevel(kwh);
     final color = _energyColor(level);
@@ -734,62 +966,111 @@ class _BuildingPopup extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        boxShadow: [BoxShadow(color: Colors.black.withAlpha(40), blurRadius: 16, offset: const Offset(0, -4))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withAlpha(40),
+              blurRadius: 16,
+              offset: const Offset(0, -4))
+        ],
       ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(margin: const EdgeInsets.only(top: 10), width: 40, height: 4,
-            decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2))),
+        Container(
+            margin: const EdgeInsets.only(top: 10),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2))),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
           child: Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(buildingName,
-                  style: const TextStyle(fontFamily: 'Outfit', fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.greenDark)),
-              const SizedBox(height: 4),
-              Row(children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: color.withAlpha(30), border: Border.all(color: color), borderRadius: BorderRadius.circular(20)),
-                  child: Row(children: [
-                    Icon(Icons.circle, color: color, size: 8),
-                    const SizedBox(width: 4),
-                    Text(_energyLabel(level), style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(buildingName,
+                      style: const TextStyle(
+                          fontFamily: 'Outfit',
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.greenDark)),
+                  const SizedBox(height: 4),
+                  Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                          color: color.withAlpha(30),
+                          border: Border.all(color: color),
+                          borderRadius: BorderRadius.circular(20)),
+                      child: Row(children: [
+                        Icon(Icons.circle, color: color, size: 8),
+                        const SizedBox(width: 4),
+                        Text(_energyLabel(level),
+                            style: TextStyle(
+                                color: color,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold)),
+                      ]),
+                    ),
+                    const SizedBox(width: 8),
+                    Text('${kwh.toStringAsFixed(1)} kWh',
+                        style:
+                            TextStyle(color: Colors.grey[600], fontSize: 12)),
                   ]),
-                ),
-                const SizedBox(width: 8),
-                Text('${kwh.toStringAsFixed(1)} kWh', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-              ]),
-            ])),
-            IconButton(onPressed: onClose, icon: const Icon(Icons.close), color: Colors.grey),
+                ])),
+            IconButton(
+                onPressed: onClose,
+                icon: const Icon(Icons.close),
+                color: Colors.grey),
           ]),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(children: [
-            _StatBox(icon: Icons.layers,              label: 'Floors',  value: '$floors'),
+            _StatBox(icon: Icons.layers, label: 'Floors', value: '$floors'),
             const SizedBox(width: 8),
-            _StatBox(icon: Icons.meeting_room,        label: 'Rooms',   value: '${rooms.length}'),
+            _StatBox(
+                icon: Icons.meeting_room,
+                label: 'Rooms',
+                value: '${rooms.length}'),
             const SizedBox(width: 8),
-            _StatBox(icon: Icons.electrical_services, label: 'Devices', value: '$deviceCount'),
+            _StatBox(
+                icon: Icons.electrical_services,
+                label: 'Devices',
+                value: '$deviceCount'),
             const SizedBox(width: 8),
-            _StatBox(icon: Icons.bolt,                label: 'kWh',     value: kwh.toStringAsFixed(1)),
+            _StatBox(
+                icon: Icons.bolt, label: 'kWh', value: kwh.toStringAsFixed(1)),
           ]),
         ),
         const SizedBox(height: 10),
         const Divider(height: 1),
         rooms.isEmpty
-            ? Padding(padding: const EdgeInsets.all(16),
-                child: Text(deviceCount == 0 ? 'No devices assigned yet' : 'No room data',
-                    style: const TextStyle(fontSize: 13, color: AppColors.textMuted)))
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                    deviceCount == 0
+                        ? 'No devices assigned yet'
+                        : 'No room data',
+                    style: const TextStyle(
+                        fontSize: 13, color: AppColors.textMuted)))
             : Flexible(
                 child: ListView(
                   shrinkWrap: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   children: rooms.entries.map((entry) {
-                    final roomName  = entry.key;
-                    final utilities = (entry.value['utilities'] as List<Map<String, dynamic>>?) ?? [];
-                    final roomKwh   = utilities.fold(0.0, (s, u) => s + (u['kwh'] as double));
-                    return _RoomTile(roomName: roomName, utilities: utilities, roomKwh: roomKwh);
+                    final roomName = entry.key;
+                    final utilities = (entry.value['utilities']
+                            as List<Map<String, dynamic>>?) ??
+                        [];
+                    final roomKwh =
+                        utilities.fold(0.0, (s, u) => s + (u['kwh'] as double));
+                    return _RoomTile(
+                        roomName: roomName,
+                        utilities: utilities,
+                        roomKwh: roomKwh);
                   }).toList(),
                 ),
               ),
@@ -802,8 +1083,10 @@ class _BuildingPopup extends StatelessWidget {
               icon: const Icon(Icons.arrow_forward, size: 16),
               label: const Text('View Building Details'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.greenDark, foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                backgroundColor: AppColors.greenDark,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
@@ -820,18 +1103,25 @@ class _StatBox extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
-  const _StatBox({required this.icon, required this.label, required this.value});
+  const _StatBox(
+      {required this.icon, required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(color: AppColors.greenPale, borderRadius: BorderRadius.circular(10)),
+        decoration: BoxDecoration(
+            color: AppColors.greenPale,
+            borderRadius: BorderRadius.circular(10)),
         child: Column(children: [
           Icon(icon, color: AppColors.greenDark, size: 16),
           const SizedBox(height: 4),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.greenDark)),
+          Text(value,
+              style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: AppColors.greenDark)),
           Text(label, style: TextStyle(fontSize: 9, color: Colors.grey[600])),
         ]),
       ),
@@ -845,7 +1135,8 @@ class _RoomTile extends StatelessWidget {
   final String roomName;
   final List<Map<String, dynamic>> utilities;
   final double roomKwh;
-  const _RoomTile({required this.roomName, required this.utilities, required this.roomKwh});
+  const _RoomTile(
+      {required this.roomName, required this.utilities, required this.roomKwh});
 
   @override
   Widget build(BuildContext context) {
@@ -853,34 +1144,42 @@ class _RoomTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const Icon(Icons.meeting_room_outlined, size: 14, color: AppColors.greenMid),
+          const Icon(Icons.meeting_room_outlined,
+              size: 14, color: AppColors.greenMid),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
               roomName,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.greenDark),
+              style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: AppColors.greenDark),
             ),
           ),
           const SizedBox(width: 8),
-          Text('${roomKwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          Text('${roomKwh.toStringAsFixed(1)} kWh',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
         ]),
         const SizedBox(height: 4),
         Wrap(
           spacing: 10,
           runSpacing: 4,
           children: utilities.map((u) {
-            final status   = (u['status']  as String?) ?? 'offline';
-            final utility  = (u['utility'] as String?) ?? '';
-            final kwh      = (u['kwh']     as double?) ?? 0.0;
+            final status = (u['status'] as String?) ?? 'offline';
+            final utility = (u['utility'] as String?) ?? '';
+            final kwh = (u['kwh'] as double?) ?? 0.0;
             final isOnline = status == 'online';
             return Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(_utilityIcon(utility), size: 12, color: isOnline ? AppColors.greenMid : AppColors.textMuted),
+                Icon(_utilityIcon(utility),
+                    size: 12,
+                    color: isOnline ? AppColors.greenMid : AppColors.textMuted),
                 const SizedBox(width: 3),
-                Text('${kwh.toStringAsFixed(1)} kWh', style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+                Text('${kwh.toStringAsFixed(1)} kWh',
+                    style: TextStyle(fontSize: 10, color: Colors.grey[600])),
               ],
             );
           }).toList(),

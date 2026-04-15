@@ -1,7 +1,7 @@
 name: smart_power_switch
 description: IoT Energy Monitoring and Control for DNSC Campus
 publish_to: 'none'
-version: 1.0.2+1
+version: 1.0.3+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -28,6 +28,10 @@ dependencies:
   csv: ^6.0.0
   path_provider: ^2.1.4
   share_plus: ^10.0.2
+  excel: ^4.0.6
+  syncfusion_flutter_xlsio: ^29.2.11
+  package_info_plus: ^9.0.1
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

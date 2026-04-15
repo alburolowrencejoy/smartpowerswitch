@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../widgets/top_toast.dart';
 
 void _safeDialogPop<T>(BuildContext context, [T? result]) {
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -20,8 +21,8 @@ class AutomationSchedule {
   final String scope;
   final String target;
   final String utility;
-  final String action;
-  final String time;
+  final String onTime;
+  final String offTime;
   final List<String> days;
   final bool enabled;
 
@@ -31,8 +32,8 @@ class AutomationSchedule {
     required this.scope,
     required this.target,
     required this.utility,
-    required this.action,
-    required this.time,
+    required this.onTime,
+    required this.offTime,
     required this.days,
     required this.enabled,
   });
@@ -45,14 +46,30 @@ class AutomationSchedule {
     } else if (rawDays is Map) {
       days = rawDays.values.map((d) => d.toString()).toList();
     }
+
+    final legacyAction = (data['action'] ?? '').toString().toLowerCase();
+    final legacyTime = (data['time'] ?? '').toString();
+
+    var onTime = (data['onTime'] ?? '').toString();
+    var offTime = (data['offTime'] ?? '').toString();
+
+    if (onTime.isEmpty && legacyAction == 'on' && legacyTime.isNotEmpty) {
+      onTime = legacyTime;
+    }
+    if (offTime.isEmpty && legacyAction == 'off' && legacyTime.isNotEmpty) {
+      offTime = legacyTime;
+    }
+    if (onTime.isEmpty) onTime = '08:00';
+    if (offTime.isEmpty) offTime = '18:00';
+
     return AutomationSchedule(
       id:      id,
       name:    (data['name']    ?? '').toString(),
       scope:   (data['scope']   ?? 'global').toString(),
       target:  (data['target']  ?? 'all').toString(),
       utility: (data['utility'] ?? 'All').toString(),
-      action:  (data['action']  ?? 'off').toString(),
-      time:    (data['time']    ?? '18:00').toString(),
+      onTime:  onTime,
+      offTime: offTime,
       days:    days,
       enabled: (data['enabled'] ?? true) as bool,
     );
@@ -60,7 +77,9 @@ class AutomationSchedule {
 
   Map<String, dynamic> toMap() => {
     'name': name, 'scope': scope, 'target': target,
-    'utility': utility, 'action': action, 'time': time,
+    // Keep legacy keys for older readers that still expect action/time.
+    'utility': utility, 'onTime': onTime, 'offTime': offTime,
+    'action': 'on', 'time': onTime,
     'days': days, 'enabled': enabled,
   };
 }
@@ -385,7 +404,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
           if (val is Map) list.add(AutomationSchedule.fromMap(id.toString(), Map<String, dynamic>.from(val)));
         });
       }
-      list.sort((a, b) => a.time.compareTo(b.time));
+      list.sort((a, b) => a.onTime.compareTo(b.onTime));
       setState(() { _schedules = list; _loading = false; _errorText = null; });
     }, onError: (Object error) {
       if (!mounted) return;
@@ -402,7 +421,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
       await FirebaseDatabase.instance.ref('automations/${s.id}/enabled').set(!s.enabled);
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Unable to update schedule.')));
+      TopToast.show(context, 'Unable to update schedule.', isError: true);
     }
   }
 
@@ -430,7 +449,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
       await FirebaseDatabase.instance.ref('automations/${s.id}').remove();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Unable to delete schedule.')));
+      TopToast.show(context, 'Unable to delete schedule.', isError: true);
     }
   }
 
@@ -440,8 +459,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
     String target  = 'all';
     String deviceLabel = '';
     String utility = 'All';
-    String action  = 'off';
-    TimeOfDay time = const TimeOfDay(hour: 18, minute: 0);
+    TimeOfDay onTime  = const TimeOfDay(hour: 8, minute: 0);
+    TimeOfDay offTime = const TimeOfDay(hour: 18, minute: 0);
     List<String> days = ['Mon','Tue','Wed','Thu','Fri'];
     String? error;
     bool loading = false;
@@ -529,30 +548,22 @@ class _AutomationScreenState extends State<AutomationScreen> {
                 const SizedBox(height: 12),
               ],
 
-              // Action
-              _actionToggle(action, (v) => setS(() => action = v)),
-              const SizedBox(height: 12),
-
-              // Time
-              GestureDetector(
-                onTap: () async {
-                  final picked = await showTimePicker(context: ctx, initialTime: time);
-                  if (picked != null) setS(() => time = picked);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: AppColors.greenMid.withAlpha(80)),
-                    borderRadius: BorderRadius.circular(12), color: Colors.white,
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.access_time, size: 18, color: AppColors.textMuted),
-                    const SizedBox(width: 10),
-                    Text(time.format(ctx), style: const TextStyle(fontSize: 14, color: AppColors.textDark)),
-                    const Spacer(),
-                    const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
-                  ]),
-                ),
+              _timePickerTile(
+                context: ctx,
+                label: 'ON time',
+                value: onTime,
+                icon: Icons.power_settings_new,
+                iconColor: AppColors.greenMid,
+                onPicked: (v) => setS(() => onTime = v),
+              ),
+              const SizedBox(height: 10),
+              _timePickerTile(
+                context: ctx,
+                label: 'OFF time',
+                value: offTime,
+                icon: Icons.power_off_outlined,
+                iconColor: AppColors.warning,
+                onPicked: (v) => setS(() => offTime = v),
               ),
               const SizedBox(height: 12),
 
@@ -612,7 +623,12 @@ class _AutomationScreenState extends State<AutomationScreen> {
                     : target == 'all'    ? _buildings.first
                     : target;
                 final finalUtility = scope == 'utility' ? target : utility;
-                final timeStr = '${time.hour.toString().padLeft(2,'0')}:${time.minute.toString().padLeft(2,'0')}';
+                final onTimeStr = '${onTime.hour.toString().padLeft(2,'0')}:${onTime.minute.toString().padLeft(2,'0')}';
+                final offTimeStr = '${offTime.hour.toString().padLeft(2,'0')}:${offTime.minute.toString().padLeft(2,'0')}';
+                if (onTimeStr == offTimeStr) {
+                  setS(() => error = 'ON and OFF time must be different');
+                  return;
+                }
 
                 setS(() { loading = true; error = null; });
 
@@ -620,7 +636,11 @@ class _AutomationScreenState extends State<AutomationScreen> {
                 try {
                   await newRef.set(AutomationSchedule(
                     id: newRef.key!, name: name, scope: scope, target: finalTarget,
-                    utility: finalUtility, action: action, time: timeStr, days: days, enabled: true,
+                    utility: finalUtility,
+                    onTime: onTimeStr,
+                    offTime: offTimeStr,
+                    days: days,
+                    enabled: true,
                   ).toMap());
                 } catch (_) {
                   setS(() { loading = false; error = 'No permission to add schedules.'; });
@@ -629,11 +649,194 @@ class _AutomationScreenState extends State<AutomationScreen> {
 
                 if (!mounted || !ctx.mounted) return;
                 _safeDialogPop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Schedule added.')));
+                TopToast.show(context, 'Schedule added.');
               },
               child: loading
                   ? const SizedBox(width: 16, height: 16,
                       child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  TimeOfDay _parseTime(String value, {required TimeOfDay fallback}) {
+    final parts = value.split(':');
+    if (parts.length != 2) return fallback;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) {
+      return fallback;
+    }
+    return TimeOfDay(hour: h, minute: m);
+  }
+
+  Future<void> _editScheduleTiming(AutomationSchedule s) async {
+    TimeOfDay onTime = _parseTime(s.onTime,
+        fallback: const TimeOfDay(hour: 8, minute: 0));
+    TimeOfDay offTime = _parseTime(s.offTime,
+        fallback: const TimeOfDay(hour: 18, minute: 0));
+    List<String> days = [...s.days];
+    if (days.isEmpty) {
+      days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    }
+    String? error;
+    bool loading = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Edit Schedule Time & Days',
+              style:
+                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(s.name,
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textDark)),
+                const SizedBox(height: 4),
+                Text('Settings are locked: ${_scopeLabel(s)} · ${s.utility}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textMuted)),
+                const SizedBox(height: 12),
+                _timePickerTile(
+                  context: ctx,
+                  label: 'ON time',
+                  value: onTime,
+                  icon: Icons.power_settings_new,
+                  iconColor: AppColors.greenMid,
+                  onPicked: (v) => setS(() => onTime = v),
+                ),
+                const SizedBox(height: 10),
+                _timePickerTile(
+                  context: ctx,
+                  label: 'OFF time',
+                  value: offTime,
+                  icon: Icons.power_off_outlined,
+                  iconColor: AppColors.warning,
+                  onPicked: (v) => setS(() => offTime = v),
+                ),
+                const SizedBox(height: 12),
+                const Text('Repeat on',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                        fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: _allDays.map((d) {
+                    final selected = days.contains(d);
+                    return GestureDetector(
+                      onTap: () => setS(() {
+                        if (selected) {
+                          days.remove(d);
+                        } else {
+                          days.add(d);
+                        }
+                      }),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? AppColors.greenDark
+                              : AppColors.greenPale,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(d,
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: selected
+                                    ? Colors.white
+                                    : AppColors.textMid)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(error!,
+                      style:
+                          const TextStyle(fontSize: 12, color: AppColors.error)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => _safeDialogPop(ctx),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.textMuted))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenDark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              onPressed: loading
+                  ? null
+                  : () async {
+                      if (days.isEmpty) {
+                        setS(() => error = 'Select at least one day');
+                        return;
+                      }
+
+                      final onTimeStr =
+                          '${onTime.hour.toString().padLeft(2, '0')}:${onTime.minute.toString().padLeft(2, '0')}';
+                      final offTimeStr =
+                          '${offTime.hour.toString().padLeft(2, '0')}:${offTime.minute.toString().padLeft(2, '0')}';
+                      if (onTimeStr == offTimeStr) {
+                        setS(() => error = 'ON and OFF time must be different');
+                        return;
+                      }
+
+                      setS(() {
+                        loading = true;
+                        error = null;
+                      });
+
+                      try {
+                        await FirebaseDatabase.instance
+                            .ref('automations/${s.id}')
+                            .update({
+                          'onTime': onTimeStr,
+                          'offTime': offTimeStr,
+                          // Legacy compatibility keys.
+                          'action': 'on',
+                          'time': onTimeStr,
+                          'days': days,
+                        });
+                      } catch (_) {
+                        setS(() {
+                          loading = false;
+                          error = 'Unable to update schedule timing.';
+                        });
+                        return;
+                      }
+
+                      if (!mounted || !ctx.mounted) return;
+                      _safeDialogPop(ctx);
+                        TopToast.show(context, 'Schedule updated.');
+                    },
+              child: loading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
                   : const Text('Save', style: TextStyle(color: Colors.white)),
             ),
           ],
@@ -734,9 +937,6 @@ class _AutomationScreenState extends State<AutomationScreen> {
   }
 
   Widget _buildCard(AutomationSchedule s) {
-    final actionColor = s.action == 'on' ? AppColors.greenMid : AppColors.warning;
-    final actionIcon  = s.action == 'on' ? Icons.power_settings_new : Icons.power_off_outlined;
-
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
@@ -753,8 +953,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
                 ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
                       Container(width: 40, height: 40,
-                          decoration: BoxDecoration(color: actionColor.withAlpha(20), borderRadius: BorderRadius.circular(12)),
-                          child: Icon(actionIcon, color: actionColor, size: 20)),
+                          decoration: BoxDecoration(color: AppColors.greenMid.withAlpha(20), borderRadius: BorderRadius.circular(12)),
+                          child: const Icon(Icons.schedule, color: AppColors.greenMid, size: 20)),
                       const SizedBox(width: 12),
                       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(s.name,
@@ -776,8 +976,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   ])
                 : Row(children: [
                     Container(width: 40, height: 40,
-                        decoration: BoxDecoration(color: actionColor.withAlpha(20), borderRadius: BorderRadius.circular(12)),
-                        child: Icon(actionIcon, color: actionColor, size: 20)),
+                    decoration: BoxDecoration(color: AppColors.greenMid.withAlpha(20), borderRadius: BorderRadius.circular(12)),
+                    child: const Icon(Icons.schedule, color: AppColors.greenMid, size: 20)),
                     const SizedBox(width: 12),
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(s.name,
@@ -797,8 +997,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
         ),
         const SizedBox(height: 12),
         Wrap(spacing: 8, runSpacing: 8, children: [
-          _chip(Icons.access_time, s.time, AppColors.greenDark),
-          _chip(actionIcon, s.action.toUpperCase(), actionColor),
+          _chip(Icons.power_settings_new, 'ON ${s.onTime}', AppColors.greenMid),
+          _chip(Icons.power_off_outlined, 'OFF ${s.offTime}', AppColors.warning),
           _chip(Icons.electrical_services, s.utility, AppColors.greenMid),
         ]),
         const SizedBox(height: 8),
@@ -821,18 +1021,40 @@ class _AutomationScreenState extends State<AutomationScreen> {
           const SizedBox(height: 10),
           Align(
             alignment: Alignment.centerRight,
-            child: GestureDetector(
-              onTap: () => _deleteSchedule(s),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(color: AppColors.error.withAlpha(15), borderRadius: BorderRadius.circular(8)),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.delete_outline, size: 14, color: AppColors.error),
-                  SizedBox(width: 4),
-                  Text('Delete', style: TextStyle(fontSize: 11, color: AppColors.error, fontWeight: FontWeight.w600)),
-                ]),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              GestureDetector(
+                onTap: () => _editScheduleTiming(s),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                      color: AppColors.greenPale,
+                      borderRadius: BorderRadius.circular(8)),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.edit_outlined,
+                        size: 14, color: AppColors.greenDark),
+                    SizedBox(width: 4),
+                    Text('Edit time/days',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.greenDark,
+                            fontWeight: FontWeight.w600)),
+                  ]),
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => _deleteSchedule(s),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(color: AppColors.error.withAlpha(15), borderRadius: BorderRadius.circular(8)),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.delete_outline, size: 14, color: AppColors.error),
+                    SizedBox(width: 4),
+                    Text('Delete', style: TextStyle(fontSize: 11, color: AppColors.error, fontWeight: FontWeight.w600)),
+                  ]),
+                ),
+              ),
+            ]),
           ),
         ],
       ]),
@@ -864,35 +1086,38 @@ class _AutomationScreenState extends State<AutomationScreen> {
     }
   }
 
-  Widget _actionToggle(String current, Function(String) onChanged) {
-    return Container(
-      decoration: BoxDecoration(border: Border.all(color: AppColors.greenMid.withAlpha(51)), borderRadius: BorderRadius.circular(12)),
-      child: Row(children: ['on','off'].map((a) {
-        final selected = current == a;
-        final color    = a == 'on' ? AppColors.greenMid : AppColors.warning;
-        return Expanded(
-          child: GestureDetector(
-            onTap: () => onChanged(a),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                color: selected ? color : Colors.transparent,
-                borderRadius: BorderRadius.circular(a == 'on' ? 11 : 0).copyWith(
-                  topRight:    a == 'off' ? const Radius.circular(11) : Radius.zero,
-                  bottomRight: a == 'off' ? const Radius.circular(11) : Radius.zero,
-                ),
-              ),
-              child: Center(child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(a == 'on' ? Icons.power_settings_new : Icons.power_off_outlined,
-                    size: 14, color: selected ? Colors.white : AppColors.textMuted),
-                const SizedBox(width: 6),
-                Text(a.toUpperCase(), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : AppColors.textMuted)),
-              ])),
-            ),
-          ),
-        );
-      }).toList()),
+  Widget _timePickerTile({
+    required BuildContext context,
+    required String label,
+    required TimeOfDay value,
+    required IconData icon,
+    required Color iconColor,
+    required void Function(TimeOfDay value) onPicked,
+  }) {
+    return GestureDetector(
+      onTap: () async {
+        final picked = await showTimePicker(context: context, initialTime: value);
+        if (picked != null) onPicked(picked);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.greenMid.withAlpha(80)),
+          borderRadius: BorderRadius.circular(12),
+          color: Colors.white,
+        ),
+        child: Row(children: [
+          Icon(icon, size: 18, color: iconColor),
+          const SizedBox(width: 10),
+          Text(label,
+              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+          const Spacer(),
+          Text(value.format(context),
+              style: const TextStyle(fontSize: 14, color: AppColors.textDark)),
+          const SizedBox(width: 8),
+          const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
+        ]),
+      ),
     );
   }
 

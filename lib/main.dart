@@ -9,6 +9,7 @@ import 'screens/history_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/campus_map_screen.dart';
+import 'services/runtime_mode_service.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -16,6 +17,7 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  await RuntimeModeService.initialize();
   runApp(const SmartPowerSwitchApp());
 }
 
