@@ -1,7 +1,7 @@
 name: smart_power_switch
 description: IoT Energy Monitoring and Control for DNSC Campus
 publish_to: 'none'
-version: 1.0.7+5
+version: 1.0.8+6
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
