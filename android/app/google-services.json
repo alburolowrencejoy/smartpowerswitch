@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "867230118403",
+    "firebase_url": "https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "smartpowerswitch-e90d0",
+    "storage_bucket": "smartpowerswitch-e90d0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:867230118403:android:5c57b39a164ec5ba0e5436",
+        "android_client_info": {
+          "package_name": "com.dnsc.edu.smartpowerswitch"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4peaU8dNcMgVxh6SLnOhWCS-Nf7vX6XU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:867230118403:android:f54769cd59240f850e5436",
+        "android_client_info": {
+          "package_name": "com.dnsc.smartpowerswitch"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4peaU8dNcMgVxh6SLnOhWCS-Nf7vX6XU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:867230118403:android:8d3f59ff827f2e1a0e5436",
+        "android_client_info": {
+          "package_name": "com.example.smart_power_switch"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4peaU8dNcMgVxh6SLnOhWCS-Nf7vX6XU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
