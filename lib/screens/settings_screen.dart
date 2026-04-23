@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -9,7 +8,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_colors.dart';
 import '../firebase_options.dart';
 import '../services/github_update_service.dart';
-import '../services/runtime_mode_service.dart';
 import '../widgets/top_toast.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -23,14 +21,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const String _fixedGithubRepo = 'alburolowrencejoy/smartpowerswitch';
 
   final _rateController = TextEditingController();
+  final _unassignedIotController = TextEditingController();
   bool _saving = false;
+  bool _registeringIot = false;
   double _currentRate = 11.5;
-  String _appMode = 'normal';
   String _appVersion = '';
   GithubReleaseInfo? _githubRelease;
   bool _githubChecking = false;
-  bool _modeSaving = false;
-  StreamSubscription<DatabaseEvent>? _modeSub;
 
   List<Map<String, dynamic>> _users = [];
 
@@ -45,7 +42,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _loadRate();
     _listenUsers();
-    _listenAppMode();
     _loadAppVersion();
     _checkGithubRelease(silent: true);
   }
@@ -53,7 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _rateController.dispose();
-    _modeSub?.cancel();
+    _unassignedIotController.dispose();
     super.dispose();
   }
 
@@ -61,127 +57,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final info = await PackageInfo.fromPlatform();
     if (!mounted) return;
     setState(() => _appVersion = info.version);
-  }
-
-  void _listenAppMode() {
-    _modeSub?.cancel();
-    _modeSub =
-        FirebaseDatabase.instance.ref('settings/appMode').onValue.listen((event) {
-      if (!mounted) return;
-      final raw = (event.snapshot.value ?? 'normal').toString().toLowerCase();
-      setState(() {
-        _appMode = raw == 'demo' ? 'demo' : 'normal';
-      });
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
-
-  Future<bool> _isCurrentUserAdmin() async {
-    final user = FirebaseAuth.instance.currentUser;
-    final uid = user?.uid;
-    final email = (user?.email ?? '').toLowerCase().trim();
-
-    if (uid == null) return false;
-
-    // Fast path: users node keyed by auth UID.
-    final roleByUidSnap =
-        await FirebaseDatabase.instance.ref('users/$uid/role').get();
-    final roleByUid = (roleByUidSnap.value ?? '').toString().toLowerCase().trim();
-    if (roleByUid == 'admin') {
-      return true;
-    }
-
-    // Main admin email fallback.
-    if (email == 'admin@dnsc.edu.ph') {
-      return true;
-    }
-
-    // Fallback for schemas where users are not keyed by auth UID.
-    final usersSnap = await FirebaseDatabase.instance.ref('users').get();
-    if (usersSnap.value is! Map) return false;
-
-    final users = Map<String, dynamic>.from(usersSnap.value as Map);
-    for (final entry in users.entries) {
-      if (entry.value is! Map) continue;
-      final data = Map<String, dynamic>.from(entry.value as Map);
-      final rowEmail = (data['email'] ?? '').toString().toLowerCase().trim();
-      final rowRole = (data['role'] ?? '').toString().toLowerCase().trim();
-      final isMainAdmin = data['isMainAdmin'] == true;
-      if (rowEmail == email && (rowRole == 'admin' || isMainAdmin)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  Future<void> _setAppMode(String nextMode) async {
-    if (_modeSaving || nextMode == _appMode) return;
-
-    // Settings page is admin-facing in this app flow. Avoid false negatives
-    // from schema differences in user records that can block real admins.
-    try {
-      await _isCurrentUserAdmin();
-    } catch (_) {
-      // Continue; mode write itself may still be allowed by current rules.
-    }
-    if (!mounted) return;
-
-    final isDemo = nextMode == 'demo';
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(isDemo ? 'Enable Demo Mode?' : 'Switch To Normal Mode?',
-            style:
-                const TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Text(
-          isDemo
-              ? 'Demo mode will start mock live feed and reseed demo data.'
-              : 'Normal mode will stop mock live feed and clear demo-generated telemetry/history.',
-          style: const TextStyle(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: isDemo ? AppColors.greenDark : AppColors.warning,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: Text(isDemo ? 'Enable Demo' : 'Switch',
-                style: const TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    setState(() => _modeSaving = true);
-    try {
-      await RuntimeModeService.setMode(nextMode);
-      if (!mounted) return;
-      setState(() {
-        _modeSaving = false;
-        _appMode = nextMode;
-      });
-      TopToast.show(
-        context,
-        nextMode == 'demo' ? 'Demo mode enabled.' : 'Normal mode enabled.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _modeSaving = false);
-      final msg = _isPermissionDenied(e)
-          ? 'Permission denied while changing app mode.'
-          : 'Failed to change app mode: $e';
-      TopToast.show(context, msg, isError: true);
-    }
   }
 
   void _loadRate() {
@@ -220,7 +95,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveRate() async {
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
-        TopToast.show(context, 'Enter a valid rate.', isError: true);
+      TopToast.show(context, 'Enter a valid rate.', isError: true);
       return;
     }
     setState(() => _saving = true);
@@ -231,13 +106,98 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _saving = false;
         _currentRate = rate;
       });
-        TopToast.show(context, 'Electricity rate updated.');
+      TopToast.show(context, 'Electricity rate updated.');
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
       final msg = _isPermissionDenied(e)
           ? 'Permission denied while saving rate.'
           : 'Failed to save rate: $e';
+      TopToast.show(context, msg, isError: true);
+    }
+  }
+
+  Future<void> _registerUnassignedIotDevice() async {
+    if (_registeringIot) return;
+
+    final id = _unassignedIotController.text.trim().toUpperCase();
+    if (!RegExp(r'^[A-Z0-9_-]{3,40}$').hasMatch(id)) {
+      TopToast.show(
+        context,
+        'Enter a valid Device ID (3-40 chars, A-Z, 0-9, _ or -).',
+        isError: true,
+      );
+      return;
+    }
+
+    setState(() => _registeringIot = true);
+    try {
+      final db = FirebaseDatabase.instance.ref();
+      final masterRef = db.child('master_devices/$id');
+      final masterSnap = await masterRef.get();
+
+      if (masterSnap.exists) {
+        final existing = masterSnap.value is Map
+            ? Map<String, dynamic>.from(masterSnap.value as Map)
+            : <String, dynamic>{};
+        final assignedTo = (existing['assignedTo'] ?? '').toString();
+        if (assignedTo.isNotEmpty) {
+          if (!mounted) return;
+          TopToast.show(
+            context,
+            'Device already assigned to $assignedTo.',
+            isError: true,
+          );
+          setState(() => _registeringIot = false);
+          return;
+        }
+
+        await masterRef.update({
+          'source': existing['source'] ?? 'real_iot',
+          'updatedAt': ServerValue.timestamp,
+        });
+
+        if (!mounted) return;
+        _unassignedIotController.clear();
+        setState(() => _registeringIot = false);
+        TopToast.show(context, '$id is already unassigned and ready to add.');
+        return;
+      }
+
+      await db.update({
+        'master_devices/$id': {
+          'assignedTo': '',
+          'utility': 'Unassigned',
+          'source': 'real_iot',
+          'createdAt': ServerValue.timestamp,
+        },
+        'devices/$id': {
+          'building': '',
+          'floor': '',
+          'room': '',
+          'utility': 'Unassigned',
+          'relay': false,
+          'status': 'offline',
+          'kwh': 0,
+          'voltage': 0,
+          'current': 0,
+          'power': 0,
+          'powerFactor': 0,
+          'last_seen': 0,
+          'last_updated': ServerValue.timestamp,
+        },
+      });
+
+      if (!mounted) return;
+      _unassignedIotController.clear();
+      setState(() => _registeringIot = false);
+      TopToast.show(context, '$id is now unassigned and ready for assignment.');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _registeringIot = false);
+      final msg = _isPermissionDenied(e)
+          ? 'Permission denied while registering IoT device.'
+          : 'Failed to register IoT device: $e';
       TopToast.show(context, msg, isError: true);
     }
   }
@@ -283,7 +243,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       mode: LaunchMode.externalApplication,
     );
     if (!launched && mounted) {
-      TopToast.show(context, 'Could not open the download link.', isError: true);
+      TopToast.show(context, 'Could not open the download link.',
+          isError: true);
     }
   }
 
@@ -469,7 +430,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                   if (!ctx.mounted || !mounted) return;
                   Navigator.pop(ctx);
-                    TopToast.show(context, '$name added as $selectedRole.');
+                  TopToast.show(context, '$name added as $selectedRole.');
                 } catch (e) {
                   setS(() => errorText = 'Failed: $e');
                 }
@@ -598,7 +559,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Prevent deleting own account
     final currentUid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == currentUid) {
-        TopToast.show(context, 'You cannot delete your own account.',
+      TopToast.show(context, 'You cannot delete your own account.',
           isError: true);
       return;
     }
@@ -695,7 +656,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildModeSection(),
+                    _buildIotInventorySection(),
                     const SizedBox(height: 24),
                     _buildRateSection(),
                     const SizedBox(height: 24),
@@ -714,68 +675,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildModeSection() {
-    final isDemo = _appMode == 'demo';
+  Widget _buildIotInventorySection() {
     return _section(
-      title: 'App Mode',
-      icon: Icons.tune,
+      title: 'IoT Device Inventory',
+      icon: Icons.memory_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-          isDemo
-              ? 'Demo mode is active. Mock live feed is running.'
-              : 'Normal mode is active. Mock live feed is stopped.',
-          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+        const Text(
+          'Register a real IoT device ID as unassigned so it can be added to a room/floor later.',
+          style: TextStyle(fontSize: 12, color: AppColors.textMuted),
         ),
         const SizedBox(height: 12),
         Row(children: [
           Expanded(
-            child: GestureDetector(
-              onTap: _modeSaving ? null : () => _setAppMode('normal'),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                height: 42,
-                decoration: BoxDecoration(
-                  color: !isDemo ? AppColors.greenDark : AppColors.greenPale,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Center(
-                  child: Text('Normal',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: !isDemo ? Colors.white : AppColors.textMid)),
-                ),
+            child: TextField(
+              controller: _unassignedIotController,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+              decoration: InputDecoration(
+                hintText: 'e.g. ESP32-ROOM101-001',
+                hintStyle: const TextStyle(color: AppColors.textMuted),
+                filled: true,
+                fillColor: Colors.white,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide:
+                        BorderSide(color: AppColors.greenMid.withAlpha(51))),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide:
+                        BorderSide(color: AppColors.greenMid.withAlpha(51))),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppColors.greenMid)),
               ),
             ),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: GestureDetector(
-              onTap: _modeSaving ? null : () => _setAppMode('demo'),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                height: 42,
-                decoration: BoxDecoration(
-                  color: isDemo ? AppColors.greenDark : AppColors.greenPale,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Center(
-                  child: _modeSaving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2),
-                        )
-                      : Text('Demo',
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: isDemo
-                                  ? Colors.white
-                                  : AppColors.textMid)),
-                ),
-              ),
+          const SizedBox(width: 12),
+          SizedBox(
+            height: 46,
+            child: ElevatedButton(
+              onPressed: _registeringIot ? null : _registerUnassignedIotDevice,
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenDark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
+              child: _registeringIot
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
+                  : const Text('Register',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600)),
             ),
           ),
         ]),
@@ -931,10 +885,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final uid = user['uid'] as String? ?? '';
             final isCurrentUser = uid == FirebaseAuth.instance.currentUser?.uid;
             final normalizedEmail = email.toLowerCase();
-            final isProtectedMainAdmin =
-              role == 'admin' &&
-              ((user['isMainAdmin'] == true) ||
-                normalizedEmail == 'admin@dnsc.edu.ph');
+            final isProtectedMainAdmin = role == 'admin' &&
+                ((user['isMainAdmin'] == true) ||
+                    normalizedEmail == 'admin@dnsc.edu.ph');
             final canChangeRole = !isCurrentUser && !isProtectedMainAdmin;
 
             return Container(
@@ -1011,8 +964,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       // Change role
                       Expanded(
                         child: GestureDetector(
-                          onTap:
-                              canChangeRole ? () => _changeRole(uid, role) : null,
+                          onTap: canChangeRole
+                              ? () => _changeRole(uid, role)
+                              : null,
                           child: Container(
                             height: 32,
                             decoration: BoxDecoration(
@@ -1132,10 +1086,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? release.releaseName
             : release.latestVersion;
     final statusLabel = release == null
-      ? 'Ready to check latest release.'
-      : release.updateAvailable
-        ? 'Update available: ${release.latestVersion}'
-        : 'Already on the latest version.';
+        ? 'Ready to check latest release.'
+        : release.updateAvailable
+            ? 'Update available: ${release.latestVersion}'
+            : 'Already on the latest version.';
 
     return _section(
       title: 'App Updater',
@@ -1178,8 +1132,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           _settingRow(Icons.phone_android_outlined, 'Current version',
               _appVersion.isEmpty ? 'Loading...' : _appVersion),
-          _settingRow(Icons.source_outlined, 'GitHub repo',
-              _fixedGithubRepo),
+          _settingRow(Icons.source_outlined, 'GitHub repo', _fixedGithubRepo),
           _settingRow(Icons.system_update_alt, 'Latest release', latestLabel),
           _settingRow(Icons.info_outline, 'Status', statusLabel),
           if (release?.assetUrl != null) ...[

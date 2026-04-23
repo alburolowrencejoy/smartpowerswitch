@@ -1,6 +1,67 @@
 {
   "rules": {
-    ".read": true,
-    ".write": true
+    ".read": false,
+    ".write": false,
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || (auth.uid === $uid && (data.child('role').val() === 'faculty' || data.child('role').val() === 'admin' || data.child('isMainAdmin').val() === true)))",
+        ".write": "auth != null && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || (auth.uid === $uid && ((!data.exists() && newData.child('role').val() === 'faculty') || (data.exists() && newData.child('role').val() === data.child('role').val() && newData.child('isMainAdmin').val() === data.child('isMainAdmin').val()))))"
+      }
+    },
+
+    "settings": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "buildings": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "devices": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      "$deviceId": {
+        ".read": "(auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')) || (auth == null && root.child('master_devices').child($deviceId).exists())",
+        ".write": "(auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')) || (auth == null && root.child('master_devices').child($deviceId).exists() && newData.child('building').val() == data.child('building').val() && newData.child('floor').val() == data.child('floor').val() && newData.child('room').val() == data.child('room').val() && newData.child('utility').val() == data.child('utility').val())"
+      }
+    },
+
+    "master_devices": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      "$deviceId": {
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+        "writeKey": {
+          ".read": false,
+          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+        }
+      }
+    },
+
+    "history": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "hotspots": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "notifications": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "automations": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    },
+
+    "meta": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    }
   }
 }
