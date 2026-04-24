@@ -1128,7 +1128,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final status = device['status'] as String? ?? 'offline';
     final relay = device['relay'] as bool? ?? false;
     final isOnline = status == 'online';
-    final icon = _utilityIcon(utility);
     final color = _utilityColor(utility);
 
     return Container(
@@ -1149,12 +1148,14 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-                color: isOnline
-                    ? color.withAlpha(31)
-                    : AppColors.offline.withAlpha(26),
-                borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon,
-                size: 18, color: isOnline ? color : AppColors.offline),
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: _AnimatedUtilityIcon(
+              utility: utility,
+              isOn: relay && isOnline,
+              isOnline: isOnline,
+            ),
           ),
           const Spacer(),
           Container(
@@ -1229,11 +1230,15 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   IconData _utilityIcon(String u) {
     switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':
         return Icons.lightbulb_outline;
+      case 'outlet':
       case 'outlets':
         return Icons.electrical_services;
+      case 'aircon':
       case 'ac':
+      case 'air conditioner':
         return Icons.ac_unit;
       default:
         return Icons.device_unknown_outlined;
@@ -1242,11 +1247,15 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   Color _utilityColor(String u) {
     switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':
         return const Color(0xFFE8922A);
+      case 'outlet':
       case 'outlets':
         return AppColors.greenMid;
+      case 'aircon':
       case 'ac':
+      case 'air conditioner':
         return const Color(0xFF2196F3);
       default:
         return AppColors.textMuted;
@@ -1255,14 +1264,143 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   String _utilityLabel(String u) {
     switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':
         return 'Lights';
+      case 'outlet':
       case 'outlets':
         return 'Outlets';
+      case 'aircon':
       case 'ac':
+      case 'air conditioner':
         return 'AC Unit';
       default:
         return 'Device';
     }
+  }
+
+}
+
+class _AnimatedUtilityIcon extends StatefulWidget {
+  final String utility;
+  final bool isOn;
+  final bool isOnline;
+
+  const _AnimatedUtilityIcon({
+    required this.utility,
+    required this.isOn,
+    required this.isOnline,
+  });
+
+  @override
+  State<_AnimatedUtilityIcon> createState() => _AnimatedUtilityIconState();
+}
+
+class _AnimatedUtilityIconState extends State<_AnimatedUtilityIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: Duration(milliseconds: widget.isOn ? 1100 : 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AnimatedUtilityIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isOn != widget.isOn || oldWidget.isOnline != widget.isOnline) {
+      _controller.duration = Duration(milliseconds: widget.isOn ? 1100 : 1500);
+      if (!_controller.isAnimating) {
+        _controller.repeat(reverse: true);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  IconData _iconForUtility(String u) {
+    switch (u.toLowerCase()) {
+      case 'light':
+      case 'lights':
+        return Icons.lightbulb_outline;
+      case 'outlet':
+      case 'outlets':
+        return Icons.electrical_services;
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return Icons.ac_unit;
+      default:
+        return Icons.device_unknown_outlined;
+    }
+  }
+
+  Color _colorForUtility(String u) {
+    switch (u.toLowerCase()) {
+      case 'light':
+      case 'lights':
+        return const Color(0xFFE8922A);
+      case 'outlet':
+      case 'outlets':
+        return AppColors.greenMid;
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return const Color(0xFF2196F3);
+      default:
+        return AppColors.textMuted;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final utilityColor = _colorForUtility(widget.utility);
+    final icon = _iconForUtility(widget.utility);
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final pulse = 0.5 + (_controller.value * 0.5);
+        final scale = widget.isOn
+            ? 0.98 + (pulse * 0.16)
+            : 0.95 + (pulse * 0.07);
+        final glow = widget.isOn
+            ? utilityColor.withAlpha((70 + (pulse * 120)).toInt())
+            : Colors.grey.withAlpha((22 + (pulse * 40)).toInt());
+        final fill = widget.isOn
+            ? utilityColor.withAlpha((28 + (pulse * 56)).toInt())
+            : Colors.grey.withAlpha((16 + (pulse * 28)).toInt());
+        final iconColor = widget.isOn
+            ? utilityColor
+            : AppColors.textMuted.withAlpha((180 + (pulse * 45)).toInt());
+
+        return Transform.scale(
+          scale: scale,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: glow,
+                  blurRadius: widget.isOn ? 12 + (pulse * 10) : 4 + (pulse * 3),
+                  spreadRadius: widget.isOn ? 1 + (pulse * 1.5) : 0,
+                ),
+              ],
+            ),
+            child: Icon(icon, size: 18, color: iconColor),
+          ),
+        );
+      },
+    );
   }
 }

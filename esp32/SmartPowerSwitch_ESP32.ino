@@ -3,14 +3,14 @@
 
   What this sketch does:
   1) Connects to WiFi
-  2) Reads PZEM-004T values (voltage/current/power/energy/pf/frequency)
+  2) Reads PZEM-004T values (voltage/current/power/energy)
   3) Polls Firebase relay command from: /devices/<DEVICE_ID>/relay
   4) Controls an SSR output pin
   5) Pushes telemetry to: /devices/<DEVICE_ID>
 
   Required Arduino libraries:
   - ArduinoJson (by Benoit Blanchon)
-  - PZEM004Tv30 (by mandulaj)
+  - PZEM004T (legacy PZEM-004T library by Oleg Sokolov)
 
   Board:
   - ESP32 Dev Module (or compatible ESP32)
@@ -18,7 +18,7 @@
   Wiring (example):
   - SSR IN  -> GPIO 26
   - PZEM TX -> ESP32 RX2 (GPIO 16)
-  - PZEM RX -> ESP32 TX2 (GPIO 17) 
+  - PZEM RX -> ESP32 TX2 (GPIO 17)
   - Common GND
 
   IMPORTANT:
@@ -31,15 +31,18 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <PZEM004Tv30.h>
+#include <PZEM004T.h>
 #include <time.h>
 
 // ===================== USER CONFIG =====================
-static const char* WIFI_SSID = "YOUR_WIFI_SSID";
-static const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+static const char* WIFI_SSID = "xxxRAGExxx";
+static const char* WIFI_PASSWORD = "Lowelbaby12";
 
 static const char* FIREBASE_DB_URL =
     "https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app";
+
+// Must match the address programmed into the PZEM module.
+static const IPAddress PZEM_ADDRESS(192, 168, 1, 1);
 
 // Must match ID registered in app (master_devices/<ID>)
 static const char* DEVICE_ID = "ESP32-ROOM101-001";
@@ -60,12 +63,13 @@ static const uint32_t WIFI_RETRY_MS = 5000;
 // =======================================================
 
 #if defined(ESP32)
-PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
+PZEM004T pzem(&Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
 #else
-PZEM004Tv30 pzem(Serial2);
+PZEM004T pzem(&Serial2);
 #endif
 
 bool relayState = false;
+bool pzemReady = false;
 
 uint32_t lastRelayPollMs = 0;
 uint32_t lastTelemetryPushMs = 0;
@@ -217,18 +221,34 @@ void pollRelayAndAssignment() {
 }
 
 void pushTelemetry() {
-  const float voltage = pzem.voltage();
-  const float current = pzem.current();
-  const float power = pzem.power();
-  const float energy = pzem.energy();
-  const float pf = pzem.pf();
-  const float frequency = pzem.frequency();
+  if (!pzemReady) {
+    pzemReady = pzem.setAddress(PZEM_ADDRESS);
+    if (!pzemReady) {
+      Serial.println("[PZEM] Address setup failed. Check wiring and AC side.");
+    }
+  }
 
-  const bool pzemOk = !isnan(voltage) && !isnan(current) && !isnan(power) &&
-                      !isnan(energy) && !isnan(pf);
+  const float voltage = pzem.voltage(PZEM_ADDRESS);
+  const float current = pzem.current(PZEM_ADDRESS);
+  const float power = pzem.power(PZEM_ADDRESS);
+  const float energyWh = pzem.energy(PZEM_ADDRESS);
+
+  const bool pzemOk = voltage >= 0.0f && current >= 0.0f && power >= 0.0f &&
+                      energyWh >= 0.0f;
 
   const uint64_t t = nowMs();
   const String status = pzemOk ? "online" : "offline";
+
+  Serial.print("[PZEM] V=");
+  Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
+  Serial.print(" I=");
+  Serial.print(pzemOk ? String(roundTo(current, 2)) : String("nan"));
+  Serial.print(" P=");
+  Serial.print(pzemOk ? String(roundTo(power, 1)) : String("nan"));
+  Serial.print(" kWh=");
+  Serial.print(pzemOk ? String(roundTo(energyWh / 1000.0f, 4)) : String("nan"));
+  Serial.print(" relay=");
+  Serial.println(relayState ? "ON" : "OFF");
 
   DynamicJsonDocument doc(512);
   doc["relay"] = relayState;
@@ -240,11 +260,9 @@ void pushTelemetry() {
     doc["voltage"] = roundTo(voltage, 1);
     doc["current"] = roundTo(current, 2);
     doc["power"] = roundTo(power, 1);
-    doc["kwh"] = roundTo(energy, 4);
-    doc["powerFactor"] = roundTo(pf, 2);
-    if (!isnan(frequency)) {
-      doc["frequency"] = roundTo(frequency, 1);
-    }
+    doc["kwh"] = roundTo(energyWh / 1000.0f, 4);
+    doc["powerFactor"] = 0;
+    doc["frequency"] = 0;
   }
 
   String payload;
@@ -257,17 +275,6 @@ void pushTelemetry() {
     Serial.println(code);
     return;
   }
-
-  Serial.print("[PZEM] V=");
-  Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
-  Serial.print(" I=");
-  Serial.print(pzemOk ? String(roundTo(current, 2)) : String("nan"));
-  Serial.print(" P=");
-  Serial.print(pzemOk ? String(roundTo(power, 1)) : String("nan"));
-  Serial.print(" kWh=");
-  Serial.print(pzemOk ? String(roundTo(energy, 4)) : String("nan"));
-  Serial.print(" relay=");
-  Serial.println(relayState ? "ON" : "OFF");
 }
 
 void setup() {
@@ -277,7 +284,13 @@ void setup() {
   pinMode(SSR_PIN, OUTPUT);
   setRelay(false);  // Safe default: OFF at boot
 
-  Serial2.begin(9600, SERIAL_8N1, PZEM_RX_PIN, PZEM_TX_PIN);
+  pzem.setReadTimeout(1000);
+  pzemReady = pzem.setAddress(PZEM_ADDRESS);
+  if (pzemReady) {
+    Serial.println("[PZEM] Address set.");
+  } else {
+    Serial.println("[PZEM] Address set failed. Check wiring and AC side.");
+  }
 
   connectWiFi();
   if (WiFi.status() == WL_CONNECTED) {

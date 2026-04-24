@@ -23,8 +23,10 @@ This guide explains how to use the ESP32 firmware with SmartPowerSwitch.
 
 Install these in Arduino IDE:
 
-- ArduinoJson
-- PZEM004Tv30
+- ArduinoJson by Benoit Blanchon
+- PZEM004T by Oleg Sokolov (legacy PZEM-004T library)
+
+Use Library Manager: Sketch -> Include Library -> Manage Libraries, then search for each package name above.
 
 ## Wiring
 
@@ -47,6 +49,8 @@ Open [SmartPowerSwitch_ESP32.ino](SmartPowerSwitch_ESP32.ino) and edit these val
 - `SSR_ACTIVE_HIGH` depending on your SSR board
 
 The Firebase database URL is already set for this project.
+
+This sketch uses the legacy PZEM004T library and expects a single PZEM module on the default address `192.168.1.1`.
 
 ## Device ID setup in the app
 
@@ -128,6 +132,7 @@ The ESP32:
 - Check TX and RX wiring
 - Make sure the PZEM is powered correctly
 - Confirm baud rate and Serial2 pins
+- Confirm the module is using the legacy PZEM004T protocol
 
 ### Firebase reads or writes fail
 

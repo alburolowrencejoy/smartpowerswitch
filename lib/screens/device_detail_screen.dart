@@ -31,20 +31,17 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   double _ratePhp = 11.5;
 
   StreamSubscription? _deviceSub;
-  StreamSubscription? _relaySub;
 
   @override
   void initState() {
     super.initState();
     _listenToDevice();
-    _listenToRelay();
     _fetchRate();
   }
 
   @override
   void dispose() {
     _deviceSub?.cancel();
-    _relaySub?.cancel();
     super.dispose();
   }
 
@@ -61,18 +58,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       setState(() {
         _deviceData = data;
         _isOnline   = _checkOnline(data);
+        _relay      = (data['relay'] as bool?) ?? false;
       });
-    });
-  }
-
-  // ── Listen to relay inside buildings node ────────────────────────────────────
-  void _listenToRelay() {
-    _relaySub = FirebaseDatabase.instance
-        .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
-        .onValue
-        .listen((event) {
-      if (!mounted) return;
-      setState(() => _relay = (event.snapshot.value as bool?) ?? false);
     });
   }
 
@@ -96,20 +83,52 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   // ── Toggle relay in BOTH locations ───────────────────────────────────────────
   Future<void> _toggleRelay() async {
-    if (!_isOnline || _toggling) return;
-    setState(() => _toggling = true);
-
-    final newRelay = !_relay;
-    final db = FirebaseDatabase.instance.ref();
-
-    // Write to both paths simultaneously
-    await db.update({
-      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay':
-          newRelay,
-      'devices/${widget.deviceId}/relay': newRelay,
+    if (_toggling) return;
+    final previousRelay = _relay;
+    final newRelay = !previousRelay;
+    setState(() {
+      _relay = newRelay;
+      _toggling = true;
     });
 
-    setState(() => _toggling = false);
+    final db = FirebaseDatabase.instance.ref();
+    Object? lastError;
+    var success = false;
+
+    for (var attempt = 0; attempt < 2 && !success; attempt++) {
+      try {
+        // Update the live device node first so the ESP32 and the relay card
+        // react immediately, then mirror to the building copy in the background.
+        await db
+            .child('devices/${widget.deviceId}/relay')
+            .set(newRelay)
+            .timeout(const Duration(milliseconds: 1200));
+
+        // Best-effort mirror for the building/floor screens.
+        unawaited(db
+            .child('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
+            .set(newRelay));
+
+        success = true;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 1) {
+          await Future<void>.delayed(Duration(milliseconds: 80));
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _toggling = false;
+      if (!success) {
+        _relay = previousRelay;
+      }
+    });
+
+    if (!success) {
+      debugPrint('Relay update failed: $lastError');
+    }
   }
 
   // ── Build ────────────────────────────────────────────────────────────────────
@@ -298,7 +317,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         // Only show toggle if role is admin
         if (widget.role == 'admin')
           GestureDetector(
-            onTap: _isOnline && !_toggling ? _toggleRelay : null,
+            onTap: !_toggling ? _toggleRelay : null,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 250),
               width: 64, height: 34,
@@ -317,12 +336,44 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     width: 30,
                     decoration: const BoxDecoration(
                         color: Colors.white, shape: BoxShape.circle),
-                    child: _toggling
-                        ? const Padding(
-                            padding: EdgeInsets.all(6),
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: AppColors.greenMid))
-                        : null,
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        switchInCurve: Curves.easeOutBack,
+                        switchOutCurve: Curves.easeIn,
+                        transitionBuilder: (child, animation) {
+                          return ScaleTransition(
+                            scale: Tween<double>(begin: 0.5, end: 1.0)
+                                .animate(animation),
+                            child: RotationTransition(
+                              turns: Tween<double>(begin: 0.85, end: 1.0)
+                                  .animate(animation),
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: _toggling
+                            ? const SizedBox(
+                                key: ValueKey('loading'),
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.greenMid,
+                                ),
+                              )
+                            : Icon(
+                                _relay
+                                    ? Icons.power_rounded
+                                    : Icons.power_off_rounded,
+                                key: ValueKey<bool>(_relay),
+                                size: 15,
+                                color: _relay
+                                    ? AppColors.greenMid
+                                    : AppColors.textMuted,
+                              ),
+                      ),
+                    ),
                   ),
                 ),
               ]),
@@ -475,28 +526,43 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   String _utilityLabel(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':  return 'Lights';
+      case 'outlet':
       case 'outlets': return 'Outlets';
-      case 'ac':      return 'AC Unit';
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return 'AC Unit';
       default:        return 'Device';
     }
   }
 
   IconData _utilityIcon(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':  return Icons.lightbulb_outline;
+      case 'outlet':
       case 'outlets': return Icons.electrical_services;
-      case 'ac':      return Icons.ac_unit;
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return Icons.ac_unit;
       default:        return Icons.device_unknown_outlined;
     }
   }
 
   Color _utilityColor(String u) {
-    switch (u) {
+    switch (u.toLowerCase()) {
+      case 'light':
       case 'lights':  return const Color(0xFFE8922A);
+      case 'outlet':
       case 'outlets': return AppColors.greenMid;
-      case 'ac':      return const Color(0xFF2196F3);
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return const Color(0xFF2196F3);
       default:        return AppColors.textMuted;
     }
   }
