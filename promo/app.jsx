@@ -143,7 +143,7 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
       <svg width="100%" height="100%" viewBox="0 0 320 200" fill="none">
         <rect width="320" height="200" fill={accent + '10'} />
         <rect x="20" y="20" width="280" height="160" rx="12" fill="white" stroke={accent + '20'} />
-        <text x="32" y="44" fontFamily="Syne, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Automation Schedules</text>
+        <text x="32" y="44" fontFamily="DM Sans, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Automation Schedules</text>
         {[
           { label: 'Turn off Lights',  scope: 'Global',   time: '22:00', days: 'Mon–Fri', color: '#2E9E52' },
           { label: 'AC off at noon',   scope: 'IC',       time: '12:00', days: 'Weekdays', color: '#1A5C35' },
@@ -164,7 +164,7 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
       <svg width="100%" height="100%" viewBox="0 0 320 200" fill="none">
         <rect width="320" height="200" fill={accent + '10'} />
         <rect x="20" y="20" width="280" height="120" rx="12" fill="white" stroke={accent + '20'} />
-        <text x="32" y="44" fontFamily="Syne, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Consumption Trend</text>
+        <text x="32" y="44" fontFamily="DM Sans, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Consumption Trend</text>
         <polyline
           className={`trend-line ${isActive ? 'is-active' : ''}`}
           points="30,110 62,90 94,100 126,70 158,85 190,65 222,75 254,55 286,60"
@@ -190,19 +190,19 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
       <svg width="100%" height="100%" viewBox="0 0 320 200" fill="none">
         <rect width="320" height="200" fill={accent + '10'} />
         <rect x="20" y="20" width="160" height="160" rx="16" fill="white" stroke={accent + '20'} />
-        <text x="100" y="50" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="10" fontWeight="700" fill={accent}>DEV-2024-A3F7</text>
+        <text x="100" y="50" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="10" fontWeight="700" fill={accent}>DEV-2024-A3F7</text>
         <circle cx="100" cy="100" r="32" fill={accent + '15'} stroke={accent} strokeWidth="2" />
         <text x="100" y="96" textAnchor="middle" fontSize="8" fill={accent + '80'}>ESP32</text>
-        <text x="100" y="108" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Lights</text>
+        <text x="100" y="108" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="11" fontWeight="700" fill={accent}>Lights</text>
         <rect x="32" y="145" width="136" height="22" rx="8" fill={accent} />
         <text x="100" y="160" textAnchor="middle" fontSize="9" fontWeight="600" fill="white">RELAY ON ●</text>
         {/* Right panel */}
         <rect x="192" y="20" width="108" height="60" rx="12" fill="white" stroke={accent + '20'} />
         <text x="246" y="42" textAnchor="middle" fontSize="8" fill="#6B8F74">Voltage</text>
-        <text x="246" y="58" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="14" fontWeight="800" fill={accent}>220V</text>
+        <text x="246" y="58" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="14" fontWeight="800" fill={accent}>220V</text>
         <rect x="192" y="92" width="108" height="60" rx="12" fill="white" stroke={accent + '20'} />
         <text x="246" y="114" textAnchor="middle" fontSize="8" fill="#6B8F74">Power</text>
-        <text x="246" y="130" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="14" fontWeight="800" fill={accent}>1.2kW</text>
+        <text x="246" y="130" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="14" fontWeight="800" fill={accent}>1.2kW</text>
         <rect x="192" y="164" width="108" height="36" rx="12" fill="white" stroke={accent + '20'} />
         <circle cx="208" cy="182" r="4" fill="#2E9E52" />
         <text x="220" y="186" fontSize="9" fontWeight="600" fill="#0F1F14">Online</text>
@@ -215,7 +215,7 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
         <rect x="20" y="20" width="132" height="160" rx="16" fill="white" stroke={accent} strokeWidth="1.5" />
         <rect x="20" y="20" width="132" height="50" rx="16" fill={accent} />
         <rect x="20" y="50" width="132" height="20" rx="0" fill={accent} />
-        <text x="86" y="50" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="13" fontWeight="800" fill="white">ADMIN</text>
+        <text x="86" y="50" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="13" fontWeight="800" fill="white">ADMIN</text>
         <text x="86" y="65" textAnchor="middle" fontSize="9" fill="rgba(194,237,208,0.8)">Full Access</text>
         {['Relay Control','Manage Users','Settings','Analytics','Campus Map','Automation'].map((f, i) => (
           <g key={i}>
@@ -227,7 +227,7 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
         <rect x="168" y="20" width="132" height="160" rx="16" fill="white" stroke={accent + '40'} strokeWidth="1.5" />
         <rect x="168" y="20" width="132" height="50" rx="16" fill={accent + '20'} />
         <rect x="168" y="50" width="132" height="20" rx="0" fill={accent + '20'} />
-        <text x="234" y="50" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="13" fontWeight="800" fill={accent}>FACULTY</text>
+        <text x="234" y="50" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="13" fontWeight="800" fill={accent}>FACULTY</text>
         <text x="234" y="65" textAnchor="middle" fontSize="9" fill={accent + '80'}>View Only</text>
         {['Monitor Energy','View History','Campus Map','Analytics','—','—'].map((f, i) => (
           <g key={i}>
@@ -405,9 +405,6 @@ const App = () => {
           </div>
           <span className="nav-logo-text">Smart<span>Power</span>Switch</span>
         </a>
-        <a className="nav-cta" href="#" aria-label="GitHub" title="GitHub">
-          <Icon name="github" size={16} />
-        </a>
       </nav>
 
       {/* Hero */}
@@ -571,18 +568,18 @@ const App = () => {
             <svg width="100%" viewBox="0 0 340 300" fill="none">
               {/* ESP32 box */}
               <rect x="110" y="100" width="120" height="80" rx="14" fill="#1A5C35" />
-              <text x="170" y="135" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="11" fontWeight="800" fill="white">ESP32</text>
+              <text x="170" y="135" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="11" fontWeight="800" fill="white">ESP32</text>
               <text x="170" y="152" textAnchor="middle" fontSize="9" fill="rgba(194,237,208,0.7)">Controller</text>
               {/* Wi-Fi waves */}
               <path d="M155 95 Q170 85 185 95" stroke="#6ECB8A" strokeWidth="2" fill="none" strokeLinecap="round" />
               <path d="M148 89 Q170 75 192 89" stroke="#6ECB8A" strokeWidth="1.5" fill="none" strokeLinecap="round" opacity="0.6" />
               {/* PZEM */}
               <rect x="10" y="120" width="90" height="50" rx="12" fill="#2E9E52" />
-              <text x="55" y="143" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="9" fontWeight="700" fill="white">PZEM-004T</text>
+              <text x="55" y="143" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="9" fontWeight="700" fill="white">PZEM-004T</text>
               <text x="55" y="158" textAnchor="middle" fontSize="8" fill="rgba(194,237,208,0.8)">Energy Meter</text>
               {/* Firebase */}
               <rect x="240" y="120" width="90" height="50" rx="12" fill="#EBF7EF" stroke="#2E9E52" strokeWidth="1.5" />
-              <text x="285" y="143" textAnchor="middle" fontFamily="Syne, sans-serif" fontSize="9" fontWeight="700" fill="#1A5C35">Firebase</text>
+              <text x="285" y="143" textAnchor="middle" fontFamily="DM Sans, sans-serif" fontSize="9" fontWeight="700" fill="#1A5C35">Firebase</text>
               <text x="285" y="158" textAnchor="middle" fontSize="8" fill="#6B8F74">Realtime DB</text>
               {/* Relay */}
               <rect x="110" y="210" width="55" height="48" rx="10" fill="#C2EDD0" stroke="#2E9E52" strokeWidth="1.5" />
@@ -627,7 +624,7 @@ const App = () => {
               <Icon name="bolt" size={16} color="white" />
             </div>
             <div>
-              <div style={{ fontFamily: 'Syne, sans-serif', fontWeight: 700, fontSize: '14px', color: 'rgba(194,237,208,0.8)' }}>SmartPowerSwitch</div>
+              <div style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700, fontSize: '14px', color: 'rgba(194,237,208,0.8)' }}>SmartPowerSwitch</div>
               <div className="footer-text">DNSC Campus Energy Control System</div>
             </div>
           </div>

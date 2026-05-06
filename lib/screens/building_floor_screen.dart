@@ -43,6 +43,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   StreamSubscription? _energySub;
   StreamSubscription? _historySub;
   StreamSubscription? _onlineSub;
+  Map<String, dynamic> _liveDevices = {};
 
   bool get isAdmin => widget.role == 'admin';
 
@@ -210,32 +211,56 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
     _energySub =
         FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      if (!mounted || _hasMonthlyBuildingEnergy) return;
       final data = event.snapshot.value;
-      if (data is! Map) {
-        setState(() {
-          _buildingKwh = 0;
-          _buildingCost = 0;
+      final liveDevices = <String, dynamic>{};
+      double kwh = 0;
+
+      if (data is Map) {
+        data.forEach((id, val) {
+          if (val is! Map) return;
+          final device = Map<String, dynamic>.from(val);
+          liveDevices[id.toString()] = device;
+
+          final building = (device['building'] ?? '').toString();
+          if (building != widget.buildingCode) return;
+          kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
         });
-        return;
       }
 
-      double kwh = 0;
-      data.forEach((_, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        final building = (device['building'] ?? '').toString();
-        if (building != widget.buildingCode) return;
-        kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
-      });
-
+      if (!mounted) return;
       setState(() {
-        _buildingKwh = kwh;
-        _buildingCost = kwh * 11.5;
+        _liveDevices = liveDevices;
+        if (!_hasMonthlyBuildingEnergy) {
+          _buildingKwh = kwh;
+          _buildingCost = kwh * 11.5;
+        }
       });
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
+  }
+
+  double _roomKwh(String room) {
+    double total = 0;
+    _liveDevices.forEach((_, val) {
+      if (val is! Map) return;
+      final device = Map<String, dynamic>.from(val);
+      if ((device['building'] ?? '').toString() != widget.buildingCode) return;
+      if (device['room']?.toString().trim() != room.trim()) return;
+      total += ((device['kwh'] ?? 0.0) as num).toDouble();
+    });
+    return total;
+  }
+
+  double _currentEnergyKwh() {
+    if (_selectedRoom != null) {
+      return _roomKwh(_selectedRoom!);
+    }
+    return _buildingKwh;
+  }
+
+  String _energyScopeLabel() {
+    return _selectedRoom != null ? 'Room' : 'Building';
   }
 
   String _monthKey(DateTime date) =>
@@ -714,7 +739,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           _buildHeader(),
           _buildBuildingDashboard(),
           _buildFloorTabs(),
-          Expanded(
+          Flexible(
+            fit: FlexFit.loose,
             child: _selectedRoom == null
                 ? _buildRoomsList()
                 : _buildUtilitiesInRoom(_selectedRoom!),
@@ -802,6 +828,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Widget _buildBuildingDashboard() {
+    final energyKwh = _currentEnergyKwh();
+    final energyCost = energyKwh * 11.5;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
       decoration: const BoxDecoration(
@@ -813,11 +842,14 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       ),
       child: Row(children: [
         Expanded(
-            child: _dashCard('Energy', '${_buildingKwh.toStringAsFixed(1)} kWh',
-                Icons.bolt, AppColors.greenLight)),
+            child: _dashCard(
+                _energyScopeLabel(),
+                '${energyKwh.toStringAsFixed(1)} kWh',
+                Icons.bolt,
+                AppColors.greenLight)),
         const SizedBox(width: 10),
         Expanded(
-            child: _dashCard('Cost', 'PHP ${_buildingCost.toStringAsFixed(0)}',
+            child: _dashCard('Cost', 'PHP ${energyCost.toStringAsFixed(0)}',
                 Icons.payments_outlined, AppColors.greenPale)),
         const SizedBox(width: 10),
         Expanded(
@@ -834,24 +866,34 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Widget _dashCard(String label, String value, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-          color: Colors.white.withAlpha(15),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white.withAlpha(26))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: 14, color: color),
-        const SizedBox(height: 6),
-        Text(value,
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: color)),
-        Text(label,
-            style: TextStyle(fontSize: 10, color: color.withAlpha(179))),
-      ]),
+    return SizedBox(
+      height: 84,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        decoration: BoxDecoration(
+            color: Colors.white.withAlpha(15),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white.withAlpha(26))),
+        child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(height: 6),
+              Text(value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontFamily: 'Outfit',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: color)),
+              Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10, color: color.withAlpha(179))),
+            ]),
+      ),
     );
   }
 
@@ -1278,7 +1320,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         return 'Device';
     }
   }
-
 }
 
 class _AnimatedUtilityIcon extends StatefulWidget {
@@ -1312,7 +1353,8 @@ class _AnimatedUtilityIconState extends State<_AnimatedUtilityIcon>
   @override
   void didUpdateWidget(covariant _AnimatedUtilityIcon oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.isOn != widget.isOn || oldWidget.isOnline != widget.isOnline) {
+    if (oldWidget.isOn != widget.isOn ||
+        oldWidget.isOnline != widget.isOnline) {
       _controller.duration = Duration(milliseconds: widget.isOn ? 1100 : 1500);
       if (!_controller.isAnimating) {
         _controller.repeat(reverse: true);
@@ -1369,9 +1411,8 @@ class _AnimatedUtilityIconState extends State<_AnimatedUtilityIcon>
       animation: _controller,
       builder: (context, child) {
         final pulse = 0.5 + (_controller.value * 0.5);
-        final scale = widget.isOn
-            ? 0.98 + (pulse * 0.16)
-            : 0.95 + (pulse * 0.07);
+        final scale =
+            widget.isOn ? 0.98 + (pulse * 0.16) : 0.95 + (pulse * 0.07);
         final glow = widget.isOn
             ? utilityColor.withAlpha((70 + (pulse * 120)).toInt())
             : Colors.grey.withAlpha((22 + (pulse * 40)).toInt());

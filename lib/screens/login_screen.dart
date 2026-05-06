@@ -376,23 +376,25 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Icon(Icons.bolt, color: Colors.white, size: logoIconSize),
             ),
             SizedBox(width: isNarrow ? 8 : 10),
-            RichText(
-              overflow: TextOverflow.ellipsis,
-              text: const TextSpan(
-                style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
-                children: [
-                  TextSpan(text: 'Smart'),
-                  TextSpan(
-                    text: 'Power',
-                    style: TextStyle(color: AppColors.greenLight),
+            Flexible(
+              child: RichText(
+                overflow: TextOverflow.ellipsis,
+                text: const TextSpan(
+                  style: TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
                   ),
-                  TextSpan(text: 'Switch'),
-                ],
+                  children: [
+                    TextSpan(text: 'Smart'),
+                    TextSpan(
+                      text: 'Power',
+                      style: TextStyle(color: AppColors.greenLight),
+                    ),
+                    TextSpan(text: 'Switch'),
+                  ],
+                ),
               ),
             ),
           ]),

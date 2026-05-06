@@ -24,7 +24,7 @@ This guide explains how to use the ESP32 firmware with SmartPowerSwitch.
 Install these in Arduino IDE:
 
 - ArduinoJson by Benoit Blanchon
-- PZEM004T by Oleg Sokolov (legacy PZEM-004T library)
+- PZEM004Tv30 by Mandulaj
 
 Use Library Manager: Sketch -> Include Library -> Manage Libraries, then search for each package name above.
 
@@ -46,11 +46,35 @@ Open [SmartPowerSwitch_ESP32.ino](SmartPowerSwitch_ESP32.ino) and edit these val
 - `DEVICE_ID`
 - `SSR_PIN` if needed
 - `PZEM_RX_PIN` and `PZEM_TX_PIN` if you use different pins
+- `PZEM_MODBUS_ADDR` if your module address is not `0xF8`
 - `SSR_ACTIVE_HIGH` depending on your SSR board
 
 The Firebase database URL is already set for this project.
 
-This sketch uses the legacy PZEM004T library and expects a single PZEM module on the default address `192.168.1.1`.
+This sketch uses Modbus-RTU over UART through the PZEM004Tv30 library.
+Factory default address is `0xF8` for a single module.
+Custom per-device addresses are `0x01` to `0xF7`.
+
+## PZEM Modbus register addresses (PZEM-004T-100A-D-P V1.0)
+
+Read input registers with function code `0x04` starting at `0x0000` for `0x000A` registers:
+
+- `0x0000` Voltage (`0.1 V` units)
+- `0x0001` Current low word
+- `0x0002` Current high word (`0x0002:0x0001` as 32-bit, `0.001 A` units)
+- `0x0003` Power low word
+- `0x0004` Power high word (`0x0004:0x0003` as 32-bit, `0.1 W` units)
+- `0x0005` Energy low word
+- `0x0006` Energy high word (`0x0006:0x0005` as 32-bit, `1 Wh` units)
+- `0x0007` Frequency (`0.1 Hz` units)
+- `0x0008` Power factor (`0.01` units)
+- `0x0009` Alarm status
+
+Other key registers/commands:
+
+- Holding register `0x0001`: Alarm threshold (read `0x03`, write `0x06`)
+- Holding register `0x0002`: Slave address (read `0x03`, write `0x06`)
+- Command `0x42`: Reset energy counter
 
 ## Device ID setup in the app
 
@@ -132,7 +156,8 @@ The ESP32:
 - Check TX and RX wiring
 - Make sure the PZEM is powered correctly
 - Confirm baud rate and Serial2 pins
-- Confirm the module is using the legacy PZEM004T protocol
+- Confirm `PZEM_MODBUS_ADDR` matches the module slave address (factory default `0xF8`)
+- If PZEM TX is 5V TTL, add a level shifter or resistor divider before ESP32 RX
 
 ### Firebase reads or writes fail
 

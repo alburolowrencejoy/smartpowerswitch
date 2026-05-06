@@ -18,6 +18,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
   String _role = 'faculty';
   String _userName = '';
+  String? _userUid;
   bool _roleLoaded = false;
   bool _compactMenuOpen = false;
 
@@ -26,6 +27,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   double _totalKwh = 0;
   double _totalCostPhp = 0;
+  double _monthlyKwh = 0.0;
+  double _monthlyCostPhp = 0.0;
   double _electricityRate = 11.5;
   int _assignedDevices = 0;
   int _unassignedDevices = 0;
@@ -57,9 +60,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _masterSub = _devicesSub = _rateSub = _historySub = _buildingsSub = null;
   }
 
+  @override
+  void dispose() {
+    _cancelRealtimeSubs();
+    super.dispose();
+  }
+
   Future<void> _hydrateSessionFromAuth() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+    _userUid = user.uid;
 
     try {
       final snap =
@@ -90,10 +100,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (args is Map<String, dynamic>) {
         _role = args['role'] as String? ?? 'faculty';
         _userName = args['name'] as String? ?? '';
-      } else {
-        _hydrateSessionFromAuth();
       }
       _roleLoaded = true;
+      _hydrateSessionFromAuth();
       _listenToBuildings();
       _listenToMasterDevices();
       _listenToEnergyData();
@@ -102,19 +111,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  @override
-  void dispose() {
-    _cancelRealtimeSubs();
-    super.dispose();
-  }
-
   // ── Listen to buildings from Firebase ─────────────────────────────────────
   void _listenToBuildings() {
     _buildingsSub =
         FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
       if (!mounted) return;
       final raw = event.snapshot.value;
-      
+
       if (raw == null || raw is! Map) {
         debugPrint('[Buildings] Expected Map, got ${raw.runtimeType}: $raw');
         setState(() => _buildings = []);
@@ -138,7 +141,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           });
         });
 
-        list.sort((a, b) => (a['code'] as String).compareTo(b['code'] as String));
+        list.sort(
+            (a, b) => (a['code'] as String).compareTo(b['code'] as String));
         setState(() => _buildings = list);
       } catch (e, st) {
         debugPrint('[Buildings] Exception: $e\n$st');
@@ -208,12 +212,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       data.forEach((id, val) {
         if (val is! Map) return;
         final device = Map<String, dynamic>.from(val);
-        final building = (device['building'] ?? '').toString();
         final utility = (device['utility'] ?? '').toString();
-        final kwh = (device['kwh'] ?? 0.0) as num;
-        if (building.isNotEmpty) totalKwh += kwh.toDouble();
+        final kwhValue = device['kwh'];
+        final kwh = kwhValue is num
+            ? kwhValue.toDouble()
+            : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
+
+        totalKwh += kwh;
         final n = _capitalizeFirst(utility);
-        if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh.toDouble();
+        if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh;
       });
       setState(() {
         _totalKwh = totalKwh;
@@ -248,9 +255,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       final raw = event.snapshot.value;
       if (raw == null) {
-        setState(() => _historyData = []);
+        setState(() {
+          _historyData = [];
+          _buildingEnergy = {};
+        });
         return;
       }
+
       final root = Map<String, dynamic>.from(raw as Map);
       final data = _pickRangeNode(root, _analyticsRange);
       final List<Map<String, dynamic>> list = [];
@@ -260,13 +271,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         list.add({
           'label': key,
           'kwh': (entry['total_kwh'] ?? 0.0) as num,
-          'cost': (entry['total_cost'] ?? 0.0) as num
+          'cost': (entry['total_cost'] ?? 0.0) as num,
         });
       });
       list.sort((a, b) => a['label'].compareTo(b['label']));
       setState(() {
         _historyData = list;
         _buildingEnergy = _currentMonthBuildingEnergy(root);
+        _updateMonthlyTotals(root);
       });
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
@@ -300,6 +312,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     return result;
+  }
+
+  void _updateMonthlyTotals(Map<String, dynamic> root) {
+    try {
+      final monthKey = _monthKey(DateTime.now());
+      final monthlyNode = root['monthly'];
+
+      if (monthlyNode is! Map) {
+        _monthlyKwh = 0;
+        _monthlyCostPhp = 0;
+        return;
+      }
+
+      final monthlyMap = Map<String, dynamic>.from(monthlyNode);
+      final monthNode = monthlyMap[monthKey];
+      if (monthNode is! Map) {
+        _monthlyKwh = 0;
+        _monthlyCostPhp = 0;
+        return;
+      }
+
+      final monthMap = Map<String, dynamic>.from(monthNode);
+      final totalKwh = monthMap['total_kwh'] ?? 0.0;
+      final totalCost = monthMap['total_cost'] ?? 0.0;
+
+      _monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
+      _monthlyCostPhp = (totalCost is num) ? totalCost.toDouble() : 0.0;
+    } catch (e) {
+      _monthlyKwh = 0;
+      _monthlyCostPhp = 0;
+    }
   }
 
   void _setAnalyticsRange(String range) {
@@ -375,6 +418,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
 
+  String _safeFormatDouble(dynamic value, int decimals) {
+    if (value == null) return '0.${'0' * decimals}';
+    if (value is double) return value.toStringAsFixed(decimals);
+    if (value is int) return value.toDouble().toStringAsFixed(decimals);
+    if (value is num)
+      return (value as num).toDouble().toStringAsFixed(decimals);
+    return '0.${'0' * decimals}';
+  }
+
   String _monthKey(DateTime date) =>
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
@@ -409,47 +461,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
         builder: (ctx, setS) => AlertDialog(
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Add Building',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(
-              controller: codeCtrl,
-              textCapitalization: TextCapitalization.characters,
-              decoration: _inputDeco('Building Code (e.g. IC)', Icons.tag),
-              autofocus: true,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameCtrl,
-              decoration: _inputDeco('Full Name', Icons.business),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: floorCtrl,
-              keyboardType: TextInputType.number,
-              decoration: _inputDeco('Number of Floors', Icons.layers),
-            ),
-            if (error != null) ...[
-              const SizedBox(height: 10),
-              Text(error!,
-                  style: const TextStyle(fontSize: 12, color: AppColors.error)),
+          title: const Text(
+            'Add Building',
+            style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: codeCtrl,
+                textCapitalization: TextCapitalization.characters,
+                decoration: _inputDeco('Building Code (e.g. IC)', Icons.tag),
+                autofocus: true,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: nameCtrl,
+                decoration: _inputDeco('Full Name', Icons.business),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: floorCtrl,
+                keyboardType: TextInputType.number,
+                decoration: _inputDeco('Number of Floors', Icons.layers),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  error!,
+                  style: const TextStyle(fontSize: 12, color: AppColors.error),
+                ),
+              ],
             ],
-          ]),
+          ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: AppColors.textMuted),
+              ),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.greenDark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
+                backgroundColor: AppColors.greenDark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
               onPressed: () async {
                 final code = codeCtrl.text.trim().toUpperCase();
                 final name = nameCtrl.text.trim();
                 final floors = int.tryParse(floorCtrl.text.trim()) ?? 1;
+
                 if (code.isEmpty) {
                   setS(() => error = 'Code is required');
                   return;
@@ -458,24 +521,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   setS(() => error = 'Name is required');
                   return;
                 }
-                if (floors < 1) {
-                  setS(() => error = 'Floors must be at least 1');
-                  return;
-                }
-                // Check duplicate
-                final existing = _buildings.any((b) => b['code'] == code);
-                if (existing) {
-                  setS(() => error = 'Building $code already exists');
-                  return;
-                }
 
                 try {
                   await FirebaseDatabase.instance.ref('buildings/$code').set({
                     'name': name,
                     'floors': floors,
-                    'floorData': {
-                      '1': {'rooms': {}}
-                    },
                   });
                   if (!mounted || !ctx.mounted) return;
                   Navigator.pop(ctx);
@@ -484,7 +534,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   setS(() => error = 'Failed: $e');
                 }
               },
-              child: const Text('Add', style: TextStyle(color: Colors.white)),
+              child: const Text(
+                'Add',
+                style: TextStyle(color: Colors.white),
+              ),
             ),
           ],
         ),
@@ -646,7 +699,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     if (confirm != true) return;
-
     final updates = <String, dynamic>{
       'buildings/$code': null,
       'hotspots/$code': null,
@@ -868,7 +920,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildTopBar() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-      color: AppColors.greenDark,
+      decoration: const BoxDecoration(
+        color: AppColors.greenDark,
+      ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final isCompact = constraints.maxWidth < 430;
@@ -1030,89 +1084,109 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return aCode.compareTo(bCode);
       });
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _buildGreeting(),
-        const SizedBox(height: 20),
-        _buildEnergyCards(),
-        const SizedBox(height: 24),
-        // ── Buildings header with edit action ──────────────
-        Row(children: [
-          const Text('Campus Buildings',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-          const SizedBox(width: 6),
-          if (_role == 'admin')
-            GestureDetector(
-              onTap: _showManageBuildings,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: AppColors.greenPale,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.edit_outlined,
-                        size: 14, color: AppColors.greenDark),
-                    SizedBox(width: 4),
-                    Text(
-                      'Edit',
-                      style: TextStyle(
-                        fontSize: 11,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isCompact = constraints.maxWidth < 380;
+
+        return SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            isCompact ? 16 : 20,
+            isCompact ? 16 : 20,
+            isCompact ? 16 : 20,
+            isCompact ? 18 : 20,
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            _buildGreeting(compact: isCompact),
+            SizedBox(height: isCompact ? 14 : 20),
+            _buildEnergyCards(compact: isCompact),
+            SizedBox(height: isCompact ? 18 : 24),
+            // ── Buildings header with edit action ──────────────
+            Row(children: [
+              const Expanded(
+                child: Text('Campus Buildings',
+                    style: TextStyle(
+                        fontFamily: 'Outfit',
+                        fontSize: 16,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.greenDark,
-                      ),
-                    ),
-                  ],
-                ),
+                        color: AppColors.textDark)),
               ),
-            ),
-          const Spacer(),
-          Text('${_buildings.length} buildings',
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-        ]),
-        const SizedBox(height: 12),
-        if (_buildings.isEmpty)
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: AppColors.cardBg,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.greenMid.withAlpha(31)),
-            ),
-            child: Center(
-              child: Column(children: [
-                const Icon(Icons.business_outlined,
-                    size: 32, color: AppColors.textMuted),
-                const SizedBox(height: 8),
-                const Text('No buildings yet',
-                    style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
-                if (_role == 'admin') ...[
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: _addBuilding,
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('Add Building'),
-                    style: TextButton.styleFrom(
-                        foregroundColor: AppColors.greenDark),
+              const SizedBox(width: 6),
+              if (_role == 'admin')
+                GestureDetector(
+                  onTap: _showManageBuildings,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.greenPale,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.edit_outlined,
+                            size: 14, color: AppColors.greenDark),
+                        SizedBox(width: 4),
+                        Text(
+                          'Edit',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.greenDark,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ],
-              ]),
-            ),
-          )
-        else
-          ...sortedBuildings.map(_buildBuildingCard),
-      ]),
+                ),
+              const SizedBox(width: 8),
+              Text('${_buildings.length} buildings',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textMuted)),
+            ]),
+            SizedBox(height: isCompact ? 10 : 12),
+            if (_buildings.isEmpty)
+              Container(
+                padding: EdgeInsets.all(isCompact ? 16 : 20),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBg,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.greenMid.withAlpha(31)),
+                ),
+                child: Center(
+                  child: Column(children: [
+                    const Icon(Icons.business_outlined,
+                        size: 32, color: AppColors.textMuted),
+                    const SizedBox(height: 8),
+                    const Text('No buildings yet',
+                        style: TextStyle(
+                            fontSize: 13, color: AppColors.textMuted)),
+                    if (_role == 'admin') ...[
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: _addBuilding,
+                        icon: const Icon(Icons.add, size: 16),
+                        label: const Text('Add Building'),
+                        style: TextButton.styleFrom(
+                            foregroundColor: AppColors.greenDark),
+                      ),
+                    ],
+                  ]),
+                ),
+              )
+            else
+              ...sortedBuildings.map((building) => _buildBuildingCard(
+                    building,
+                    compact: isCompact,
+                  )),
+          ]),
+        );
+      },
     );
   }
 
-  Widget _buildGreeting() {
+  Widget _buildGreeting({bool compact = false}) {
     final hour = DateTime.now().hour;
     final greeting = hour < 12
         ? 'Good morning'
@@ -1124,16 +1198,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(greeting,
-            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+            style: TextStyle(
+                fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
         Text(_userName.isNotEmpty ? _userName : 'User',
-            style: const TextStyle(
+            style: TextStyle(
                 fontFamily: 'Outfit',
-                fontSize: 22,
+                fontSize: compact ? 19 : 22,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
       ])),
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: EdgeInsets.symmetric(
+            horizontal: compact ? 8 : 10, vertical: compact ? 5 : 6),
         decoration: BoxDecoration(
             color: AppColors.greenPale,
             borderRadius: BorderRadius.circular(20),
@@ -1155,11 +1231,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]);
   }
 
-  Widget _buildEnergyCards() {
+  Widget _buildEnergyCards({bool compact = false}) {
     return Column(children: [
       Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.all(compact ? 16 : 20),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
               colors: [AppColors.greenDark, Color(0xFF1E7A42)],
@@ -1174,54 +1250,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Total Energy Consumed',
-              style: TextStyle(fontSize: 12, color: Color(0xB3C2EDD0))),
-          const SizedBox(height: 6),
+          Text('This Month Energy Consumed',
+              style: TextStyle(
+                  fontSize: compact ? 11 : 12, color: const Color(0xB3C2EDD0))),
+          SizedBox(height: compact ? 4 : 6),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text(_totalKwh.toStringAsFixed(1),
-                style: const TextStyle(
+            Text(_safeFormatDouble(_monthlyKwh, 2),
+                style: TextStyle(
                     fontFamily: 'Outfit',
-                    fontSize: 40,
+                    fontSize: compact ? 32 : 40,
                     fontWeight: FontWeight.w700,
                     color: Colors.white)),
-            const Padding(
-                padding: EdgeInsets.only(bottom: 6, left: 6),
+            Padding(
+                padding: EdgeInsets.only(bottom: compact ? 4 : 6, left: 6),
                 child: Text('kWh',
                     style: TextStyle(
-                        fontSize: 14,
+                        fontSize: compact ? 13 : 14,
                         color: AppColors.greenLight,
                         fontWeight: FontWeight.w500))),
           ]),
-          const SizedBox(height: 16),
+          SizedBox(height: compact ? 12 : 16),
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: EdgeInsets.all(compact ? 10 : 12),
             decoration: BoxDecoration(
                 color: Colors.white.withAlpha(15),
                 borderRadius: BorderRadius.circular(12)),
             child: Row(children: [
-              _miniStat('Est. Cost', '₱ ${_totalCostPhp.toStringAsFixed(2)}'),
+              _miniStat(
+                  'Month Cost', '₱ ${_safeFormatDouble(_monthlyCostPhp, 0)}',
+                  compact: compact),
               _vertDivider(),
-              _miniStat('Assigned', '$_assignedDevices devices'),
+              _miniStat('Assigned', '$_assignedDevices devices',
+                  compact: compact),
               _vertDivider(),
-              _miniStat('Unassigned', '$_unassignedDevices devices'),
+              _miniStat('Unassigned', '$_unassignedDevices devices',
+                  compact: compact),
             ]),
           ),
         ]),
       ),
-      const SizedBox(height: 12),
+      SizedBox(height: compact ? 10 : 12),
       Row(children: [
         Expanded(
-            child: _statCard('Voltage', '220 V', Icons.electrical_services,
-                AppColors.greenMid)),
-        const SizedBox(width: 10),
+            child: _statCard('Today', '${_safeFormatDouble(_totalKwh, 1)} kWh',
+                Icons.bolt, AppColors.greenMid,
+                compact: compact)),
+        SizedBox(width: compact ? 8 : 10),
+        Expanded(
+            child: _statCard('Online', '$_assignedDevices devices', Icons.wifi,
+                AppColors.greenLight,
+                compact: compact)),
+        SizedBox(width: compact ? 8 : 10),
         Expanded(
             child: _statCard(
-                'Frequency', '60 Hz', Icons.waves, AppColors.greenLight)),
-        const SizedBox(width: 10),
-        Expanded(
-            child: _statCard(
-                'Power Factor', '0.98', Icons.speed, AppColors.greenPale,
-                textColor: AppColors.greenDark)),
+                'Status', 'Live', Icons.check_circle, AppColors.greenPale,
+                textColor: AppColors.greenDark, compact: compact)),
       ]),
     ]);
   }
@@ -1232,40 +1315,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
       margin: const EdgeInsets.symmetric(horizontal: 10),
       color: Colors.white.withAlpha(30));
 
-  Widget _miniStat(String label, String value) {
+  Widget _miniStat(String label, String value, {bool compact = false}) {
     return Expanded(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label,
-          style: const TextStyle(fontSize: 10, color: Color(0x99C2EDD0))),
+          style: TextStyle(
+              fontSize: compact ? 9 : 10, color: const Color(0x99C2EDD0))),
       const SizedBox(height: 2),
       Text(value,
-          style: const TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+              fontSize: compact ? 11 : 12,
+              fontWeight: FontWeight.w600,
+              color: Colors.white)),
     ]));
   }
 
   Widget _statCard(String label, String value, IconData icon, Color bg,
-      {Color textColor = Colors.white}) {
+      {Color textColor = Colors.white, bool compact = false}) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      padding: EdgeInsets.symmetric(
+          horizontal: compact ? 10 : 12, vertical: compact ? 12 : 14),
       decoration:
           BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: 18, color: textColor.withAlpha(204)),
-        const SizedBox(height: 8),
+        Icon(icon, size: compact ? 16 : 18, color: textColor.withAlpha(204)),
+        SizedBox(height: compact ? 6 : 8),
         Text(value,
             style: TextStyle(
                 fontFamily: 'Outfit',
-                fontSize: 15,
+                fontSize: compact ? 13 : 15,
                 fontWeight: FontWeight.w700,
                 color: textColor)),
         Text(label,
-            style: TextStyle(fontSize: 10, color: textColor.withAlpha(179))),
+            style: TextStyle(
+                fontSize: compact ? 9 : 10, color: textColor.withAlpha(179))),
       ]),
     );
   }
 
-  Widget _buildBuildingCard(Map<String, dynamic> building) {
+  Widget _buildBuildingCard(Map<String, dynamic> building,
+      {bool compact = false}) {
     final code = building['code'] as String;
     final level = _energyLevel(code);
     final color = _energyColor(code);
@@ -1278,41 +1369,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'role': _role,
       }),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(14),
+        margin: EdgeInsets.only(bottom: compact ? 8 : 10),
+        padding: EdgeInsets.all(compact ? 12 : 14),
         decoration: BoxDecoration(
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: AppColors.greenMid.withAlpha(31))),
         child: Row(children: [
           Container(
-              width: 44,
-              height: 44,
+              width: compact ? 40 : 44,
+              height: compact ? 40 : 44,
               decoration: BoxDecoration(
                   color: AppColors.greenPale,
                   borderRadius: BorderRadius.circular(12)),
               child: Center(
                   child: Text(code,
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontFamily: 'Outfit',
-                          fontSize: 10,
+                          fontSize: compact ? 9 : 10,
                           fontWeight: FontWeight.w700,
                           color: AppColors.greenDark)))),
-          const SizedBox(width: 12),
+          SizedBox(width: compact ? 10 : 12),
           Expanded(
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                 Text(building['name'],
-                    style: const TextStyle(
-                        fontSize: 13,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: compact ? 12 : 13,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark)),
                 const SizedBox(height: 2),
                 Text(
                     '${building['floors']} ${building['floors'] == 1 ? 'floor' : 'floors'} · $devices devices',
-                    style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted)),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: compact ? 10 : 11,
+                        color: AppColors.textMuted)),
               ])),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Container(
@@ -1323,13 +1419,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   border: Border.all(color: color.withAlpha(77))),
               child: Text(level,
                   style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w700, color: color)),
+                      fontSize: compact ? 9 : 10,
+                      fontWeight: FontWeight.w700,
+                      color: color)),
             ),
             const SizedBox(height: 3),
             Text(
-                '${(_buildingEnergy[code] ?? 0).toStringAsFixed(1)} kWh this month',
-                style:
-                    const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                '${_safeFormatDouble(_buildingEnergy[code] ?? 0, 1)} kWh this month',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: compact ? 9 : 10, color: AppColors.textMuted)),
           ]),
           const SizedBox(width: 6),
           const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
@@ -1563,7 +1663,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 valueColor:
                     const AlwaysStoppedAnimation<Color>(AppColors.greenMid))),
         const SizedBox(height: 6),
-        Text('${(assignedPct * 100).toStringAsFixed(0)}% devices assigned',
+        Text('${_safeFormatDouble(assignedPct * 100, 0)}% devices assigned',
             style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
       ]),
     );
@@ -1650,7 +1750,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ]),
                           ),
                           const SizedBox(width: 8),
-                          Text('${e.value.toStringAsFixed(1)} kWh',
+                          Text('${_safeFormatDouble(e.value, 1)} kWh',
                               style: const TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
@@ -1732,7 +1832,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     fontSize: 13,
                                     fontWeight: FontWeight.w500,
                                     color: AppColors.textDark)),
-                            Text('${e.value.toStringAsFixed(1)} kWh',
+                            Text('${_safeFormatDouble(e.value, 1)} kWh',
                                 style: const TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,

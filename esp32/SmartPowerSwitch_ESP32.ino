@@ -3,14 +3,14 @@
 
   What this sketch does:
   1) Connects to WiFi
-  2) Reads PZEM-004T values (voltage/current/power/energy)
+  2) Reads PZEM-004T V4.0 values (voltage/current/power/energy)
   3) Polls Firebase relay command from: /devices/<DEVICE_ID>/relay
   4) Controls an SSR output pin
   5) Pushes telemetry to: /devices/<DEVICE_ID>
 
   Required Arduino libraries:
   - ArduinoJson (by Benoit Blanchon)
-  - PZEM004T (legacy PZEM-004T library by Oleg Sokolov)
+  - PZEM004Tv30 (PZEM-004T V4.0 library used in the video)
 
   Board:
   - ESP32 Dev Module (or compatible ESP32)
@@ -31,18 +31,19 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <PZEM004T.h>
+#include <HardwareSerial.h>
+#include <PZEM004Tv30.h>
 #include <time.h>
 
 // ===================== USER CONFIG =====================
-static const char* WIFI_SSID = "xxxRAGExxx";
-static const char* WIFI_PASSWORD = "Lowelbaby12";
+static const char* WIFI_SSID = "Rose";
+static const char* WIFI_PASSWORD = "Roseslowly";
 
 static const char* FIREBASE_DB_URL =
     "https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app";
 
-// Must match the address programmed into the PZEM module.
-static const IPAddress PZEM_ADDRESS(192, 168, 1, 1);
+// PZEM Modbus addresses to probe. Factory default is often 0xF8.
+static const uint8_t PZEM_MODBUS_ADDR_CANDIDATES[] = {0xF8, 0x01, 0x02, 0x03};
 
 // Must match ID registered in app (master_devices/<ID>)
 static const char* DEVICE_ID = "ESP32-ROOM101-001";
@@ -59,14 +60,17 @@ static const bool SSR_ACTIVE_HIGH = true;
 static const uint32_t RELAY_POLL_MS = 1000;
 static const uint32_t TELEMETRY_PUSH_MS = 3000;
 static const uint32_t WIFI_RETRY_MS = 5000;
+static const uint32_t PZEM_UART_BAUD = 9600;
+static const uint32_t PZEM_PROBE_RETRY_MS = 15000;
+static const uint32_t PZEM_RAW_TIMEOUT_MS = 350;
+static const bool PZEM_RAW_DEBUG_ON_BOOT = false;
+static const bool PZEM_RAW_DEBUG_ON_PROBE_FAIL = true;
 
 // =======================================================
 
-#if defined(ESP32)
-PZEM004T pzem(&Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
-#else
-PZEM004T pzem(&Serial2);
-#endif
+PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
+
+uint8_t pzemAddress = 0x01;
 
 bool relayState = false;
 bool pzemReady = false;
@@ -74,6 +78,7 @@ bool pzemReady = false;
 uint32_t lastRelayPollMs = 0;
 uint32_t lastTelemetryPushMs = 0;
 uint32_t lastWifiRetryMs = 0;
+uint32_t lastPzemProbeMs = 0;
 
 uint64_t bootEpochMs = 0;
 uint32_t bootMillisAtSync = 0;
@@ -96,6 +101,242 @@ static inline uint8_t relayPinLevel(bool on) {
 void setRelay(bool on) {
   relayState = on;
   digitalWrite(SSR_PIN, relayPinLevel(relayState));
+}
+
+void initPzemUart() {
+#if defined(ESP32)
+  Serial2.begin(PZEM_UART_BAUD, SERIAL_8N1, PZEM_RX_PIN, PZEM_TX_PIN);
+#else
+  Serial2.begin(PZEM_UART_BAUD);
+#endif
+  delay(150);
+}
+
+uint8_t pzemLegacyChecksum(const uint8_t* data, size_t len) {
+  uint16_t sum = 0;
+  for (size_t i = 0; i < len; i++) {
+    sum += data[i];
+  }
+  return (uint8_t)(sum & 0xFF);
+}
+
+void printHexFrame(const uint8_t* frame, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (frame[i] < 0x10) {
+      Serial.print('0');
+    }
+    Serial.print(frame[i], HEX);
+    if (i + 1 < len) {
+      Serial.print(' ');
+    }
+  }
+}
+
+void printIpAddress(const IPAddress& ip) {
+  Serial.print(ip[0]);
+  Serial.print('.');
+  Serial.print(ip[1]);
+  Serial.print('.');
+  Serial.print(ip[2]);
+  Serial.print('.');
+  Serial.print(ip[3]);
+}
+
+bool pzemLegacyRawExchange(uint8_t cmd,
+                           uint8_t dataByte,
+                           uint8_t expectedResp,
+                           const IPAddress& addr,
+                           uint8_t txFrame[7],
+                           uint8_t rxFrame[7]) {
+  txFrame[0] = cmd;
+  txFrame[1] = addr[0];
+  txFrame[2] = addr[1];
+  txFrame[3] = addr[2];
+  txFrame[4] = addr[3];
+  txFrame[5] = dataByte;
+  txFrame[6] = pzemLegacyChecksum(txFrame, 6);
+
+  while (Serial2.available()) {
+    Serial2.read();
+  }
+
+  Serial2.write(txFrame, 7);
+  Serial2.flush();
+
+  const uint32_t start = millis();
+  uint8_t got = 0;
+  while (got < 7 && (millis() - start) < PZEM_RAW_TIMEOUT_MS) {
+    if (Serial2.available()) {
+      rxFrame[got++] = (uint8_t)Serial2.read();
+    } else {
+      delay(1);
+    }
+  }
+
+  if (got != 7) {
+    return false;
+  }
+
+  if (rxFrame[0] != expectedResp) {
+    return false;
+  }
+
+  if (rxFrame[6] != pzemLegacyChecksum(rxFrame, 6)) {
+    return false;
+  }
+
+  return true;
+}
+
+uint16_t pzemModbusCrc16(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc = crc >> 1;
+      }
+    }
+  }
+  return crc;
+}
+
+bool pzemModbusRawReadInputRegs(uint8_t slaveAddr,
+                                uint16_t startReg,
+                                uint16_t regCount,
+                                uint8_t txFrame[8],
+                                uint8_t rxFrame[25]) {
+  txFrame[0] = slaveAddr;
+  txFrame[1] = 0x04;  // Read Input Registers
+  txFrame[2] = (uint8_t)(startReg >> 8);
+  txFrame[3] = (uint8_t)(startReg & 0xFF);
+  txFrame[4] = (uint8_t)(regCount >> 8);
+  txFrame[5] = (uint8_t)(regCount & 0xFF);
+
+  const uint16_t crc = pzemModbusCrc16(txFrame, 6);
+  txFrame[6] = (uint8_t)(crc & 0xFF);        // CRC low byte first
+  txFrame[7] = (uint8_t)((crc >> 8) & 0xFF); // CRC high byte
+
+  while (Serial2.available()) {
+    Serial2.read();
+  }
+
+  Serial2.write(txFrame, 8);
+  Serial2.flush();
+
+  const uint32_t start = millis();
+  uint8_t got = 0;
+  while (got < 25 && (millis() - start) < PZEM_RAW_TIMEOUT_MS) {
+    if (Serial2.available()) {
+      rxFrame[got++] = (uint8_t)Serial2.read();
+    } else {
+      delay(1);
+    }
+  }
+
+  if (got != 25) {
+    return false;
+  }
+
+  if (rxFrame[0] != slaveAddr || rxFrame[1] != 0x04 || rxFrame[2] != 20) {
+    return false;
+  }
+
+  const uint16_t rxCrc = (uint16_t)rxFrame[23] | ((uint16_t)rxFrame[24] << 8);
+  return rxCrc == pzemModbusCrc16(rxFrame, 23);
+}
+
+void runPzemModbusRawDiagnostics() {
+  Serial.println("[PZEM MODBUS RAW] Trying v4.0 Modbus read-register probes...");
+
+  bool anyOk = false;
+  uint8_t tx[8];
+  uint8_t rx[25];
+
+  for (size_t i = 0; i < (sizeof(PZEM_MODBUS_ADDR_CANDIDATES) / sizeof(PZEM_MODBUS_ADDR_CANDIDATES[0])); i++) {
+    const uint8_t slave = PZEM_MODBUS_ADDR_CANDIDATES[i];
+
+    if (pzemModbusRawReadInputRegs(slave, 0x0000, 0x000A, tx, rx)) {
+      anyOk = true;
+
+      const float voltage = ((uint16_t)rx[3] << 8 | rx[4]) / 10.0f;
+      const uint32_t currentRaw = ((uint32_t)rx[5] << 8) | (uint32_t)rx[6] |
+                                  ((uint32_t)rx[7] << 24) | ((uint32_t)rx[8] << 16);
+      const float current = currentRaw / 1000.0f;
+
+      Serial.print("[PZEM MODBUS RAW] addr=0x");
+      if (slave < 0x10) {
+        Serial.print('0');
+      }
+      Serial.print(slave, HEX);
+      Serial.print(" TX=");
+      printHexFrame(tx, 8);
+      Serial.print(" RX=");
+      printHexFrame(rx, 25);
+      Serial.print(" -> V=");
+      Serial.print(voltage, 1);
+      Serial.print(" I=");
+      Serial.print(current, 3);
+      Serial.println(" (valid Modbus frame)");
+      break;
+    }
+
+    Serial.print("[PZEM MODBUS RAW] addr=0x");
+    if (slave < 0x10) {
+      Serial.print('0');
+    }
+    Serial.print(slave, HEX);
+    Serial.print(" TX=");
+    printHexFrame(tx, 8);
+    Serial.println(" RX=<invalid/no response>");
+  }
+
+  if (anyOk) {
+    Serial.println("[PZEM MODBUS RAW] Module replied to Modbus v4.0. Use PZEM004Tv30 firmware path.");
+  } else {
+    Serial.println("[PZEM MODBUS RAW] No valid Modbus replies either. This points to wiring/power-level issues.");
+  }
+}
+
+bool runPzemRawDiagnostics() {
+  Serial.println("[PZEM RAW] Legacy raw diagnostics are disabled for the PZEM004Tv30 path.");
+  return false;
+}
+
+void probePzemLink(bool force) {
+  const uint32_t now = millis();
+  if (!force && (now - lastPzemProbeMs) < PZEM_PROBE_RETRY_MS) {
+    return;
+  }
+
+  lastPzemProbeMs = now;
+
+  const float voltage = pzem.voltage();
+  pzemReady = !isnan(voltage);
+  if (pzemReady) {
+    pzemAddress = pzem.readAddress();
+  }
+
+  if (pzemReady) {
+    Serial.print("[PZEM] Link ready on ");
+    Serial.print("0x");
+    if (pzemAddress < 0x10) {
+      Serial.print('0');
+    }
+    Serial.println(pzemAddress, HEX);
+    Serial.println();
+  } else {
+    if (PZEM_RAW_DEBUG_ON_PROBE_FAIL) {
+      const bool legacyRawOk = runPzemRawDiagnostics();
+      if (!legacyRawOk) {
+        runPzemModbusRawDiagnostics();
+      }
+    }
+    Serial.println(
+        "[PZEM] Probe failed. Check TX/RX swap, common GND, level shift on ESP32 RX, and AC side.");
+  }
 }
 
 void connectWiFi() {
@@ -222,22 +463,27 @@ void pollRelayAndAssignment() {
 
 void pushTelemetry() {
   if (!pzemReady) {
-    pzemReady = pzem.setAddress(PZEM_ADDRESS);
-    if (!pzemReady) {
-      Serial.println("[PZEM] Address setup failed. Check wiring and AC side.");
-    }
+    probePzemLink(false);
   }
 
-  const float voltage = pzem.voltage(PZEM_ADDRESS);
-  const float current = pzem.current(PZEM_ADDRESS);
-  const float power = pzem.power(PZEM_ADDRESS);
-  const float energyWh = pzem.energy(PZEM_ADDRESS);
+  const float voltage = pzem.voltage();
+  const bool pzemOk = !isnan(voltage) && voltage > 0.0f;
+  const float current = pzemOk ? pzem.current() : -1.0f;
+  const float power = pzemOk ? pzem.power() : -1.0f;
+  const float energyKwh = pzemOk ? pzem.energy() : -1.0f;
+  const float frequency = pzemOk ? pzem.frequency() : -1.0f;
+  const float powerFactor = pzemOk ? pzem.pf() : -1.0f;
 
-  const bool pzemOk = voltage >= 0.0f && current >= 0.0f && power >= 0.0f &&
-                      energyWh >= 0.0f;
+  if (pzemOk) {
+    pzemAddress = pzem.readAddress();
+  }
 
   const uint64_t t = nowMs();
   const String status = pzemOk ? "online" : "offline";
+
+  if (!pzemOk && relayState) {
+    setRelay(false);
+  }
 
   Serial.print("[PZEM] V=");
   Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
@@ -246,7 +492,7 @@ void pushTelemetry() {
   Serial.print(" P=");
   Serial.print(pzemOk ? String(roundTo(power, 1)) : String("nan"));
   Serial.print(" kWh=");
-  Serial.print(pzemOk ? String(roundTo(energyWh / 1000.0f, 4)) : String("nan"));
+  Serial.print(pzemOk ? String(roundTo(energyKwh, 4)) : String("nan"));
   Serial.print(" relay=");
   Serial.println(relayState ? "ON" : "OFF");
 
@@ -260,9 +506,15 @@ void pushTelemetry() {
     doc["voltage"] = roundTo(voltage, 1);
     doc["current"] = roundTo(current, 2);
     doc["power"] = roundTo(power, 1);
-    doc["kwh"] = roundTo(energyWh / 1000.0f, 4);
-    doc["powerFactor"] = 0;
-    doc["frequency"] = 0;
+    doc["kwh"] = roundTo(energyKwh, 4);
+    doc["powerFactor"] = roundTo(powerFactor, 2);
+    doc["frequency"] = roundTo(frequency, 1);
+  } else {
+    doc["voltage"] = nullptr;
+    doc["current"] = nullptr;
+    doc["power"] = nullptr;
+    doc["powerFactor"] = nullptr;
+    doc["frequency"] = nullptr;
   }
 
   String payload;
@@ -280,17 +532,19 @@ void pushTelemetry() {
 void setup() {
   Serial.begin(115200);
   delay(200);
+  Serial.println("[System] Booting...");
 
   pinMode(SSR_PIN, OUTPUT);
   setRelay(false);  // Safe default: OFF at boot
 
-  pzem.setReadTimeout(1000);
-  pzemReady = pzem.setAddress(PZEM_ADDRESS);
-  if (pzemReady) {
-    Serial.println("[PZEM] Address set.");
-  } else {
-    Serial.println("[PZEM] Address set failed. Check wiring and AC side.");
+  initPzemUart();
+  if (PZEM_RAW_DEBUG_ON_BOOT) {
+    const bool legacyRawOk = runPzemRawDiagnostics();
+    if (!legacyRawOk) {
+      runPzemModbusRawDiagnostics();
+    }
   }
+  probePzemLink(true);
 
   connectWiFi();
   if (WiFi.status() == WL_CONNECTED) {

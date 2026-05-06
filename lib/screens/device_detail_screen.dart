@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../services/history_service.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -25,10 +26,12 @@ class DeviceDetailScreen extends StatefulWidget {
 
 class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Map<String, dynamic> _deviceData = {};
-  bool _relay    = false;
+  bool _relay = false;
+  bool _hasPzemReadings = false;
   bool _isOnline = false;
   bool _toggling = false;
   double _ratePhp = 11.5;
+  double _lastValidEnergy = 0.0; // Persists last valid reading
 
   StreamSubscription? _deviceSub;
 
@@ -55,10 +58,25 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       final raw = event.snapshot.value;
       if (raw == null) return;
       final data = Map<String, dynamic>.from(raw as Map);
+      
+      // Only update _lastValidEnergy if the reading is valid (not NaN, not infinite)
+      final kwhRaw = data['kwh'] as num?;
+      if (kwhRaw != null && !kwhRaw.isNaN && !kwhRaw.isInfinite) {
+        final kwh = kwhRaw.toDouble();
+        _lastValidEnergy = kwh;
+        // Store PZEM reading in history
+        HistoryService.writeHistory(
+          deviceId: widget.deviceId,
+          building: widget.building,
+          kwh: kwh,
+        );
+      }
+      
       setState(() {
         _deviceData = data;
-        _isOnline   = _checkOnline(data);
-        _relay      = (data['relay'] as bool?) ?? false;
+        _hasPzemReadings = _checkHasPzemReadings(data);
+        _isOnline = _checkOnline(data);
+        _relay = (data['relay'] as bool?) ?? false;
       });
     });
   }
@@ -69,7 +87,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         .onValue
         .listen((event) {
       if (!mounted) return;
-      setState(() => _ratePhp = (event.snapshot.value as num?)?.toDouble() ?? 11.5);
+      setState(
+          () => _ratePhp = (event.snapshot.value as num?)?.toDouble() ?? 11.5);
     });
   }
 
@@ -79,6 +98,20 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (lastSeen == null || lastSeen == 0) return false;
     final lastSeenTime = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
     return DateTime.now().difference(lastSeenTime).inMinutes < 2;
+  }
+
+  bool _checkHasPzemReadings(Map<String, dynamic> data) {
+    final voltage = data['voltage'];
+    if (voltage is! num) return false;
+    return voltage.toDouble() > 0.0;
+  }
+
+  String _safeFormatPzem(dynamic value, int decimals) {
+    if (value is! num) return '--';
+    final num_val = value as num;
+    // Check for NaN and negative infinity
+    if (num_val.isNaN || num_val.isInfinite) return '00';
+    return num_val.toDouble().toStringAsFixed(decimals);
   }
 
   // ── Toggle relay in BOTH locations ───────────────────────────────────────────
@@ -106,14 +139,15 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
         // Best-effort mirror for the building/floor screens.
         unawaited(db
-            .child('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
+            .child(
+                'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
             .set(newRelay));
 
         success = true;
       } catch (e) {
         lastError = e;
         if (attempt < 1) {
-          await Future<void>.delayed(Duration(milliseconds: 80));
+          await Future<void>.delayed(const Duration(milliseconds: 80));
         }
       }
     }
@@ -135,8 +169,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final energy = (_deviceData['kwh']     as num?)?.toDouble() ?? 0.0;
-    final cost   = energy * _ratePhp;
+    // Use last valid energy, cost stays persistent when NaN arrives
+    final energy = _lastValidEnergy;
+    final cost = energy * _ratePhp;
 
     return Scaffold(
       backgroundColor: AppColors.surface,
@@ -174,30 +209,40 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       decoration: const BoxDecoration(
         color: AppColors.greenDark,
         borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28),
+          bottomLeft: Radius.circular(28),
+          bottomRight: Radius.circular(28),
         ),
       ),
       child: Row(children: [
         GestureDetector(
           onTap: () => Navigator.pop(context),
           child: Container(
-            width: 36, height: 36,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: Colors.white.withAlpha(38),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 16),
+            child: const Icon(Icons.arrow_back_ios_new,
+                color: Colors.white, size: 16),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('${widget.building} · Floor ${widget.floor}',
-                style: const TextStyle(fontSize: 11, color: AppColors.greenLight,
-                    fontWeight: FontWeight.w500, letterSpacing: 0.5)),
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.greenLight,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.5)),
             Text(_utilityLabel(widget.utility),
-                style: const TextStyle(fontFamily: 'Outfit', fontSize: 18,
-                    fontWeight: FontWeight.w700, color: Colors.white)),
+                style: const TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white)),
           ]),
         ),
         Container(
@@ -210,7 +255,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Container(
-              width: 6, height: 6,
+              width: 6,
+              height: 6,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: _isOnline ? AppColors.greenLight : AppColors.offline,
@@ -253,21 +299,28 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       ),
       child: Row(children: [
         Container(
-          width: 52, height: 52,
+          width: 52,
+          height: 52,
           decoration: BoxDecoration(
             color: _utilityColor(widget.utility).withAlpha(31),
             borderRadius: BorderRadius.circular(14),
           ),
-          child: Icon(_utilityIcon(widget.utility), size: 28,
-              color: _utilityColor(widget.utility)),
+          child: Icon(_utilityIcon(widget.utility),
+              size: 28, color: _utilityColor(widget.utility)),
         ),
         const SizedBox(width: 16),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(widget.deviceId,
-              style: const TextStyle(fontFamily: 'Outfit', fontSize: 15,
-                  fontWeight: FontWeight.w600, color: AppColors.textDark)),
+              style: const TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
           const SizedBox(height: 2),
-          Text('${widget.building} · Floor ${widget.floor} · ${_utilityLabel(widget.utility)}',
+          Text(
+              '${widget.building} · Floor ${widget.floor} · ${_utilityLabel(widget.utility)}',
               style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
           const SizedBox(height: 4),
           Text('Last seen: $lastSeenText',
@@ -282,34 +335,45 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   Widget _buildRelayCard() {
     final isAc = widget.utility == 'ac';
+    final relayVisible = _hasPzemReadings ? _relay : false;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: _relay ? AppColors.greenDark : AppColors.cardBg,
+        color: relayVisible ? AppColors.greenDark : AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: _relay ? AppColors.greenMid : AppColors.greenMid.withAlpha(26),
+          color: relayVisible
+              ? AppColors.greenMid
+              : AppColors.greenMid.withAlpha(26),
         ),
       ),
       child: Row(children: [
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(isAc ? 'Contactor' : 'Relay',
               style: TextStyle(
                   fontSize: 12,
-                  color: _relay ? AppColors.greenPale : AppColors.textMuted)),
+                  color: relayVisible
+                      ? AppColors.greenPale
+                      : AppColors.textMuted)),
           const SizedBox(height: 4),
-          Text(_relay ? 'Turned ON' : 'Turned OFF',
+          Text(relayVisible ? 'Turned ON' : 'Turned OFF',
               style: TextStyle(
-                  fontFamily: 'Outfit', fontSize: 20, fontWeight: FontWeight.w700,
-                  color: _relay ? Colors.white : AppColors.textDark)),
+                  fontFamily: 'Outfit',
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: relayVisible ? Colors.white : AppColors.textDark)),
           const SizedBox(height: 2),
           Text(
-            !_isOnline
-                ? 'Device is offline'
-                : (_relay ? 'Tap to turn off' : 'Tap to turn on'),
+            !_hasPzemReadings
+                ? 'No PZEM reading'
+                : (!_isOnline
+                    ? 'Device is offline'
+                    : (relayVisible ? 'Tap to turn off' : 'Tap to turn on')),
             style: TextStyle(
                 fontSize: 12,
-                color: _relay
+                color: relayVisible
                     ? AppColors.greenPale.withAlpha(179)
                     : AppColors.textMuted),
           ),
@@ -317,21 +381,25 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         // Only show toggle if role is admin
         if (widget.role == 'admin')
           GestureDetector(
-            onTap: !_toggling ? _toggleRelay : null,
+            onTap: (!_toggling && _hasPzemReadings) ? _toggleRelay : null,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 250),
-              width: 64, height: 34,
+              width: 64,
+              height: 34,
               decoration: BoxDecoration(
                 color: !_isOnline
                     ? Colors.grey.withAlpha(80)
-                    : (_relay ? AppColors.greenLight : const Color(0xFFE0E0E0)),
+                    : (relayVisible
+                        ? AppColors.greenLight
+                        : const Color(0xFFE0E0E0)),
                 borderRadius: BorderRadius.circular(17),
               ),
               child: Stack(children: [
                 AnimatedPositioned(
                   duration: const Duration(milliseconds: 250),
-                  left: _relay ? 32 : 2,
-                  top: 2, bottom: 2,
+                  left: relayVisible ? 32 : 2,
+                  top: 2,
+                  bottom: 2,
                   child: Container(
                     width: 30,
                     decoration: const BoxDecoration(
@@ -363,12 +431,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                 ),
                               )
                             : Icon(
-                                _relay
+                                relayVisible
                                     ? Icons.power_rounded
                                     : Icons.power_off_rounded,
-                                key: ValueKey<bool>(_relay),
+                                key: ValueKey<bool>(relayVisible),
                                 size: 15,
-                                color: _relay
+                                color: relayVisible
                                     ? AppColors.greenMid
                                     : AppColors.textMuted,
                               ),
@@ -382,31 +450,36 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         // Faculty sees a lock icon instead
         if (widget.role != 'admin')
           Container(
-            width: 64, height: 34,
+            width: 64,
+            height: 34,
             decoration: BoxDecoration(
               color: Colors.grey.withAlpha(40),
               borderRadius: BorderRadius.circular(17),
             ),
-            child: const Icon(Icons.lock_outline, size: 16, color: AppColors.textMuted),
+            child: const Icon(Icons.lock_outline,
+                size: 16, color: AppColors.textMuted),
           ),
       ]),
     );
   }
 
   Widget _buildReadingsGrid() {
-    final voltage     = (_deviceData['voltage']     as num?)?.toStringAsFixed(1) ?? '--';
-    final current     = (_deviceData['current']     as num?)?.toStringAsFixed(2) ?? '--';
-    final power       = (_deviceData['power']       as num?)?.toStringAsFixed(1) ?? '--';
-    final powerFactor = (_deviceData['powerFactor'] as num?)?.toStringAsFixed(2) ?? '--';
-    final frequency   = (_deviceData['frequency']   as num?)?.toStringAsFixed(1) ?? '--';
-    final energy      = (_deviceData['kwh']         as num?)?.toStringAsFixed(2) ?? '--';
+    final voltage = _safeFormatPzem(_deviceData['voltage'], 1);
+    final current = _safeFormatPzem(_deviceData['current'], 2);
+    final power = _safeFormatPzem(_deviceData['power'], 1);
+    final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
+    final frequency = _safeFormatPzem(_deviceData['frequency'], 1);
+    final energy = _safeFormatPzem(_deviceData['kwh'], 2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text('PZEM-004T Readings',
-            style: TextStyle(fontFamily: 'Outfit', fontSize: 15,
-                fontWeight: FontWeight.w600, color: AppColors.textDark)),
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDark)),
         const SizedBox(height: 12),
         GridView.count(
           crossAxisCount: 3,
@@ -416,19 +489,25 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           mainAxisSpacing: 10,
           childAspectRatio: 1.05,
           children: [
-            _readingTile('Voltage',  voltage,     'V',   Icons.electrical_services,    AppColors.greenMid),
-            _readingTile('Current',  current,     'A',   Icons.bolt,                   AppColors.warning),
-            _readingTile('Power',    power,       'W',   Icons.power,                  AppColors.greenDark),
-            _readingTile('Energy',   energy,      'kWh', Icons.battery_charging_full,  const Color(0xFF2196F3)),
-            _readingTile('Freq.',    frequency,   'Hz',  Icons.waves,                  AppColors.greenLight),
-            _readingTile('P.Factor', powerFactor, '',    Icons.speed,                  const Color(0xFF9C27B0)),
+            _readingTile('Voltage', voltage, 'V', Icons.electrical_services,
+                AppColors.greenMid),
+            _readingTile(
+                'Current', current, 'A', Icons.bolt, AppColors.warning),
+            _readingTile('Power', power, 'W', Icons.power, AppColors.greenDark),
+            _readingTile('Energy', energy, 'kWh', Icons.battery_charging_full,
+                const Color(0xFF2196F3)),
+            _readingTile(
+                'Freq.', frequency, 'Hz', Icons.waves, AppColors.greenLight),
+            _readingTile('P.Factor', powerFactor, '', Icons.speed,
+                const Color(0xFF9C27B0)),
           ],
         ),
       ],
     );
   }
 
-  Widget _readingTile(String label, String value, String unit, IconData icon, Color color) {
+  Widget _readingTile(
+      String label, String value, String unit, IconData icon, Color color) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -444,19 +523,24 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text(value,
-                  style: const TextStyle(fontFamily: 'Outfit', fontSize: 16,
-                      fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                  style: const TextStyle(
+                      fontFamily: 'Outfit',
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textDark)),
               if (unit.isNotEmpty) ...[
                 const SizedBox(width: 2),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 1),
                   child: Text(unit,
-                      style: const TextStyle(fontSize: 9, color: AppColors.textMuted)),
+                      style: const TextStyle(
+                          fontSize: 9, color: AppColors.textMuted)),
                 ),
               ],
             ]),
             Text(label,
-                style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                style:
+                    const TextStyle(fontSize: 10, color: AppColors.textMuted)),
           ]),
         ],
       ),
@@ -472,13 +556,18 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         border: Border.all(color: AppColors.greenMid.withAlpha(51)),
       ),
       child: Row(children: [
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('Estimated Cost',
               style: TextStyle(fontSize: 12, color: AppColors.textMid)),
           const SizedBox(height: 4),
           Text('₱ ${cost.toStringAsFixed(2)}',
-              style: const TextStyle(fontFamily: 'Outfit', fontSize: 24,
-                  fontWeight: FontWeight.w700, color: AppColors.greenDark)),
+              style: const TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.greenDark)),
           Text('at ₱${_ratePhp.toStringAsFixed(2)} / kWh',
               style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
         ])),
@@ -486,8 +575,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const Text('Total Energy',
               style: TextStyle(fontSize: 11, color: AppColors.textMid)),
           Text('${energy.toStringAsFixed(2)} kWh',
-              style: const TextStyle(fontFamily: 'Outfit', fontSize: 16,
-                  fontWeight: FontWeight.w600, color: AppColors.greenDark)),
+              style: const TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.greenDark)),
         ]),
       ]),
     );
@@ -503,11 +595,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       ),
       child: Column(children: [
         _infoRow('Device ID', widget.deviceId),
-        _infoRow('Building',  widget.building),
-        _infoRow('Floor',     'Floor ${widget.floor}'),
-        _infoRow('Utility',   _utilityLabel(widget.utility)),
-        _infoRow('Control',   widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
-        _infoRow('Sensor',    'PZEM-004T + CT Clamp'),
+        _infoRow('Building', widget.building),
+        _infoRow('Floor', 'Floor ${widget.floor}'),
+        _infoRow('Utility', _utilityLabel(widget.utility)),
+        _infoRow('Control',
+            widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
+        _infoRow('Sensor', 'PZEM-004T + CT Clamp'),
       ]),
     );
   }
@@ -516,10 +609,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(children: [
-        Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+        Text(label,
+            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
         const Spacer(),
         Text(value,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
       ]),
     );
@@ -528,42 +624,51 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   String _utilityLabel(String u) {
     switch (u.toLowerCase()) {
       case 'light':
-      case 'lights':  return 'Lights';
+      case 'lights':
+        return 'Lights';
       case 'outlet':
-      case 'outlets': return 'Outlets';
+      case 'outlets':
+        return 'Outlets';
       case 'aircon':
       case 'ac':
       case 'air conditioner':
         return 'AC Unit';
-      default:        return 'Device';
+      default:
+        return 'Device';
     }
   }
 
   IconData _utilityIcon(String u) {
     switch (u.toLowerCase()) {
       case 'light':
-      case 'lights':  return Icons.lightbulb_outline;
+      case 'lights':
+        return Icons.lightbulb_outline;
       case 'outlet':
-      case 'outlets': return Icons.electrical_services;
+      case 'outlets':
+        return Icons.electrical_services;
       case 'aircon':
       case 'ac':
       case 'air conditioner':
         return Icons.ac_unit;
-      default:        return Icons.device_unknown_outlined;
+      default:
+        return Icons.device_unknown_outlined;
     }
   }
 
   Color _utilityColor(String u) {
     switch (u.toLowerCase()) {
       case 'light':
-      case 'lights':  return const Color(0xFFE8922A);
+      case 'lights':
+        return const Color(0xFFE8922A);
       case 'outlet':
-      case 'outlets': return AppColors.greenMid;
+      case 'outlets':
+        return AppColors.greenMid;
       case 'aircon':
       case 'ac':
       case 'air conditioner':
         return const Color(0xFF2196F3);
-      default:        return AppColors.textMuted;
+      default:
+        return AppColors.textMuted;
     }
   }
 }

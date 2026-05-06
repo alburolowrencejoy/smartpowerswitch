@@ -297,6 +297,42 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   return { success: true, message: 'Password updated successfully.' };
 });
 
+// ── Auto-write PZEM history when device kwh changes ─────────────
+const { writeHistoryForDevice } = require('./history_writer');
+
+exports.onDeviceKwhChange = functions.database
+  .ref('devices/{deviceId}/kwh')
+  .onWrite(async (change, context) => {
+    const deviceId = context.params.deviceId;
+    const newKwh = change.after.val();
+
+    // Only process if new kwh value exists and is valid
+    if (typeof newKwh !== 'number' || newKwh < 0) {
+      return;
+    }
+
+    try {
+      // Get device building info
+      const deviceSnap = await admin.database().ref(`devices/${deviceId}`).get();
+      const device = deviceSnap.val();
+
+      if (!device || !device.building) {
+        return;
+      }
+
+      const building = String(device.building).trim();
+      const kwh = parseFloat(newKwh);
+
+      // Write the kwh delta to history
+      // Only record incremental changes (new kwh value) to history
+      await writeHistoryForDevice(deviceId, building, kwh);
+    } catch (error) {
+      console.error(`[onDeviceKwhChange] Error processing ${deviceId}: ${error.message}`);
+    }
+  });
+
+// ── Run automation scheduler every minute ─────────────────────────
+exports.runAutomationScheduler = onSchedule('* * * * *', runAutomationSchedules);
 
 // ── Delete user from Firebase Auth (admin only) ──────────────
 exports.deleteUser = functions.https.onCall(async (data, context) => {
