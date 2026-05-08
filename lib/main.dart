@@ -10,6 +10,7 @@ import 'screens/notifications_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/campus_map_screen.dart';
 import 'services/runtime_mode_service.dart';
+import 'services/device_service.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -18,6 +19,8 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   await RuntimeModeService.initialize();
+  // Start background device listener (continues regardless of screen state)
+  DeviceService().initialize();
   runApp(const SmartPowerSwitchApp());
 }
 
@@ -63,6 +66,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
               deviceId: args['deviceId'],
               utility: args['utility'],
               building: args['building'],
+              room: args['room'] ?? 'unknown',
               floor: args['floor'],
               role: args['role'] ?? 'faculty',
             ),

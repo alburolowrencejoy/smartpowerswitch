@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
 import '../services/history_service.dart';
+import '../services/readings_service.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
   final String utility;
   final String building;
+  final String room;
   final String role;
   final int floor;
 
@@ -16,6 +18,7 @@ class DeviceDetailScreen extends StatefulWidget {
     required this.deviceId,
     required this.utility,
     required this.building,
+    required this.room,
     required this.role,
     required this.floor,
   });
@@ -32,8 +35,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool _toggling = false;
   double _ratePhp = 11.5;
   double _lastValidEnergy = 0.0; // Persists last valid reading
+  int? _lastRecordedSeen; // Track last telemetry update to avoid duplicates
+  DateTime? _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
   StreamSubscription? _deviceSub;
+  StreamSubscription? _rateSub;
 
   @override
   void initState() {
@@ -45,10 +51,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   @override
   void dispose() {
     _deviceSub?.cancel();
+    _rateSub?.cancel();
     super.dispose();
   }
 
-  // ── Listen to flat devices node (PZEM + status + last_seen) ─────────────────
+  // ── Listen directly to Firebase for real-time relay state ────────────────
+  // Background service continues collecting readings independently
   void _listenToDevice() {
     _deviceSub = FirebaseDatabase.instance
         .ref('devices/${widget.deviceId}')
@@ -58,31 +66,74 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       final raw = event.snapshot.value;
       if (raw == null) return;
       final data = Map<String, dynamic>.from(raw as Map);
-      
-      // Only update _lastValidEnergy if the reading is valid (not NaN, not infinite)
-      final kwhRaw = data['kwh'] as num?;
-      if (kwhRaw != null && !kwhRaw.isNaN && !kwhRaw.isInfinite) {
-        final kwh = kwhRaw.toDouble();
-        _lastValidEnergy = kwh;
-        // Store PZEM reading in history
-        HistoryService.writeHistory(
-          deviceId: widget.deviceId,
-          building: widget.building,
-          kwh: kwh,
-        );
+      final lastSeen = (data['last_seen'] as num?)?.toInt();
+
+      if (lastSeen != null && lastSeen == _lastRecordedSeen) {
+        return;
       }
-      
+
+      // Calculate energy consumption for this 3-second interval
+      // Formula: kWh = (Power in Watts / 1000) × (time in hours)
+      // For 3 seconds: kWh = (power / 1000) × (3 / 3600)
+      final power = (data['power'] as num?)?.toDouble() ?? 0.0;
+      const intervalHours = 3.0 / 3600.0; // 3 seconds in hours = 0.000833 hours
+      final kwhThisInterval = (power / 1000.0) * intervalHours;
+
+      // Don't override relay state if we just toggled it (give ESP32 time to respond)
+      final now = DateTime.now();
+      final ignoreRelayUpdate = _lastToggleTime != null &&
+          now.difference(_lastToggleTime!).inMilliseconds < 3000;
+
+      if (kwhThisInterval <= 0.000001) {
+        setState(() {
+          _deviceData = data;
+          _hasPzemReadings = _checkHasPzemReadings(data);
+          _isOnline = _checkOnline(data);
+          if (!ignoreRelayUpdate) {
+            _relay = (data['relay'] as bool?) ?? false;
+          }
+        });
+        if (lastSeen != null) {
+          _lastRecordedSeen = lastSeen;
+        }
+        return;
+      }
+
+      // Accumulate into running total
+      _lastValidEnergy += kwhThisInterval;
+
+      final relay = (data['relay'] as bool?) ?? false;
+
+      ReadingsService.recordReading(
+        deviceId: widget.deviceId,
+        building: widget.building,
+        room: widget.room,
+        kwh: _lastValidEnergy,
+        relay: relay,
+      );
+      HistoryService.writeHistory(
+        deviceId: widget.deviceId,
+        building: widget.building,
+        kwh: kwhThisInterval,
+      );
+
+      if (lastSeen != null) {
+        _lastRecordedSeen = lastSeen;
+      }
+
       setState(() {
         _deviceData = data;
         _hasPzemReadings = _checkHasPzemReadings(data);
         _isOnline = _checkOnline(data);
-        _relay = (data['relay'] as bool?) ?? false;
+        if (!ignoreRelayUpdate) {
+          _relay = (data['relay'] as bool?) ?? false;
+        }
       });
     });
   }
 
   void _fetchRate() {
-    FirebaseDatabase.instance
+    _rateSub = FirebaseDatabase.instance
         .ref('settings/electricityRate')
         .onValue
         .listen((event) {
@@ -108,10 +159,22 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   String _safeFormatPzem(dynamic value, int decimals) {
     if (value is! num) return '--';
-    final num_val = value as num;
+    final numVal = value;
     // Check for NaN and negative infinity
-    if (num_val.isNaN || num_val.isInfinite) return '00';
-    return num_val.toDouble().toStringAsFixed(decimals);
+    if (numVal.isNaN || numVal.isInfinite) return '00';
+    return numVal.toDouble().toStringAsFixed(decimals);
+  }
+
+  String? _voltageWarningMessage(Map<String, dynamic> data) {
+    final warning = data['voltage_warning']?.toString();
+    switch (warning) {
+      case 'under_voltage_brownout':
+        return 'Under-voltage (Brownout) Below 207V';
+      case 'over_voltage_surge':
+        return 'Over-voltage (Surge) Above 253V';
+      default:
+        return null;
+    }
   }
 
   // ── Toggle relay in BOTH locations ───────────────────────────────────────────
@@ -119,6 +182,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (_toggling) return;
     final previousRelay = _relay;
     final newRelay = !previousRelay;
+    
+    _lastToggleTime = DateTime.now(); // Record when we toggled
+    
     setState(() {
       _relay = newRelay;
       _toggling = true;
@@ -157,6 +223,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _toggling = false;
       if (!success) {
         _relay = previousRelay;
+        _lastToggleTime = null; // Clear toggle time if failed
       }
     });
 
@@ -335,7 +402,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   Widget _buildRelayCard() {
     final isAc = widget.utility == 'ac';
-    final relayVisible = _hasPzemReadings ? _relay : false;
+    // Show relay state even when there are no PZEM readings (meter may be
+    // placed after the relay). Allow toggling regardless of PZEM presence.
+    final relayVisible = _relay;
+    final warningMessage = _voltageWarningMessage(_deviceData);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -377,11 +447,22 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     ? AppColors.greenPale.withAlpha(179)
                     : AppColors.textMuted),
           ),
+          if (warningMessage != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              warningMessage,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFFFC107),
+              ),
+            ),
+          ],
         ])),
         // Only show toggle if role is admin
         if (widget.role == 'admin')
           GestureDetector(
-            onTap: (!_toggling && _hasPzemReadings) ? _toggleRelay : null,
+            onTap: (!_toggling) ? _toggleRelay : null,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 250),
               width: 64,
@@ -448,7 +529,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             ),
           ),
         // Faculty sees a lock icon instead
-        if (widget.role != 'admin')
+          if (widget.role != 'admin')
           Container(
             width: 64,
             height: 34,
@@ -469,7 +550,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final power = _safeFormatPzem(_deviceData['power'], 1);
     final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
     final frequency = _safeFormatPzem(_deviceData['frequency'], 1);
-    final energy = _safeFormatPzem(_deviceData['kwh'], 2);
+    // Display kWh as accumulated energy (kW × hours). _lastValidEnergy is
+    // accumulated from instantaneous `power` (Watts) readings using the
+    // formula: kWh = (power_watts / 1000) × time_hours.
+    final energyValue = _lastValidEnergy > 0
+        ? _lastValidEnergy
+        : ( (_deviceData['kwh'] is num) ? (_deviceData['kwh'] as num).toDouble() : 0.0 );
+    final energy = energyValue.toStringAsFixed(2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

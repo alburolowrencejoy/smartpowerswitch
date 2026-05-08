@@ -26,6 +26,10 @@ class HistoryService {
       final period = entry.value;
       final base   = 'history/$range/$period';
 
+      if (await _isDeleted(range, period)) {
+        continue;
+      }
+
       // Write per-device entry
       await _db.child('$base/devices/$deviceId').update({
         'kwh':      kwh,
@@ -36,18 +40,18 @@ class HistoryService {
       // Update period totals using transactions (safe for concurrent writes)
       await _db.child('$base/total_kwh').runTransaction((current) {
         final prev = (current as num?)?.toDouble() ?? 0.0;
-        return Transaction.success(double.parse((prev + kwh).toStringAsFixed(4)));
+        return Transaction.success(double.parse((prev + kwh).toStringAsFixed(6)));
       });
 
       await _db.child('$base/total_cost').runTransaction((current) {
         final prev = (current as num?)?.toDouble() ?? 0.0;
-        return Transaction.success(double.parse((prev + cost).toStringAsFixed(4)));
+        return Transaction.success(double.parse((prev + cost).toStringAsFixed(6)));
       });
 
       // Update per-building totals
       await _db.child('$base/buildings/$building/kwh').runTransaction((current) {
         final prev = (current as num?)?.toDouble() ?? 0.0;
-        return Transaction.success(double.parse((prev + kwh).toStringAsFixed(4)));
+        return Transaction.success(double.parse((prev + kwh).toStringAsFixed(6)));
       });
     }
   }
@@ -56,6 +60,11 @@ class HistoryService {
   static Future<double> _getRate() async {
     final snap = await _db.child('settings/electricityRate').get();
     return (snap.value as num?)?.toDouble() ?? 11.5;
+  }
+
+  static Future<bool> _isDeleted(String range, String period) async {
+    final snap = await _db.child('history/deleted/$range/$period').get();
+    return snap.value == true;
   }
 
   /// e.g. "2024-06-01"

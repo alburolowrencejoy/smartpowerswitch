@@ -44,6 +44,7 @@ class AutomationSchedulerService {
 
   static List<_AutomationRecord> _schedules = const [];
   static Map<String, Map<String, dynamic>> _devices = const {};
+  static DateTime? _lastTickTime; // Debounce rapid ticks
 
   static Future<void> startIfNeeded() async {
     if (_started) return;
@@ -141,6 +142,11 @@ class AutomationSchedulerService {
     if (_schedules.isEmpty || _devices.isEmpty) return;
 
     final now = DateTime.now();
+    // Debounce: skip if last tick was less than 2 seconds ago
+    if (_lastTickTime != null && now.difference(_lastTickTime!).inMilliseconds < 2000) {
+      return;
+    }
+    _lastTickTime = now;
 
     for (final schedule in _schedules) {
       if (!schedule.enabled) continue;

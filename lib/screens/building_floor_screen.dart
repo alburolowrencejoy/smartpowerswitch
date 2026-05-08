@@ -30,7 +30,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   Map<String, dynamic> _devices = {};
 
   double _buildingKwh = 0;
-  double _buildingCost = 0;
   int _buildingOnline = 0;
   bool _hasMonthlyBuildingEnergy = false;
   int _instituteTotalDevices = 0; // assigned devices in this building
@@ -198,7 +197,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         setState(() {
           _hasMonthlyBuildingEnergy = true;
           _buildingKwh = kwh;
-          _buildingCost = kwh * 11.5;
         });
       } else {
         if (_hasMonthlyBuildingEnergy) {
@@ -232,7 +230,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         _liveDevices = liveDevices;
         if (!_hasMonthlyBuildingEnergy) {
           _buildingKwh = kwh;
-          _buildingCost = kwh * 11.5;
         }
       });
     }, onError: (Object error) {
@@ -242,11 +239,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   double _roomKwh(String room) {
     double total = 0;
+    // Read from live devices (flat /devices node) filtered by building + room
     _liveDevices.forEach((_, val) {
       if (val is! Map) return;
       final device = Map<String, dynamic>.from(val);
-      if ((device['building'] ?? '').toString() != widget.buildingCode) return;
-      if (device['room']?.toString().trim() != room.trim()) return;
+      final deviceBuilding = (device['building'] ?? '').toString();
+      final deviceRoom = device['room']?.toString().trim() ?? '';
+
+      // Only sum if building matches and room matches
+      if (deviceBuilding != widget.buildingCode) return;
+      if (deviceRoom != room.trim()) return;
+
       total += ((device['kwh'] ?? 0.0) as num).toDouble();
     });
     return total;
@@ -1158,6 +1161,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             return _buildDeviceTile(
               entry.key,
               Map<String, dynamic>.from(entry.value),
+              room,
             );
           },
         ),
@@ -1165,7 +1169,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     );
   }
 
-  Widget _buildDeviceTile(String deviceId, Map<String, dynamic> device) {
+  Widget _buildDeviceTile(String deviceId, Map<String, dynamic> device, String room) {
     final utility = device['utility'] as String? ?? 'unknown';
     final status = device['status'] as String? ?? 'offline';
     final relay = device['relay'] as bool? ?? false;
@@ -1232,6 +1236,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 'deviceId': deviceId,
                 'utility': utility,
                 'building': widget.buildingCode,
+                'room': room,
                 'floor': _selectedFloor,
                 'role': widget.role,
               }),
@@ -1268,23 +1273,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         ]),
       ]),
     );
-  }
-
-  IconData _utilityIcon(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return Icons.lightbulb_outline;
-      case 'outlet':
-      case 'outlets':
-        return Icons.electrical_services;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return Icons.ac_unit;
-      default:
-        return Icons.device_unknown_outlined;
-    }
   }
 
   Color _utilityColor(String u) {

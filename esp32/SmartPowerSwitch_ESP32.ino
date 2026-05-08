@@ -63,22 +63,26 @@ static const uint32_t WIFI_RETRY_MS = 5000;
 static const uint32_t PZEM_UART_BAUD = 9600;
 static const uint32_t PZEM_PROBE_RETRY_MS = 15000;
 static const uint32_t PZEM_RAW_TIMEOUT_MS = 350;
-static const bool PZEM_RAW_DEBUG_ON_BOOT = false;
+static const bool PZEM_RAW_DEBUG_ON_BOOT = true;
 static const bool PZEM_RAW_DEBUG_ON_PROBE_FAIL = true;
 
 // =======================================================
 
 PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
 
-uint8_t pzemAddress = 0x01;
+uint8_t pzemAddress = 0xF8;  // Factory default address for v4.0 modules
 
 bool relayState = false;
 bool pzemReady = false;
+uint32_t pzemLastOnlineMs = 0;  // Track when PZEM was last online
+// Track last seen energy reading so we can write per-interval history deltas
+float lastReportedEnergyKwh = -1.0f;
 
 uint32_t lastRelayPollMs = 0;
 uint32_t lastTelemetryPushMs = 0;
 uint32_t lastWifiRetryMs = 0;
 uint32_t lastPzemProbeMs = 0;
+wl_status_t lastWifiStatus = WL_DISCONNECTED;  // Track WiFi status changes
 
 uint64_t bootEpochMs = 0;
 uint32_t bootMillisAtSync = 0;
@@ -89,6 +93,37 @@ static inline float roundTo(float value, int places) {
     scale *= 10.0f;
   }
   return roundf(value * scale) / scale;
+}
+
+static inline bool isFiniteReading(float value) {
+  return !isnan(value) && !isinf(value);
+}
+
+static inline String voltageWarningLabel(float voltage) {
+  if (!isFiniteReading(voltage)) {
+    return "unknown";
+  }
+  if (voltage < 207.0f) {
+    return "under_voltage_brownout";
+  }
+  if (voltage > 253.0f) {
+    return "over_voltage_surge";
+  }
+  return "normal";
+}
+
+static inline bool isPlausiblePzemReading(float voltage,
+                                          float current,
+                                          float power,
+                                          float energyKwh,
+                                          float frequency,
+                                          float powerFactor) {
+  return isFiniteReading(voltage) && voltage >= 80.0f && voltage <= 260.0f &&
+         isFiniteReading(current) && current >= 0.0f && current <= 100.0f &&
+         isFiniteReading(power) && power >= 0.0f && power <= 25000.0f &&
+         isFiniteReading(energyKwh) && energyKwh >= 0.0f && energyKwh <= 1000000.0f &&
+         isFiniteReading(frequency) && frequency >= 45.0f && frequency <= 65.0f &&
+         isFiniteReading(powerFactor) && powerFactor >= 0.0f && powerFactor <= 1.0f;
 }
 
 static inline uint8_t relayPinLevel(bool on) {
@@ -313,29 +348,54 @@ void probePzemLink(bool force) {
 
   lastPzemProbeMs = now;
 
+  Serial.println("[PZEM] Probing PZEM link...");
   const float voltage = pzem.voltage();
-  pzemReady = !isnan(voltage);
+  const float current = pzem.current();
+  const float power = pzem.power();
+  const float energyKwh = pzem.energy();
+  const float frequency = pzem.frequency();
+  const float powerFactor = pzem.pf();
+  const String voltageWarning = voltageWarningLabel(voltage);
+
+  pzemReady = isPlausiblePzemReading(
+      voltage, current, power, energyKwh, frequency, powerFactor);
+  
   if (pzemReady) {
     pzemAddress = pzem.readAddress();
-  }
-
-  if (pzemReady) {
-    Serial.print("[PZEM] Link ready on ");
-    Serial.print("0x");
+    Serial.print("[PZEM] Link ready on 0x");
     if (pzemAddress < 0x10) {
       Serial.print('0');
     }
     Serial.println(pzemAddress, HEX);
+    Serial.print("[PZEM] Initial reading - V=");
+    Serial.print(voltage, 1);
+    Serial.print(" I=");
+    Serial.print(current, 2);
+    Serial.print(" P=");
+    Serial.print(power, 1);
+    Serial.print(" kWh=");
+    Serial.print(energyKwh, 4);
+    Serial.print(" Hz=");
+    Serial.print(frequency, 1);
+    Serial.print(" PF=");
+    Serial.println(powerFactor, 2);
+    if (voltageWarning == "under_voltage_brownout") {
+      Serial.println("[PZEM] Voltage warning: Under-voltage (Brownout) Below 207V");
+    } else if (voltageWarning == "over_voltage_surge") {
+      Serial.println("[PZEM] Voltage warning: Over-voltage (Surge) Above 253V");
+    }
     Serial.println();
   } else {
+    Serial.println("[PZEM] Probe failed (readings are missing or out of range)");
     if (PZEM_RAW_DEBUG_ON_PROBE_FAIL) {
+      Serial.println("[PZEM] Running diagnostics...");
       const bool legacyRawOk = runPzemRawDiagnostics();
       if (!legacyRawOk) {
         runPzemModbusRawDiagnostics();
       }
     }
     Serial.println(
-        "[PZEM] Probe failed. Check TX/RX swap, common GND, level shift on ESP32 RX, and AC side.");
+        "[PZEM] CHECK: TX/RX swap, common GND, level shift on ESP32 RX, AC power on measurement side");
   }
 }
 
@@ -399,8 +459,11 @@ bool firebaseGet(const String& path, String& responseBody, int& statusCode) {
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setConnectionTimeout(5000);  // 5 sec timeout
 
   HTTPClient https;
+  https.setConnectTimeout(5000);
+  https.setTimeout(5000);
   const String url = String(FIREBASE_DB_URL) + path;
 
   if (!https.begin(client, url)) {
@@ -410,26 +473,45 @@ bool firebaseGet(const String& path, String& responseBody, int& statusCode) {
   statusCode = https.GET();
   responseBody = https.getString();
   https.end();
-  return true;
+  return statusCode > 0;
 }
 
 bool firebasePatch(const String& path, const String& json, int& statusCode) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Firebase] PATCH failed: WiFi disconnected");
+    return false;
+  }
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setConnectionTimeout(5000);  // 5 sec timeout
 
   HTTPClient https;
+  https.setConnectTimeout(5000);
+  https.setTimeout(5000);
   const String url = String(FIREBASE_DB_URL) + path;
 
   if (!https.begin(client, url)) {
+    Serial.println("[Firebase] PATCH failed: Could not begin HTTP connection");
     return false;
   }
 
   https.addHeader("Content-Type", "application/json");
   statusCode = https.sendRequest("PATCH", json);
+  String resp = https.getString();
+  if (statusCode <= 0) {
+    Serial.print("[Firebase] PATCH request error: ");
+    Serial.println(https.errorToString(statusCode));
+    Serial.print("[Firebase] PATCH response: ");
+    Serial.println(resp);
+  } else {
+    Serial.print("[Firebase] PATCH response code: ");
+    Serial.println(statusCode);
+    Serial.print("[Firebase] PATCH body: ");
+    Serial.println(resp);
+  }
   https.end();
-  return true;
+  return statusCode > 0;
 }
 
 void pollRelayAndAssignment() {
@@ -453,26 +535,41 @@ void pollRelayAndAssignment() {
     return;
   }
 
-  const bool cloudRelay = doc["relay"] | relayState;
+  bool cloudRelay = relayState;
+  if (doc.containsKey("relay")) {
+    cloudRelay = doc["relay"].as<bool>();
+  }
   if (cloudRelay != relayState) {
     setRelay(cloudRelay);
     Serial.print("[Relay] Set from cloud: ");
-    Serial.println(relayState ? "ON" : "OFF");
+    Serial.println(cloudRelay ? "ON" : "OFF");
+    // Push telemetry immediately so the cloud reflects the updated relay
+    // state and (when meter is after the relay) we get readings faster.
+    lastTelemetryPushMs = millis();
+    pushTelemetry();
   }
 }
 
 void pushTelemetry() {
+  // Check WiFi before doing any work
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Telemetry] Skipping push: WiFi not connected");
+    return;
+  }
+
   if (!pzemReady) {
     probePzemLink(false);
   }
 
   const float voltage = pzem.voltage();
-  const bool pzemOk = !isnan(voltage) && voltage > 0.0f;
-  const float current = pzemOk ? pzem.current() : -1.0f;
-  const float power = pzemOk ? pzem.power() : -1.0f;
-  const float energyKwh = pzemOk ? pzem.energy() : -1.0f;
-  const float frequency = pzemOk ? pzem.frequency() : -1.0f;
-  const float powerFactor = pzemOk ? pzem.pf() : -1.0f;
+  const float current = pzem.current();
+  const float power = pzem.power();
+  const float energyKwh = pzem.energy();
+  const float frequency = pzem.frequency();
+  const float powerFactor = pzem.pf();
+  const String voltageWarning = voltageWarningLabel(voltage);
+  const bool pzemOk = isPlausiblePzemReading(
+      voltage, current, power, energyKwh, frequency, powerFactor);
 
   if (pzemOk) {
     pzemAddress = pzem.readAddress();
@@ -481,9 +578,18 @@ void pushTelemetry() {
   const uint64_t t = nowMs();
   const String status = pzemOk ? "online" : "offline";
 
-  if (!pzemOk && relayState) {
-    setRelay(false);
+  // Track when PZEM was last online
+  if (pzemOk) {
+    pzemLastOnlineMs = millis();
   }
+
+  // DISABLED: Don't auto-shutoff relay just because PZEM is offline.
+  // PZEM may take time to initialize. Only shutoff for actual error conditions.
+  // const uint32_t pzemOfflineDurationMs = millis() - pzemLastOnlineMs;
+  // if (!pzemOk && relayState && pzemOfflineDurationMs > 5000) {
+  //   setRelay(false);
+  //   Serial.println("[PZEM] Auto-shutoff: PZEM offline for 5+ seconds");
+  // }
 
   Serial.print("[PZEM] V=");
   Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
@@ -493,12 +599,26 @@ void pushTelemetry() {
   Serial.print(pzemOk ? String(roundTo(power, 1)) : String("nan"));
   Serial.print(" kWh=");
   Serial.print(pzemOk ? String(roundTo(energyKwh, 4)) : String("nan"));
+  Serial.print(" Hz=");
+  Serial.print(pzemOk ? String(roundTo(frequency, 1)) : String("nan"));
+  Serial.print(" PF=");
+  Serial.print(pzemOk ? String(roundTo(powerFactor, 2)) : String("nan"));
   Serial.print(" relay=");
   Serial.println(relayState ? "ON" : "OFF");
+  if (voltageWarning == "under_voltage_brownout") {
+    Serial.println("[PZEM] Voltage warning: Under-voltage (Brownout) Below 207V");
+  } else if (voltageWarning == "over_voltage_surge") {
+    Serial.println("[PZEM] Voltage warning: Over-voltage (Surge) Above 253V");
+  }
+
+  if (!pzemOk) {
+    pzemReady = false;
+  }
 
   DynamicJsonDocument doc(512);
   doc["relay"] = relayState;
   doc["status"] = status;
+  doc["voltage_warning"] = voltageWarning;
   doc["last_updated"] = t;
   doc["last_seen"] = pzemOk ? t : (t > 300000 ? t - 300000 : 0);
 
@@ -521,11 +641,95 @@ void pushTelemetry() {
   serializeJson(doc, payload);
 
   int code = 0;
+  Serial.print("[Telemetry] Pushing to Firebase... ");
   const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
-  if (!ok || (code != 200 && code != 204)) {
-    Serial.print("[Firebase] Telemetry push failed. HTTP ");
-    Serial.println(code);
+  
+  if (!ok) {
+    Serial.println("FAILED (no connection)");
     return;
+  }
+  
+  if (code != 200 && code != 204) {
+    Serial.print("FAILED (HTTP ");
+    Serial.print(code);
+    Serial.println(")");
+    return;
+  }
+  
+  Serial.println("OK (HTTP 200/204)");
+
+  // Verify by fetching the device node we just patched
+  String verifyBody;
+  int verifyCode = 0;
+  const String devicePath = String("/devices/") + DEVICE_ID + ".json";
+  if (firebaseGet(devicePath, verifyBody, verifyCode)) {
+    Serial.print("[Verify GET] code: ");
+    Serial.println(verifyCode);
+    Serial.print("[Verify GET] body: ");
+    Serial.println(verifyBody);
+  } else {
+    Serial.println("[Verify GET] failed to GET device node");
+  }
+
+  // Compute delta from PZEM energy meter and write raw history entry (includes cost)
+  if (pzemOk) {
+    float delta = 0.0f;
+    if (lastReportedEnergyKwh < 0.0f) {
+      lastReportedEnergyKwh = energyKwh; // initialize on first valid reading
+    } else {
+      delta = energyKwh - lastReportedEnergyKwh;
+      if (delta < 0.0f) {
+        // meter may have reset — use current reading as delta
+        delta = energyKwh;
+      }
+    }
+
+    // Only write if delta is meaningful (avoid noise)
+    if (delta >= 0.000001f) {
+      // Fetch rate (best-effort)
+      String rateBody;
+      int rateCode = 0;
+      double rate = 11.5;
+      if (firebaseGet(String("/settings/electricityRate.json"), rateBody, rateCode) && rateCode == 200 && rateBody != "null") {
+        rate = atof(rateBody.c_str());
+      }
+
+      const double cost = (double)delta * rate;
+
+      // Write a single daily raw summary (overwrite, do not append incremental entries)
+      DynamicJsonDocument hdoc(384);
+      hdoc["deviceId"] = DEVICE_ID;
+      // cumulative total from the meter (not delta)
+      hdoc["kwh_total"] = roundTo(energyKwh, 4);
+      hdoc["cost_total"] = roundTo((float)(energyKwh * rate), 4);
+      hdoc["ts"] = (uint64_t)t; // epoch ms
+
+      // Build daily key YYYY-MM-DD
+      time_t secs = (time_t)(t / 1000ULL);
+      struct tm tm;
+      localtime_r(&secs, &tm);
+      char daybuf[16];
+      snprintf(daybuf, sizeof(daybuf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+
+      String hpayload;
+      serializeJson(hdoc, hpayload);
+
+      int hcode = 0;
+      // Overwrite daily raw summary: history/raw/<YYYY-MM-DD>_<deviceId>.json
+      String hpath = String("/history/raw/") + String(daybuf) + "_" + DEVICE_ID + ".json";
+      const bool hok = firebasePatch(hpath, hpayload, hcode);
+      if (!hok) {
+        Serial.print("[History] Failed to write daily raw summary (HTTP ");
+        Serial.print(hcode);
+        Serial.println(")");
+      } else {
+        Serial.print("[History] Daily raw summary written (HTTP ");
+        Serial.print(hcode);
+        Serial.println(")");
+      }
+
+      lastReportedEnergyKwh = energyKwh;
+    }
   }
 }
 
@@ -537,6 +741,7 @@ void setup() {
   pinMode(SSR_PIN, OUTPUT);
   setRelay(false);  // Safe default: OFF at boot
 
+  pzemLastOnlineMs = millis();  // Initialize so timeout doesn't trigger immediately
   initPzemUart();
   if (PZEM_RAW_DEBUG_ON_BOOT) {
     const bool legacyRawOk = runPzemRawDiagnostics();
@@ -557,6 +762,38 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
 
+  // Track WiFi status changes
+  wl_status_t currentWifiStatus = WiFi.status();
+  if (currentWifiStatus != lastWifiStatus) {
+    lastWifiStatus = currentWifiStatus;
+    Serial.print("[WiFi] Status changed to: ");
+    switch (currentWifiStatus) {
+      case WL_DISCONNECTED:
+        Serial.println("DISCONNECTED");
+        break;
+      case WL_CONNECTED:
+        Serial.print("CONNECTED (IP: ");
+        Serial.print(WiFi.localIP());
+        Serial.println(")");
+        syncTimeIfPossible();
+        // Force telemetry push on reconnect
+        lastTelemetryPushMs = millis();
+        break;
+      case WL_NO_SSID_AVAIL:
+        Serial.println("NO_SSID_AVAILABLE");
+        break;
+      case WL_CONNECT_FAILED:
+        Serial.println("CONNECT_FAILED");
+        break;
+      case WL_IDLE_STATUS:
+        Serial.println("IDLE");
+        break;
+      default:
+        Serial.println(currentWifiStatus);
+        break;
+    }
+  }
+
   if (WiFi.status() != WL_CONNECTED) {
     if (now - lastWifiRetryMs >= WIFI_RETRY_MS) {
       lastWifiRetryMs = now;
@@ -567,6 +804,11 @@ void loop() {
     }
     delay(20);
     return;
+  }
+
+  // Probe PZEM more frequently if not ready
+  if (!pzemReady) {
+    probePzemLink(false);  // Will retry every PZEM_PROBE_RETRY_MS if not ready
   }
 
   if (now - lastRelayPollMs >= RELAY_POLL_MS) {

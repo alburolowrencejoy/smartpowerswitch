@@ -18,7 +18,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
   String _role = 'faculty';
   String _userName = '';
-  String? _userUid;
   bool _roleLoaded = false;
   bool _compactMenuOpen = false;
 
@@ -26,9 +25,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<Map<String, dynamic>> _buildings = [];
 
   double _totalKwh = 0;
-  double _totalCostPhp = 0;
   double _monthlyKwh = 0.0;
   double _monthlyCostPhp = 0.0;
+  // Compatibility alias: some hot-reload states or older code may set
+  // `_totalCostPhp`. Provide a forwarding setter/getter to avoid
+  // NoSuchMethodError until a full restart is performed.
+  // ignore: unused_element
+  double get _totalCostPhp => _monthlyCostPhp;
+  // ignore: unused_element
+  set _totalCostPhp(double v) => _monthlyCostPhp = v;
   double _electricityRate = 11.5;
   int _assignedDevices = 0;
   int _unassignedDevices = 0;
@@ -69,7 +74,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _hydrateSessionFromAuth() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-    _userUid = user.uid;
 
     try {
       final snap =
@@ -201,7 +205,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (raw == null) {
         setState(() {
           _totalKwh = 0;
-          _totalCostPhp = 0;
           _utilityTotals = {};
         });
         return;
@@ -224,7 +227,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
       setState(() {
         _totalKwh = totalKwh;
-        _totalCostPhp = totalKwh * _electricityRate;
+        _monthlyCostPhp = _monthlyKwh * _electricityRate;
         _utilityTotals = uTotals;
       });
     }, onError: (Object error) {
@@ -241,7 +244,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
       setState(() {
         _electricityRate = rate;
-        _totalCostPhp = _totalKwh * rate;
+        _monthlyCostPhp = _monthlyKwh * rate;
       });
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
@@ -263,18 +266,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       final root = Map<String, dynamic>.from(raw as Map);
-      final data = _pickRangeNode(root, _analyticsRange);
-      final List<Map<String, dynamic>> list = [];
-      data.forEach((key, val) {
-        if (val is! Map) return;
-        final entry = Map<String, dynamic>.from(val);
-        list.add({
-          'label': key,
-          'kwh': (entry['total_kwh'] ?? 0.0) as num,
-          'cost': (entry['total_cost'] ?? 0.0) as num,
-        });
-      });
-      list.sort((a, b) => a['label'].compareTo(b['label']));
+      final list = _parseAnalyticsEntries(root, _analyticsRange);
       setState(() {
         _historyData = list;
         _buildingEnergy = _currentMonthBuildingEnergy(root);
@@ -377,6 +369,109 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return best is Map ? Map<String, dynamic>.from(best) : <String, dynamic>{};
   }
 
+  List<Map<String, dynamic>> _parseAnalyticsEntries(
+      Map<String, dynamic> root, String rangeKey) {
+    final data = _pickRangeNode(root, rangeKey);
+    final list = <Map<String, dynamic>>[];
+
+    data.forEach((key, val) {
+      if (val is! Map) return;
+      final entry = Map<String, dynamic>.from(val);
+      list.add({
+        'label': key,
+        'kwh': (entry['total_kwh'] ?? 0.0) as num,
+        'cost': (entry['total_cost'] ?? 0.0) as num,
+      });
+    });
+
+    if (list.isNotEmpty) {
+      list.sort((a, b) => a['label'].compareTo(b['label']));
+      return list;
+    }
+
+    final rawRoot = root['raw'];
+    if (rawRoot is! Map) return list;
+
+    final grouped = <String, Map<String, dynamic>>{};
+    final rawMap = Map<String, dynamic>.from(rawRoot);
+
+    rawMap.forEach((key, val) {
+      if (val is! Map) return;
+      final entry = Map<String, dynamic>.from(val);
+      final timestamp = _analyticsRawTimestamp(entry, key.toString());
+      if (timestamp == null) return;
+
+      final label = _analyticsRangeLabel(timestamp, rangeKey);
+      final kwh = _asDouble(entry['kwh']);
+      final cost = _asDouble(entry['cost']);
+
+      final bucket = grouped.putIfAbsent(label, () => {
+            'label': label,
+            'kwh': 0.0,
+            'cost': 0.0,
+          });
+      bucket['kwh'] = (bucket['kwh'] as double) + kwh;
+      bucket['cost'] = (bucket['cost'] as double) + cost;
+    });
+
+    final groupedList = grouped.values.toList()
+      ..sort((a, b) => a['label'].compareTo(b['label']));
+    return groupedList;
+  }
+
+  DateTime? _analyticsRawTimestamp(
+      Map<String, dynamic> entry, String fallbackKey) {
+    final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
+    if (rawTs is num) {
+      return DateTime.fromMillisecondsSinceEpoch(rawTs.toInt());
+    }
+    if (rawTs is String) {
+      final asInt = int.tryParse(rawTs);
+      if (asInt != null) {
+        return DateTime.fromMillisecondsSinceEpoch(asInt);
+      }
+      return DateTime.tryParse(rawTs);
+    }
+
+    final prefix = fallbackKey.contains('_')
+        ? fallbackKey.substring(0, fallbackKey.indexOf('_'))
+        : fallbackKey;
+    final keyTs = int.tryParse(prefix);
+    if (keyTs != null) {
+      return DateTime.fromMillisecondsSinceEpoch(keyTs);
+    }
+    return null;
+  }
+
+  String _analyticsRangeLabel(DateTime timestamp, String rangeKey) {
+    switch (rangeKey) {
+      case 'daily':
+        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
+      case 'weekly':
+        return '${timestamp.year}-W${_pad(_isoWeek(timestamp))}';
+      case 'monthly':
+        return '${timestamp.year}-${_pad(timestamp.month)}';
+      case 'yearly':
+        return '${timestamp.year}';
+      default:
+        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
+    }
+  }
+
+  double _asDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
+  }
+
+  int _isoWeek(DateTime date) {
+    final startOfYear = DateTime(date.year, 1, 1);
+    final firstMonday = startOfYear.weekday;
+    final dayOfYear = date.difference(startOfYear).inDays + 1;
+    final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
+    return weekNumber < 1 ? 1 : weekNumber;
+  }
+
   int _matchingKeyCount(Map<String, dynamic> node, String range) {
     int count = 0;
     for (final k in node.keys) {
@@ -422,10 +517,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (value == null) return '0.${'0' * decimals}';
     if (value is double) return value.toStringAsFixed(decimals);
     if (value is int) return value.toDouble().toStringAsFixed(decimals);
-    if (value is num)
-      return (value as num).toDouble().toStringAsFixed(decimals);
+    if (value is num) {
+      return (value).toDouble().toStringAsFixed(decimals);
+    }
     return '0.${'0' * decimals}';
   }
+
+  String _pad(int value) => value.toString().padLeft(2, '0');
 
   String _monthKey(DateTime date) =>
       '${date.year}-${date.month.toString().padLeft(2, '0')}';

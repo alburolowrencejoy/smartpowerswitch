@@ -19,6 +19,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   String _range = 'daily';
   String _trendChartType = 'line';
   bool _exporting = false;
+  String? _deletingHistoryKey;
 
   final List<Map<String, String>> _ranges = [
     {'key': 'daily', 'label': 'Daily'},
@@ -29,8 +30,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   StreamSubscription? _devicesSub;
   StreamSubscription? _historySub;
+  StreamSubscription? _deletedSub;
 
   List<Map<String, dynamic>> _historyData = [];
+  Set<String> _deletedEntries = {}; // Tracks deleted tombstones for current range
 
   Map<String, double> _utilityTotals = {};
   Map<String, double> _buildingTotals = {};
@@ -48,6 +51,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void dispose() {
     _devicesSub?.cancel();
     _historySub?.cancel();
+    _deletedSub?.cancel();
     super.dispose();
   }
 
@@ -96,29 +100,39 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   void _listenHistory() {
     _historySub?.cancel();
+    _deletedSub?.cancel();
+    
+    // Listen to deleted tombstones for current range
+    _deletedSub = FirebaseDatabase.instance
+        .ref('history/deleted/$_range')
+        .onValue
+        .listen((event) {
+      final deleted = <String>{};
+      if (event.snapshot.value is Map) {
+        final map = Map<String, dynamic>.from(event.snapshot.value as Map);
+        deleted.addAll(map.keys);
+      }
+      if (mounted) setState(() => _deletedEntries = deleted);
+      _updateHistoryDisplay(); // Refresh UI with deleted filter
+    });
+    
+    // Listen to history data
     _historySub =
         FirebaseDatabase.instance.ref('history').onValue.listen((event) {
-      final raw = event.snapshot.value;
-      if (raw == null) {
+      _updateHistoryDisplay();
+    });
+  }
+  
+  void _updateHistoryDisplay() {
+    if (!mounted) return;
+    final snapshot = FirebaseDatabase.instance.ref('history');
+    snapshot.get().then((event) {
+      if (event.value is! Map) {
         if (mounted) setState(() => _historyData = []);
         return;
       }
-
-      final root = Map<String, dynamic>.from(raw as Map);
-      final data = _pickRangeNode(root, _range);
-      final List<Map<String, dynamic>> list = [];
-
-      data.forEach((key, val) {
-        if (val is! Map) return;
-        final entry = Map<String, dynamic>.from(val);
-        list.add({
-          'label': key,
-          'kwh': (entry['kwh'] ?? 0.0) as num,
-          'cost': (entry['cost'] ?? 0.0) as num,
-        });
-      });
-
-      list.sort((a, b) => a['label'].compareTo(b['label']));
+      final root = Map<String, dynamic>.from(event.value as Map);
+      final list = _parseRangeEntries(root, _range, _deletedEntries);
       if (mounted) setState(() => _historyData = list);
     });
   }
@@ -175,7 +189,59 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   void _setRange(String key) {
     setState(() => _range = key);
+    _deletedEntries.clear();
     _listenHistory();
+  }
+
+  Future<void> _deleteHistoryEntry(String label) async {
+    if (_deletingHistoryKey != null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete history?'),
+        content: Text(
+          'This will delete the ${_capitalizeFirst(_range)} record for $label.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _deletingHistoryKey = label);
+
+    try {
+      await FirebaseDatabase.instance
+          .ref('history/$_range/$label')
+          .remove();
+
+      await FirebaseDatabase.instance
+          .ref('history/deleted/$_range/$label')
+          .set(true);
+
+      if (mounted) {
+        TopToast.threshold(context, 'Deleted ${_capitalizeFirst(_range)} history.');
+      }
+      _listenHistory();
+    } catch (e) {
+      if (mounted) {
+        TopToast.error(context, 'Delete failed: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _deletingHistoryKey = null);
+      }
+    }
   }
 
   double get _totalKwh =>
@@ -198,12 +264,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   List<Map<String, dynamic>> _parseRangeEntries(
-      Map<String, dynamic> root, String rangeKey) {
+      Map<String, dynamic> root, String rangeKey, [Set<String> deleted = const {}]) {
+    final hasDirectRangeNode = root[rangeKey] is Map;
     final data = _pickRangeNode(root, rangeKey);
     final list = <Map<String, dynamic>>[];
 
     data.forEach((key, val) {
       if (val is! Map) return;
+      // Skip deleted entries
+      if (deleted.contains(key)) return;
+      
       final entry = Map<String, dynamic>.from(val);
       list.add({
         'label': key,
@@ -212,8 +282,77 @@ class _HistoryScreenState extends State<HistoryScreen> {
       });
     });
 
-    list.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
-    return list;
+    if (list.isNotEmpty || hasDirectRangeNode) {
+      list.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+      return list;
+    }
+
+    final rawRoot = root['raw'];
+    if (rawRoot is! Map) return list;
+
+    final grouped = <String, Map<String, dynamic>>{};
+    final rawMap = Map<String, dynamic>.from(rawRoot);
+
+    rawMap.forEach((key, val) {
+      if (val is! Map) return;
+      final entry = Map<String, dynamic>.from(val);
+      final timestamp = _rawEntryTimestamp(entry, key.toString());
+      if (timestamp == null) return;
+
+      final label = _rangeLabel(timestamp, rangeKey);
+      final kwh = _asDouble(entry['kwh']);
+      final cost = _asDouble(entry['cost']);
+
+      final bucket = grouped.putIfAbsent(label, () => {
+            'label': label,
+            'kwh': 0.0,
+            'cost': 0.0,
+          });
+      bucket['kwh'] = (bucket['kwh'] as double) + kwh;
+      bucket['cost'] = (bucket['cost'] as double) + cost;
+    });
+
+    final groupedList = grouped.values.toList()
+      ..sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+    return groupedList;
+  }
+
+  DateTime? _rawEntryTimestamp(Map<String, dynamic> entry, String fallbackKey) {
+    final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
+    if (rawTs is num) {
+      return DateTime.fromMillisecondsSinceEpoch(rawTs.toInt());
+    }
+    if (rawTs is String) {
+      final asInt = int.tryParse(rawTs);
+      if (asInt != null) {
+        return DateTime.fromMillisecondsSinceEpoch(asInt);
+      }
+      return DateTime.tryParse(rawTs);
+    }
+
+    final prefix = fallbackKey.contains('_')
+        ? fallbackKey.substring(0, fallbackKey.indexOf('_'))
+        : fallbackKey;
+    final keyTs = int.tryParse(prefix);
+    if (keyTs != null) {
+      return DateTime.fromMillisecondsSinceEpoch(keyTs);
+    }
+    return null;
+  }
+
+  String _rangeLabel(DateTime timestamp, String rangeKey) {
+    switch (rangeKey) {
+      case 'daily':
+        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
+      case 'weekly':
+        return '${timestamp.year}-W${_pad(_isoWeek(timestamp))}';
+      case 'monthly':
+        return '${timestamp.year}-${_pad(timestamp.month)}';
+      case 'yearly':
+        return '${timestamp.year}';
+      default:
+        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
+    }
   }
 
   String _levelIndicator(double value, double average) {
@@ -394,11 +533,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
       }
 
       final historyRoot = Map<String, dynamic>.from(raw);
+      
+      // Fetch deleted entries for all ranges
+      final deletedMap = <String, Set<String>>{};
+      for (final range in ['daily', 'weekly', 'monthly', 'yearly']) {
+        final deletedSnapshot = 
+            await FirebaseDatabase.instance.ref('history/deleted/$range').get();
+        final deleted = <String>{};
+        if (deletedSnapshot.value is Map) {
+          final map = Map<String, dynamic>.from(deletedSnapshot.value as Map);
+          deleted.addAll(map.keys);
+        }
+        deletedMap[range] = deleted;
+      }
+      
       final clustered = <String, List<Map<String, dynamic>>>{
-        'yearly': _parseRangeEntries(historyRoot, 'yearly'),
-        'monthly': _parseRangeEntries(historyRoot, 'monthly'),
-        'weekly': _parseRangeEntries(historyRoot, 'weekly'),
-        'daily': _parseRangeEntries(historyRoot, 'daily'),
+        'yearly': _parseRangeEntries(historyRoot, 'yearly', deletedMap['yearly'] ?? {}),
+        'monthly': _parseRangeEntries(historyRoot, 'monthly', deletedMap['monthly'] ?? {}),
+        'weekly': _parseRangeEntries(historyRoot, 'weekly', deletedMap['weekly'] ?? {}),
+        'daily': _parseRangeEntries(historyRoot, 'daily', deletedMap['daily'] ?? {}),
       };
 
       final hasData = clustered.values.any((list) => list.isNotEmpty);
@@ -684,6 +837,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _pad(int n) => n.toString().padLeft(2, '0');
+  int _isoWeek(DateTime date) {
+    final startOfYear = DateTime(date.year, 1, 1);
+    final firstMonday = startOfYear.weekday;
+    final dayOfYear = date.difference(startOfYear).inDays + 1;
+    final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
+    return weekNumber < 1 ? 1 : weekNumber;
+  }
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
 
@@ -1222,6 +1382,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       style: const TextStyle(
                           fontSize: 11, color: AppColors.textMuted)),
                 ]),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Delete history',
+                  onPressed: _deletingHistoryKey == d['label']
+                      ? null
+                      : () => _deleteHistoryEntry(d['label'].toString()),
+                  icon: _deletingHistoryKey == d['label']
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_outline,
+                          size: 18, color: AppColors.offline),
+                ),
               ]),
             )),
       ],
