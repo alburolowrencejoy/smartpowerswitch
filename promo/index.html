@@ -162,7 +162,6 @@
     }
     .nav-logo-icon {
       width: 36px; height: 36px;
-      background: var(--green-dark);
       border-radius: 10px;
       display: flex; align-items: center; justify-content: center;
     }
@@ -174,6 +173,20 @@
       white-space: nowrap;
     }
     .nav-logo-text span { color: var(--green-mid); }
+
+    /* Image-based logo replacements to match original size/appearance */
+    img.nav-logo-icon {
+      width: 36px;
+      height: 36px;
+      display: block;
+      object-fit: contain;
+    }
+    img.footer-logo-icon {
+      width: 32px;
+      height: 32px;
+      display: block;
+      object-fit: contain;
+    }
     .nav-cta {
       background: var(--green-dark);
       color: white;
@@ -1076,7 +1089,6 @@
     }
     .footer-logo-icon {
       width: 32px; height: 32px;
-      background: var(--green-dark);
       border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
     }

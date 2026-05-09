@@ -42,9 +42,6 @@ static const char* WIFI_PASSWORD = "Roseslowly";
 static const char* FIREBASE_DB_URL =
     "https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app";
 
-// PZEM Modbus addresses to probe. Factory default is often 0xF8.
-static const uint8_t PZEM_MODBUS_ADDR_CANDIDATES[] = {0xF8, 0x01, 0x02, 0x03};
-
 // Must match ID registered in app (master_devices/<ID>)
 static const char* DEVICE_ID = "ESP32-ROOM101-001";
 
@@ -62,9 +59,6 @@ static const uint32_t TELEMETRY_PUSH_MS = 3000;
 static const uint32_t WIFI_RETRY_MS = 5000;
 static const uint32_t PZEM_UART_BAUD = 9600;
 static const uint32_t PZEM_PROBE_RETRY_MS = 15000;
-static const uint32_t PZEM_RAW_TIMEOUT_MS = 350;
-static const bool PZEM_RAW_DEBUG_ON_BOOT = true;
-static const bool PZEM_RAW_DEBUG_ON_PROBE_FAIL = true;
 
 // =======================================================
 
@@ -74,7 +68,6 @@ uint8_t pzemAddress = 0xF8;  // Factory default address for v4.0 modules
 
 bool relayState = false;
 bool pzemReady = false;
-uint32_t pzemLastOnlineMs = 0;  // Track when PZEM was last online
 // Track last seen energy reading so we can write per-interval history deltas
 float lastReportedEnergyKwh = -1.0f;
 
@@ -147,199 +140,6 @@ void initPzemUart() {
   delay(150);
 }
 
-uint8_t pzemLegacyChecksum(const uint8_t* data, size_t len) {
-  uint16_t sum = 0;
-  for (size_t i = 0; i < len; i++) {
-    sum += data[i];
-  }
-  return (uint8_t)(sum & 0xFF);
-}
-
-void printHexFrame(const uint8_t* frame, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    if (frame[i] < 0x10) {
-      Serial.print('0');
-    }
-    Serial.print(frame[i], HEX);
-    if (i + 1 < len) {
-      Serial.print(' ');
-    }
-  }
-}
-
-void printIpAddress(const IPAddress& ip) {
-  Serial.print(ip[0]);
-  Serial.print('.');
-  Serial.print(ip[1]);
-  Serial.print('.');
-  Serial.print(ip[2]);
-  Serial.print('.');
-  Serial.print(ip[3]);
-}
-
-bool pzemLegacyRawExchange(uint8_t cmd,
-                           uint8_t dataByte,
-                           uint8_t expectedResp,
-                           const IPAddress& addr,
-                           uint8_t txFrame[7],
-                           uint8_t rxFrame[7]) {
-  txFrame[0] = cmd;
-  txFrame[1] = addr[0];
-  txFrame[2] = addr[1];
-  txFrame[3] = addr[2];
-  txFrame[4] = addr[3];
-  txFrame[5] = dataByte;
-  txFrame[6] = pzemLegacyChecksum(txFrame, 6);
-
-  while (Serial2.available()) {
-    Serial2.read();
-  }
-
-  Serial2.write(txFrame, 7);
-  Serial2.flush();
-
-  const uint32_t start = millis();
-  uint8_t got = 0;
-  while (got < 7 && (millis() - start) < PZEM_RAW_TIMEOUT_MS) {
-    if (Serial2.available()) {
-      rxFrame[got++] = (uint8_t)Serial2.read();
-    } else {
-      delay(1);
-    }
-  }
-
-  if (got != 7) {
-    return false;
-  }
-
-  if (rxFrame[0] != expectedResp) {
-    return false;
-  }
-
-  if (rxFrame[6] != pzemLegacyChecksum(rxFrame, 6)) {
-    return false;
-  }
-
-  return true;
-}
-
-uint16_t pzemModbusCrc16(const uint8_t* data, size_t len) {
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (uint8_t bit = 0; bit < 8; bit++) {
-      if (crc & 0x0001) {
-        crc = (crc >> 1) ^ 0xA001;
-      } else {
-        crc = crc >> 1;
-      }
-    }
-  }
-  return crc;
-}
-
-bool pzemModbusRawReadInputRegs(uint8_t slaveAddr,
-                                uint16_t startReg,
-                                uint16_t regCount,
-                                uint8_t txFrame[8],
-                                uint8_t rxFrame[25]) {
-  txFrame[0] = slaveAddr;
-  txFrame[1] = 0x04;  // Read Input Registers
-  txFrame[2] = (uint8_t)(startReg >> 8);
-  txFrame[3] = (uint8_t)(startReg & 0xFF);
-  txFrame[4] = (uint8_t)(regCount >> 8);
-  txFrame[5] = (uint8_t)(regCount & 0xFF);
-
-  const uint16_t crc = pzemModbusCrc16(txFrame, 6);
-  txFrame[6] = (uint8_t)(crc & 0xFF);        // CRC low byte first
-  txFrame[7] = (uint8_t)((crc >> 8) & 0xFF); // CRC high byte
-
-  while (Serial2.available()) {
-    Serial2.read();
-  }
-
-  Serial2.write(txFrame, 8);
-  Serial2.flush();
-
-  const uint32_t start = millis();
-  uint8_t got = 0;
-  while (got < 25 && (millis() - start) < PZEM_RAW_TIMEOUT_MS) {
-    if (Serial2.available()) {
-      rxFrame[got++] = (uint8_t)Serial2.read();
-    } else {
-      delay(1);
-    }
-  }
-
-  if (got != 25) {
-    return false;
-  }
-
-  if (rxFrame[0] != slaveAddr || rxFrame[1] != 0x04 || rxFrame[2] != 20) {
-    return false;
-  }
-
-  const uint16_t rxCrc = (uint16_t)rxFrame[23] | ((uint16_t)rxFrame[24] << 8);
-  return rxCrc == pzemModbusCrc16(rxFrame, 23);
-}
-
-void runPzemModbusRawDiagnostics() {
-  Serial.println("[PZEM MODBUS RAW] Trying v4.0 Modbus read-register probes...");
-
-  bool anyOk = false;
-  uint8_t tx[8];
-  uint8_t rx[25];
-
-  for (size_t i = 0; i < (sizeof(PZEM_MODBUS_ADDR_CANDIDATES) / sizeof(PZEM_MODBUS_ADDR_CANDIDATES[0])); i++) {
-    const uint8_t slave = PZEM_MODBUS_ADDR_CANDIDATES[i];
-
-    if (pzemModbusRawReadInputRegs(slave, 0x0000, 0x000A, tx, rx)) {
-      anyOk = true;
-
-      const float voltage = ((uint16_t)rx[3] << 8 | rx[4]) / 10.0f;
-      const uint32_t currentRaw = ((uint32_t)rx[5] << 8) | (uint32_t)rx[6] |
-                                  ((uint32_t)rx[7] << 24) | ((uint32_t)rx[8] << 16);
-      const float current = currentRaw / 1000.0f;
-
-      Serial.print("[PZEM MODBUS RAW] addr=0x");
-      if (slave < 0x10) {
-        Serial.print('0');
-      }
-      Serial.print(slave, HEX);
-      Serial.print(" TX=");
-      printHexFrame(tx, 8);
-      Serial.print(" RX=");
-      printHexFrame(rx, 25);
-      Serial.print(" -> V=");
-      Serial.print(voltage, 1);
-      Serial.print(" I=");
-      Serial.print(current, 3);
-      Serial.println(" (valid Modbus frame)");
-      break;
-    }
-
-    Serial.print("[PZEM MODBUS RAW] addr=0x");
-    if (slave < 0x10) {
-      Serial.print('0');
-    }
-    Serial.print(slave, HEX);
-    Serial.print(" TX=");
-    printHexFrame(tx, 8);
-    Serial.println(" RX=<invalid/no response>");
-  }
-
-  if (anyOk) {
-    Serial.println("[PZEM MODBUS RAW] Module replied to Modbus v4.0. Use PZEM004Tv30 firmware path.");
-  } else {
-    Serial.println("[PZEM MODBUS RAW] No valid Modbus replies either. This points to wiring/power-level issues.");
-  }
-}
-
-bool runPzemRawDiagnostics() {
-  Serial.println("[PZEM RAW] Legacy raw diagnostics are disabled for the PZEM004Tv30 path.");
-  return false;
-}
-
 void probePzemLink(bool force) {
   const uint32_t now = millis();
   if (!force && (now - lastPzemProbeMs) < PZEM_PROBE_RETRY_MS) {
@@ -387,15 +187,6 @@ void probePzemLink(bool force) {
     Serial.println();
   } else {
     Serial.println("[PZEM] Probe failed (readings are missing or out of range)");
-    if (PZEM_RAW_DEBUG_ON_PROBE_FAIL) {
-      Serial.println("[PZEM] Running diagnostics...");
-      const bool legacyRawOk = runPzemRawDiagnostics();
-      if (!legacyRawOk) {
-        runPzemModbusRawDiagnostics();
-      }
-    }
-    Serial.println(
-        "[PZEM] CHECK: TX/RX swap, common GND, level shift on ESP32 RX, AC power on measurement side");
   }
 }
 
@@ -478,7 +269,6 @@ bool firebaseGet(const String& path, String& responseBody, int& statusCode) {
 
 bool firebasePatch(const String& path, const String& json, int& statusCode) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[Firebase] PATCH failed: WiFi disconnected");
     return false;
   }
 
@@ -492,24 +282,12 @@ bool firebasePatch(const String& path, const String& json, int& statusCode) {
   const String url = String(FIREBASE_DB_URL) + path;
 
   if (!https.begin(client, url)) {
-    Serial.println("[Firebase] PATCH failed: Could not begin HTTP connection");
     return false;
   }
 
   https.addHeader("Content-Type", "application/json");
   statusCode = https.sendRequest("PATCH", json);
-  String resp = https.getString();
-  if (statusCode <= 0) {
-    Serial.print("[Firebase] PATCH request error: ");
-    Serial.println(https.errorToString(statusCode));
-    Serial.print("[Firebase] PATCH response: ");
-    Serial.println(resp);
-  } else {
-    Serial.print("[Firebase] PATCH response code: ");
-    Serial.println(statusCode);
-    Serial.print("[Firebase] PATCH body: ");
-    Serial.println(resp);
-  }
+  https.getString();
   https.end();
   return statusCode > 0;
 }
@@ -578,19 +356,6 @@ void pushTelemetry() {
   const uint64_t t = nowMs();
   const String status = pzemOk ? "online" : "offline";
 
-  // Track when PZEM was last online
-  if (pzemOk) {
-    pzemLastOnlineMs = millis();
-  }
-
-  // DISABLED: Don't auto-shutoff relay just because PZEM is offline.
-  // PZEM may take time to initialize. Only shutoff for actual error conditions.
-  // const uint32_t pzemOfflineDurationMs = millis() - pzemLastOnlineMs;
-  // if (!pzemOk && relayState && pzemOfflineDurationMs > 5000) {
-  //   setRelay(false);
-  //   Serial.println("[PZEM] Auto-shutoff: PZEM offline for 5+ seconds");
-  // }
-
   Serial.print("[PZEM] V=");
   Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
   Serial.print(" I=");
@@ -616,7 +381,6 @@ void pushTelemetry() {
   }
 
   DynamicJsonDocument doc(512);
-  doc["relay"] = relayState;
   doc["status"] = status;
   doc["voltage_warning"] = voltageWarning;
   doc["last_updated"] = t;
@@ -641,36 +405,16 @@ void pushTelemetry() {
   serializeJson(doc, payload);
 
   int code = 0;
-  Serial.print("[Telemetry] Pushing to Firebase... ");
   const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
   
   if (!ok) {
-    Serial.println("FAILED (no connection)");
     return;
   }
   
   if (code != 200 && code != 204) {
-    Serial.print("FAILED (HTTP ");
-    Serial.print(code);
-    Serial.println(")");
     return;
   }
   
-  Serial.println("OK (HTTP 200/204)");
-
-  // Verify by fetching the device node we just patched
-  String verifyBody;
-  int verifyCode = 0;
-  const String devicePath = String("/devices/") + DEVICE_ID + ".json";
-  if (firebaseGet(devicePath, verifyBody, verifyCode)) {
-    Serial.print("[Verify GET] code: ");
-    Serial.println(verifyCode);
-    Serial.print("[Verify GET] body: ");
-    Serial.println(verifyBody);
-  } else {
-    Serial.println("[Verify GET] failed to GET device node");
-  }
-
   // Compute delta from PZEM energy meter and write raw history entry (includes cost)
   if (pzemOk) {
     float delta = 0.0f;
@@ -693,8 +437,6 @@ void pushTelemetry() {
       if (firebaseGet(String("/settings/electricityRate.json"), rateBody, rateCode) && rateCode == 200 && rateBody != "null") {
         rate = atof(rateBody.c_str());
       }
-
-      const double cost = (double)delta * rate;
 
       // Write a single daily raw summary (overwrite, do not append incremental entries)
       DynamicJsonDocument hdoc(384);
@@ -741,14 +483,7 @@ void setup() {
   pinMode(SSR_PIN, OUTPUT);
   setRelay(false);  // Safe default: OFF at boot
 
-  pzemLastOnlineMs = millis();  // Initialize so timeout doesn't trigger immediately
   initPzemUart();
-  if (PZEM_RAW_DEBUG_ON_BOOT) {
-    const bool legacyRawOk = runPzemRawDiagnostics();
-    if (!legacyRawOk) {
-      runPzemModbusRawDiagnostics();
-    }
-  }
   probePzemLink(true);
 
   connectWiFi();

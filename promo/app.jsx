@@ -129,7 +129,7 @@ const SlideIllustration = ({ type, accent, isActive = false }) => {
         {/* Hotspots */}
         <rect x="110" y="55" width="60" height="30" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
         <text x="140" y="75" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">IC</text>
-        <rect x="185" y="75" width="80" height="55" rx="6" fill="#E8922A40" stroke="#2E9E52" strokeWidth="2" />
+        <rect x="185" y="75" width="80" height="55" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
         <text x="225" y="107" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">ILEGG</text>
         <rect x="225" y="15" width="70" height="35" rx="6" fill="#2E9E5240" stroke="#2E9E52" strokeWidth="2" />
         <text x="260" y="37" textAnchor="middle" fontSize="9" fontWeight="700" fill="#1A5C35">ITED</text>
@@ -400,9 +400,7 @@ const App = () => {
       {/* Nav */}
       <nav className={navScrolled ? 'scrolled' : ''}>
         <a className="nav-logo" href="#">
-          <div className="nav-logo-icon">
-            <Icon name="bolt" size={18} color="white" />
-          </div>
+          <img className="nav-logo-icon" src="./img/logo.png" alt="SmartPowerSwitch logo" />
           <span className="nav-logo-text">Smart<span>Power</span>Switch</span>
         </a>
       </nav>
@@ -620,9 +618,7 @@ const App = () => {
       <footer>
         <div className="footer-inner">
           <div className="footer-logo">
-            <div className="footer-logo-icon">
-              <Icon name="bolt" size={16} color="white" />
-            </div>
+            <img className="footer-logo-icon" src="./img/logo.png" alt="SmartPowerSwitch logo" />
             <div>
               <div style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700, fontSize: '14px', color: 'rgba(194,237,208,0.8)' }}>SmartPowerSwitch</div>
               <div className="footer-text">DNSC Campus Energy Control System</div>

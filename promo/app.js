@@ -637,7 +637,7 @@ const SlideIllustration = ({
       width: "80",
       height: "55",
       rx: "6",
-      fill: "#E8922A40",
+      fill: "#2E9E5240",
       stroke: "#2E9E52",
       strokeWidth: "2"
     }), /*#__PURE__*/React.createElement("text", {
@@ -1312,13 +1312,11 @@ const App = () => {
   }, /*#__PURE__*/React.createElement("a", {
     className: "nav-logo",
     href: "#"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "nav-logo-icon"
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "bolt",
-    size: 18,
-    color: "white"
-  })), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("img", {
+    className: "nav-logo-icon",
+    src: "./img/logo.png",
+    alt: "SmartPowerSwitch logo"
+  }), /*#__PURE__*/React.createElement("span", {
     className: "nav-logo-text"
   }, "Smart", /*#__PURE__*/React.createElement("span", null, "Power"), "Switch"))), /*#__PURE__*/React.createElement("div", {
     className: "hero"
@@ -1720,13 +1718,11 @@ const App = () => {
     className: "footer-inner"
   }, /*#__PURE__*/React.createElement("div", {
     className: "footer-logo"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "footer-logo-icon"
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "bolt",
-    size: 16,
-    color: "white"
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("img", {
+    className: "footer-logo-icon",
+    src: "./img/logo.png",
+    alt: "SmartPowerSwitch logo"
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: 'DM Sans, sans-serif',
       fontWeight: 700,
