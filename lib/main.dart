@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -11,6 +13,7 @@ import 'screens/settings_screen.dart';
 import 'screens/campus_map_screen.dart';
 import 'services/runtime_mode_service.dart';
 import 'services/device_service.dart';
+import 'services/update_notification_service.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -21,6 +24,7 @@ void main() async {
   await RuntimeModeService.initialize();
   // Start background device listener (continues regardless of screen state)
   DeviceService().initialize();
+  unawaited(UpdateNotificationService.checkAndNotifyIfNewRelease());
   runApp(const SmartPowerSwitchApp());
 }
 

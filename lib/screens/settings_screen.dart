@@ -19,6 +19,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   static const String _fixedGithubRepo = 'alburolowrencejoy/smartpowerswitch';
+  static const String _firstSectionKey = 'iot';
 
   final _rateController = TextEditingController();
   final _unassignedIotController = TextEditingController();
@@ -30,6 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _githubChecking = false;
 
   List<Map<String, dynamic>> _users = [];
+  String _openSectionKey = _firstSectionKey;
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -51,6 +53,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _rateController.dispose();
     _unassignedIotController.dispose();
     super.dispose();
+  }
+
+  void _toggleSection(String key) {
+    setState(() {
+      _openSectionKey = _openSectionKey == key ? '' : key;
+    });
   }
 
   Future<void> _loadAppVersion() async {
@@ -653,21 +661,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildIotInventorySection(),
-                    const SizedBox(height: 24),
-                    _buildRateSection(),
-                    const SizedBox(height: 24),
-                    _buildUsersSection(),
-                    const SizedBox(height: 24),
-                    _buildUpdaterSection(),
-                    const SizedBox(height: 24),
-                    _buildAccountSection(),
-                    const SizedBox(height: 24),
-                    _buildAppInfoSection(),
-                  ]),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                _buildIotInventorySection(),
+                const SizedBox(height: 12),
+                _buildRateSection(),
+                const SizedBox(height: 12),
+                _buildUsersSection(),
+                const SizedBox(height: 12),
+                _buildUpdaterSection(),
+                const SizedBox(height: 12),
+                _buildAccountSection(),
+                const SizedBox(height: 12),
+                _buildAppInfoSection(),
+              ]),
             ),
           ),
         ]),
@@ -677,6 +683,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildIotInventorySection() {
     return _section(
+      sectionKey: 'iot',
       title: 'IoT Device Inventory',
       icon: Icons.memory_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -788,6 +795,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildRateSection() {
     return _section(
+      sectionKey: 'rate',
       title: 'Electricity Rate',
       icon: Icons.payments_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -850,6 +858,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildUsersSection() {
     return _section(
+      sectionKey: 'users',
       title: 'Manage Users',
       icon: Icons.people_outline,
       child: Column(children: [
@@ -1039,6 +1048,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildAccountSection() {
     final user = FirebaseAuth.instance.currentUser;
     return _section(
+      sectionKey: 'account',
       title: 'Account',
       icon: Icons.person_outline,
       child: Column(children: [
@@ -1066,6 +1076,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildAppInfoSection() {
     final version = _appVersion.isEmpty ? 'Loading...' : _appVersion;
     return _section(
+      sectionKey: 'appInfo',
       title: 'App Info',
       icon: Icons.info_outline,
       child: Column(children: [
@@ -1092,6 +1103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : 'Already on the latest version.';
 
     return _section(
+      sectionKey: 'updater',
       title: 'App Updater',
       icon: Icons.system_update_alt_outlined,
       child: Column(
@@ -1176,30 +1188,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _section(
-      {required String title, required IconData icon, required Widget child}) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Icon(icon, size: 16, color: AppColors.greenMid),
-        const SizedBox(width: 6),
-        Text(title,
-            style: const TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-      ]),
-      const SizedBox(height: 12),
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+      {required String sectionKey,
+      required String title,
+      required IconData icon,
+      required Widget child}) {
+    final isOpen = _openSectionKey == sectionKey;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isOpen
+              ? AppColors.greenDark.withAlpha(70)
+              : AppColors.greenMid.withAlpha(18),
         ),
-        child: child,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(isOpen ? 10 : 4),
+            blurRadius: isOpen ? 16 : 10,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
-    ]);
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        InkWell(
+          onTap: () => _toggleSection(sectionKey),
+          borderRadius: BorderRadius.circular(18),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: isOpen
+                      ? AppColors.greenDark.withAlpha(20)
+                      : AppColors.greenPale,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon,
+                    size: 18,
+                    color: isOpen ? AppColors.greenDark : AppColors.greenMid),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: isOpen ? AppColors.textDark : AppColors.textMid,
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ),
+        AnimatedCrossFade(
+          firstChild: const SizedBox.shrink(),
+          secondChild: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: child,
+          ),
+          crossFadeState:
+              isOpen ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 180),
+          sizeCurve: Curves.easeOut,
+        ),
+      ]),
+    );
   }
 
   Widget _settingRow(IconData icon, String label, String value) {

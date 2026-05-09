@@ -199,7 +199,51 @@ They are listed in `.gitignore`. Download them from the links at the top of this
 
 ---
 
-## 🛠️ Tech Stack
+## � Release & Changelog Format
+
+When creating a **GitHub Release**, use this template for consistency:
+
+### **Tag:**
+```
+v2.0.0
+```
+
+### **Title:**
+```
+Version 2.0.0 - Dashboard Analytics & Bug Fixes
+```
+
+### **Changelog Body:**
+```
+## 🎉 New Features
+- Dashboard energy analytics with monthly trends
+- Real-time consumption alerts
+- Settings accordion UI redesign
+
+## 🐛 Bug Fixes
+- Fixed offline device status handling
+- Improved socket stability on network loss
+- Resolved duplicate notifications
+
+## 📱 Improvements
+- Faster app startup
+- Better error messages
+- Cleaner UI layout
+
+## 📋 Technical
+- Updated Firebase SDK to v11.0
+- Optimized database queries
+```
+
+**How it works:**
+1. Create a release on GitHub with the tag and changelog above
+2. Attach the APK file (auto-built by CI/CD)
+3. Users get automatic in-app notifications
+4. Users tap notification → see full changelog → download APK with one click
+
+---
+
+## �🛠️ Tech Stack
 
 - **Flutter** — cross-platform mobile & web app
 - **Firebase Auth** — user authentication

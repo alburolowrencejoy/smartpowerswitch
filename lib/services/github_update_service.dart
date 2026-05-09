@@ -7,6 +7,7 @@ class GithubReleaseInfo {
     required this.repoSlug,
     required this.tagName,
     required this.releaseName,
+    required this.releaseBody,
     required this.releaseUrl,
     required this.currentVersion,
     required this.latestVersion,
@@ -19,6 +20,7 @@ class GithubReleaseInfo {
   final String repoSlug;
   final String tagName;
   final String releaseName;
+  final String releaseBody;
   final String releaseUrl;
   final String currentVersion;
   final String latestVersion;
@@ -77,6 +79,7 @@ class GithubUpdateService {
 
     final tagName = (payload['tag_name'] ?? '').toString().trim();
     final releaseName = (payload['name'] ?? tagName).toString().trim();
+    final releaseBody = (payload['body'] ?? '').toString().trim();
     final releaseUrl = (payload['html_url'] ?? '').toString();
     final publishedAtRaw = (payload['published_at'] ?? '').toString();
     final assets = (payload['assets'] as List?) ?? const [];
@@ -107,6 +110,7 @@ class GithubUpdateService {
       repoSlug: repoSlug,
       tagName: tagName,
       releaseName: releaseName,
+      releaseBody: releaseBody,
       releaseUrl: releaseUrl,
       currentVersion: currentVersion,
       latestVersion: latestVersion,

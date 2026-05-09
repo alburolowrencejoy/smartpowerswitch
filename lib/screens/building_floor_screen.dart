@@ -263,7 +263,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   String _energyScopeLabel() {
-    return _selectedRoom != null ? 'Room' : 'Building';
+    return _selectedRoom != null ? 'Room' : 'All Rooms';
   }
 
   String _monthKey(DateTime date) =>
