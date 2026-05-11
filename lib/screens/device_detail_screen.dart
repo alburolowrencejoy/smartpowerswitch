@@ -72,11 +72,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         return;
       }
 
-      // Calculate energy consumption for this 3-second interval
-      // Formula: kWh = (Power in Watts / 1000) × (time in hours)
-      // For 3 seconds: kWh = (power / 1000) × (3 / 3600)
+        // Convert instantaneous watts into energy using the real interval between readings.
+        // Formula: kWh = (Watts / 1000) × hours elapsed.
       final power = (data['power'] as num?)?.toDouble() ?? 0.0;
-      const intervalHours = 3.0 / 3600.0; // 3 seconds in hours = 0.000833 hours
+        final elapsedMs = (lastSeen != null && _lastRecordedSeen != null)
+          ? (lastSeen - _lastRecordedSeen!)
+          : 3000;
+        final safeElapsedMs = elapsedMs > 0 ? elapsedMs : 3000;
+        final intervalHours = safeElapsedMs / 3600000.0;
       final kwhThisInterval = (power / 1000.0) * intervalHours;
 
       // Don't override relay state if we just toggled it (give ESP32 time to respond)

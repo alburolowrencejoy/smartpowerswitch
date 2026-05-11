@@ -58,10 +58,14 @@ class DeviceService {
         return;
       }
 
-      // Calculate energy for this 3-second interval
-      final power = (data['power'] as num?)?.toDouble() ?? 0.0;
-      const intervalHours = 3.0 / 3600.0;
-      final kwhThisInterval = (power / 1000.0) * intervalHours;
+        // Convert instantaneous watts into energy using the real interval between readings.
+        final power = (data['power'] as num?)?.toDouble() ?? 0.0;
+        final elapsedMs = (lastSeen != null && lastRecordedForDevice != null)
+          ? (lastSeen - lastRecordedForDevice)
+          : 3000;
+        final safeElapsedMs = elapsedMs > 0 ? elapsedMs : 3000;
+        final intervalHours = safeElapsedMs / 3600000.0;
+        final kwhThisInterval = (power / 1000.0) * intervalHours;
 
       if (kwhThisInterval > 0.000001) {
         // Accumulate energy

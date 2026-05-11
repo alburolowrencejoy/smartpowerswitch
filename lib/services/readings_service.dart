@@ -6,7 +6,7 @@ class ReadingsService {
   static final _db = FirebaseDatabase.instance.ref();
 
   /// Records accumulated energy reading.
-  /// Stores the cumulative kWh total calculated from power readings.
+  /// Stores the cumulative kWh total calculated from watt readings over time.
   /// Only records when value actually changes (delta detection at caller level).
   static Future<bool> recordReading({
     required String deviceId,
@@ -19,8 +19,7 @@ class ReadingsService {
       final now = DateTime.now();
       final timestamp = now.millisecondsSinceEpoch;
 
-      // Store the accumulated energy total
-      // Formula used by caller: kWh = (Power / 1000) × (3 / 3600) accumulated per interval
+      // Store the accumulated energy total calculated by the caller.
       await _db.child('readings/$building/$room/$deviceId').set({
         'cumulative_kwh': double.parse(kwh.toStringAsFixed(6)),
         'last_update': timestamp,
