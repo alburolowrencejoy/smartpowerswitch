@@ -1031,7 +1031,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               decoration: BoxDecoration(
                   color: AppColors.greenMid,
                   borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.bolt, color: Colors.white, size: 20),
+              padding: const EdgeInsets.all(4),
+              child: Image.asset(
+                'promo/img/logo.png',
+                fit: BoxFit.contain,
+              ),
             ),
             const SizedBox(width: 10),
             const Expanded(

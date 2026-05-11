@@ -338,7 +338,6 @@ class _LoginScreenState extends State<LoginScreen> {
     final titleSize = isNarrow ? 24.0 : (isTablet ? 30.0 : 28.0);
     final subtitleSize = isNarrow ? 17.0 : 20.0;
     final logoSize = isNarrow ? 34.0 : 38.0;
-    final logoIconSize = isNarrow ? 20.0 : 22.0;
     final horizontalPadding = isNarrow ? 20.0 : 36.0;
     final topPadding = isNarrow ? 20.0 : 24.0;
     final bottomPadding = isNarrow ? 30.0 : 40.0;
@@ -373,7 +372,11 @@ class _LoginScreenState extends State<LoginScreen> {
               decoration: BoxDecoration(
                   color: AppColors.greenMid,
                   borderRadius: BorderRadius.circular(12)),
-              child: Icon(Icons.bolt, color: Colors.white, size: logoIconSize),
+              padding: const EdgeInsets.all(5),
+              child: Image.asset(
+                'promo/img/logo.png',
+                fit: BoxFit.contain,
+              ),
             ),
             SizedBox(width: isNarrow ? 8 : 10),
             Flexible(

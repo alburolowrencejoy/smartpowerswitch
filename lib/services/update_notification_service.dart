@@ -16,17 +16,24 @@ class UpdateNotificationService {
         currentVersion: currentVersion,
       );
 
-      if (!release.updateAvailable) return;
+      final versionComparison = GithubUpdateService.compareVersions(
+        release.latestVersion,
+        release.currentVersion,
+      );
+      if (versionComparison < 0) return;
+      if (versionComparison == 0 && release.releaseBody.trim().isEmpty) return;
+
+      final releaseSignature = _buildReleaseSignature(release);
 
       final lockRef = FirebaseDatabase.instance
-          .ref('settings/updateNotifications/lastVersionNotified');
+          .ref('settings/updateNotifications/lastReleaseSignatureNotified');
 
       final tx = await lockRef.runTransaction((current) {
         final existing = (current ?? '').toString();
-        if (existing == release.latestVersion) {
+        if (existing == releaseSignature) {
           return Transaction.abort();
         }
-        return Transaction.success(release.latestVersion);
+        return Transaction.success(releaseSignature);
       });
 
       if (!tx.committed) return;
@@ -38,7 +45,9 @@ class UpdateNotificationService {
 
       await FirebaseDatabase.instance.ref('notifications').push().set({
         'type': 'app_update',
-        'message': 'New update available: $updateLabel',
+        'message': versionComparison > 0
+            ? 'New update available: $updateLabel'
+            : 'Release notes updated: $updateLabel',
         'releaseName': release.releaseName,
         'version': release.latestVersion,
         'currentVersion': release.currentVersion,
@@ -48,11 +57,35 @@ class UpdateNotificationService {
         'releaseUrl': release.releaseUrl,
         'assetName': release.assetName ?? '',
         'assetUrl': release.assetUrl ?? '',
+        'releaseSignature': releaseSignature,
         'timestamp': ServerValue.timestamp,
       });
     } catch (_) {
       // Ignore update-check failures; startup should remain resilient.
     }
+  }
+
+  static String _buildReleaseSignature(GithubReleaseInfo release) {
+    final parts = [
+      release.repoSlug,
+      release.tagName,
+      release.releaseName,
+      release.releaseBody,
+      release.releaseUrl,
+      release.publishedAt?.toIso8601String() ?? '',
+      release.assetName ?? '',
+      release.assetUrl ?? '',
+    ];
+    return _hash32(parts.join('\u001f'));
+  }
+
+  static String _hash32(String input) {
+    var hash = 0x811c9dc5;
+    for (final codeUnit in input.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return hash.toUnsigned(32).toRadixString(16).padLeft(8, '0');
   }
 
   static String _toSummary(String body) {
