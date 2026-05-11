@@ -32,6 +32,7 @@ dependencies:
   syncfusion_flutter_xlsio: ^29.2.11
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.2
+  shared_preferences: ^2.2.3
 
 dev_dependencies:
   flutter_test:

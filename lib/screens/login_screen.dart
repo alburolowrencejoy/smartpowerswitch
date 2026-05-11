@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_mode.dart';
 import '../theme/app_colors.dart';
 import '../widgets/top_toast.dart';
@@ -13,19 +14,73 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  static const _rememberEmailKey = 'login.rememberEmail';
+  static const _rememberPasswordKey = 'login.rememberPassword';
+  static const _rememberMeKey = 'login.rememberMe';
+  static const _rememberedAtKey = 'login.rememberedAt';
+  static const Duration _rememberMeDuration = Duration(days: 3);
+
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _rememberMe = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRememberedCredentials();
+  }
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadRememberedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    final rememberedAt = prefs.getInt(_rememberedAtKey);
+    final isExpired = rememberedAt != null &&
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(rememberedAt)) >
+            _rememberMeDuration;
+
+    if (isExpired) {
+      await prefs.remove(_rememberMeKey);
+      await prefs.remove(_rememberEmailKey);
+      await prefs.remove(_rememberPasswordKey);
+      await prefs.remove(_rememberedAtKey);
+    }
+
+    setState(() {
+      _rememberMe = (prefs.getBool(_rememberMeKey) ?? false) && !isExpired;
+      if (_rememberMe) {
+        _emailController.text = prefs.getString(_rememberEmailKey) ?? '';
+        _passwordController.text = prefs.getString(_rememberPasswordKey) ?? '';
+      }
+    });
+  }
+
+  Future<void> _saveRememberedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_rememberMe) {
+      await prefs.setBool(_rememberMeKey, true);
+      await prefs.setString(_rememberEmailKey, _emailController.text.trim());
+      await prefs.setString(_rememberPasswordKey, _passwordController.text.trim());
+      await prefs.setInt(_rememberedAtKey, DateTime.now().millisecondsSinceEpoch);
+      return;
+    }
+
+    await prefs.remove(_rememberMeKey);
+    await prefs.remove(_rememberEmailKey);
+    await prefs.remove(_rememberPasswordKey);
+    await prefs.remove(_rememberedAtKey);
   }
 
   Future<void> _handleLogin() async {
@@ -95,6 +150,8 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       if (!mounted) return;
+
+      await _saveRememberedCredentials();
 
       Navigator.pushReplacementNamed(
         context,
@@ -273,6 +330,8 @@ class _LoginScreenState extends State<LoginScreen> {
               _emailController,
               hint: 'you@dnsc.edu.ph',
               keyboard: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              onSubmitted: (_) => FocusScope.of(context).nextFocus(),
               validator: (v) {
                 if (v == null || v.isEmpty) return 'Email is required';
                 if (!v.contains('@')) return 'Enter a valid email';
@@ -284,6 +343,27 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             SizedBox(height: compact ? 14 : 18),
             _buildPasswordField(),
+            SizedBox(height: compact ? 8 : 10),
+            Row(
+              children: [
+                Checkbox(
+                  value: _rememberMe,
+                  activeColor: AppColors.greenDark,
+                  onChanged: _isLoading
+                      ? null
+                      : (value) {
+                          setState(() => _rememberMe = value ?? false);
+                          _saveRememberedCredentials();
+                        },
+                ),
+                const Expanded(
+                  child: Text(
+                    'Remember me on this device',
+                    style: TextStyle(fontSize: 12, color: AppColors.textMid),
+                  ),
+                ),
+              ],
+            ),
             SizedBox(height: compact ? 6 : 8),
             Align(
               alignment: Alignment.centerRight,
@@ -369,9 +449,6 @@ class _LoginScreenState extends State<LoginScreen> {
             Container(
               width: logoSize,
               height: logoSize,
-              decoration: BoxDecoration(
-                  color: AppColors.greenMid,
-                  borderRadius: BorderRadius.circular(12)),
               padding: const EdgeInsets.all(5),
               child: Image.asset(
                 'promo/img/logo.png',
@@ -433,6 +510,8 @@ class _LoginScreenState extends State<LoginScreen> {
     TextEditingController controller, {
     String hint = '',
     TextInputType keyboard = TextInputType.text,
+    TextInputAction? textInputAction,
+    ValueChanged<String>? onSubmitted,
     String? Function(String?)? validator,
   }) {
     return Column(
@@ -448,6 +527,8 @@ class _LoginScreenState extends State<LoginScreen> {
         TextFormField(
           controller: controller,
           keyboardType: keyboard,
+          textInputAction: textInputAction,
+          onFieldSubmitted: onSubmitted,
           style: const TextStyle(color: AppColors.textDark, fontSize: 14),
           decoration: _inputDeco(hint: hint, icon: icon),
           validator: validator,
@@ -470,6 +551,8 @@ class _LoginScreenState extends State<LoginScreen> {
         TextFormField(
           controller: _passwordController,
           obscureText: _obscurePassword,
+          textInputAction: TextInputAction.done,
+          onFieldSubmitted: (_) => _isLoading ? null : _handleLogin(),
           style: const TextStyle(color: AppColors.textDark, fontSize: 14),
           decoration: _inputDeco(
             hint: '••••••••',
