@@ -30,9 +30,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // Compatibility alias: some hot-reload states or older code may set
   // `_totalCostPhp`. Provide a forwarding setter/getter to avoid
   // NoSuchMethodError until a full restart is performed.
-  // ignore: unused_element
+  // ignore: unused_element, unnecessary_getters_setters
   double get _totalCostPhp => _monthlyCostPhp;
-  // ignore: unused_element
+  // ignore: unused_element, unnecessary_getters_setters
   set _totalCostPhp(double v) => _monthlyCostPhp = v;
   double _electricityRate = 11.5;
   int _assignedDevices = 0;

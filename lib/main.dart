@@ -14,6 +14,8 @@ import 'screens/campus_map_screen.dart';
 import 'services/runtime_mode_service.dart';
 import 'services/device_service.dart';
 import 'services/update_notification_service.dart';
+import 'services/home_widget_service.dart';
+import 'services/global_readings_listener.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -22,8 +24,12 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   await RuntimeModeService.initialize();
+  // Start global background listener (updates everywhere, no screen required)
+  unawaited(GlobalReadingsListener().initialize());
   // Start background device listener (continues regardless of screen state)
   DeviceService().initialize();
+  // Initialize home screen widget
+  await HomeWidgetService.initialize();
   unawaited(UpdateNotificationService.checkAndNotifyIfNewRelease());
   runApp(const SmartPowerSwitchApp());
 }

@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
 import '../services/history_service.dart';
 import '../services/readings_service.dart';
+import '../services/home_widget_service.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -35,6 +36,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool _toggling = false;
   double _ratePhp = 11.5;
   double _lastValidEnergy = 0.0; // Persists last valid reading
+  double _lastReportedMeterKwh = -1.0; // Track PZEM meter kWh to detect deltas
   int? _lastRecordedSeen; // Track last telemetry update to avoid duplicates
   DateTime? _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
@@ -44,6 +46,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   @override
   void initState() {
     super.initState();
+    // Save device selection for home screen widget
+    HomeWidgetService.saveDeviceSelection(
+      deviceId: widget.deviceId,
+      building: widget.building,
+      room: widget.room,
+    );
     _listenToDevice();
     _fetchRate();
   }
@@ -72,56 +80,47 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         return;
       }
 
-        // Convert instantaneous watts into energy using the real interval between readings.
-        // Formula: kWh = (Watts / 1000) × hours elapsed.
-      final power = (data['power'] as num?)?.toDouble() ?? 0.0;
-        final elapsedMs = (lastSeen != null && _lastRecordedSeen != null)
-          ? (lastSeen - _lastRecordedSeen!)
-          : 3000;
-        final safeElapsedMs = elapsedMs > 0 ? elapsedMs : 3000;
-        final intervalHours = safeElapsedMs / 3600000.0;
-      final kwhThisInterval = (power / 1000.0) * intervalHours;
+      // ✅ Use PZEM meter kWh delta (not calculated from power)
+      // The PZEM module reports cumulative energy since last reset.
+      // We track deltas and write only significant changes to history.
+      final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+      final relay = (data['relay'] as bool?) ?? false;
 
       // Don't override relay state if we just toggled it (give ESP32 time to respond)
       final now = DateTime.now();
       final ignoreRelayUpdate = _lastToggleTime != null &&
           now.difference(_lastToggleTime!).inMilliseconds < 3000;
 
-      if (kwhThisInterval <= 0.000001) {
-        setState(() {
-          _deviceData = data;
-          _hasPzemReadings = _checkHasPzemReadings(data);
-          _isOnline = _checkOnline(data);
-          if (!ignoreRelayUpdate) {
-            _relay = (data['relay'] as bool?) ?? false;
-          }
-        });
-        if (lastSeen != null) {
-          _lastRecordedSeen = lastSeen;
+      // Calculate delta from PZEM meter reading
+      double kwhDelta = 0.0;
+      if (_lastReportedMeterKwh > 0.0) {
+        kwhDelta = meterKwh - _lastReportedMeterKwh;
+        // If meter reset detected (new reading < old), use new reading as delta
+        if (kwhDelta < 0.0) {
+          kwhDelta = meterKwh;
         }
-        return;
       }
 
-      // Accumulate into running total
-      _lastValidEnergy += kwhThisInterval;
+      // Only write history if delta is significant (avoid noise)
+      if (kwhDelta >= 0.000001) {
+        _lastValidEnergy = meterKwh; // Update running total to meter reading
 
-      final relay = (data['relay'] as bool?) ?? false;
+        ReadingsService.recordReading(
+          deviceId: widget.deviceId,
+          building: widget.building,
+          room: widget.room,
+          kwh: _lastValidEnergy,
+          relay: relay,
+        );
 
-      ReadingsService.recordReading(
-        deviceId: widget.deviceId,
-        building: widget.building,
-        room: widget.room,
-        kwh: _lastValidEnergy,
-        relay: relay,
-      );
-      HistoryService.writeHistory(
-        deviceId: widget.deviceId,
-        building: widget.building,
-        kwh: kwhThisInterval,
-      );
+        // Write ACTUAL meter delta to history (not calculated from power)
+        HistoryService.writeHistory(
+          deviceId: widget.deviceId,
+          building: widget.building,
+          kwh: kwhDelta,
+        );
 
-      if (lastSeen != null) {
-        _lastRecordedSeen = lastSeen;
+        _lastReportedMeterKwh = meterKwh; // Track this meter reading
       }
 
       setState(() {
@@ -129,9 +128,16 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         _hasPzemReadings = _checkHasPzemReadings(data);
         _isOnline = _checkOnline(data);
         if (!ignoreRelayUpdate) {
-          _relay = (data['relay'] as bool?) ?? false;
+          _relay = relay;
         }
       });
+
+      // Update home screen widget with latest data
+      unawaited(HomeWidgetService.updateWidget());
+
+      if (lastSeen != null) {
+        _lastRecordedSeen = lastSeen;
+      }
     });
   }
 

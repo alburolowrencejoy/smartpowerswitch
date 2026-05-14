@@ -230,6 +230,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_home_widget:
+    dependency: "direct main"
+    description:
+      name: flutter_home_widget
+      sha256: "48e716e5cbd678570930314747ee3f00467d88b9f978d918381eb0fe2294e510"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.1"
   flutter_lints:
     dependency: "direct dev"
     description:

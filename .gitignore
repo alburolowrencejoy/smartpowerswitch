@@ -46,3 +46,7 @@ app.*.map.json
 
 # Firebase local cache artifacts
 .firebase/hosting.*.cache
+
+# Firebase service account key (never commit!)
+functions/serviceAccountKey.json
+serviceAccountKey.json

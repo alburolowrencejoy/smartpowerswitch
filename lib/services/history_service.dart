@@ -53,6 +53,11 @@ class HistoryService {
         final prev = (current as num?)?.toDouble() ?? 0.0;
         return Transaction.success(double.parse((prev + kwh).toStringAsFixed(6)));
       });
+
+      await _db.child('$base/buildings/$building/cost').runTransaction((current) {
+        final prev = (current as num?)?.toDouble() ?? 0.0;
+        return Transaction.success(double.parse((prev + cost).toStringAsFixed(6)));
+      });
     }
   }
 
