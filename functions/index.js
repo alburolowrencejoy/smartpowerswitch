@@ -386,7 +386,3 @@ exports.deleteUser = functions.https.onCall(async (data, context) => {
   return { success: true, message: 'User deleted successfully.' };
 });
 
-
-exports.runAutomationSchedules = onSchedule('every 1 minute', async () => {
-  await runAutomationSchedules();
-});
