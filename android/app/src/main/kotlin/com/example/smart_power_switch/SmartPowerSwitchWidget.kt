@@ -24,17 +24,25 @@ class SmartPowerSwitchWidget : AppWidgetProvider() {
         appWidgetId: Int
     ) {
         val views = RemoteViews(context.packageName, R.layout.widget_layout)
-        
-        // Get widget data from SharedPreferences
+
+        // Read widget data from the Flutter shared preferences bridge.
+        // Support both prefixed and unprefixed keys so the widget can load
+        // data saved by current and older app builds.
         val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-        val deviceId = prefs.getString("flutter.widget_device_id", "No Device") ?: "No Device"
-        val building = prefs.getString("flutter.widget_building", "") ?: ""
-        val room = prefs.getString("flutter.widget_room", "") ?: ""
-        val kwh = prefs.getString("flutter.widget_kwh", "0.000") ?: "0.000"
-        val cost = prefs.getString("flutter.widget_cost", "0.00") ?: "0.00"
-        val voltage = prefs.getString("flutter.widget_voltage", "0.0") ?: "0.0"
-        val power = prefs.getString("flutter.widget_power", "0.0") ?: "0.0"
-        val status = prefs.getString("flutter.widget_status", "offline") ?: "offline"
+        fun readWidgetValue(key: String, fallback: String): String {
+            return prefs.getString("flutter.$key", null)
+                ?: prefs.getString(key, null)
+                ?: fallback
+        }
+
+        val deviceId = readWidgetValue("widget_device_id", "No Device")
+        val building = readWidgetValue("widget_building", "")
+        val room = readWidgetValue("widget_room", "")
+        val kwh = readWidgetValue("widget_kwh", "0.000")
+        val cost = readWidgetValue("widget_cost", "0.00")
+        val voltage = readWidgetValue("widget_voltage", "0.0")
+        val power = readWidgetValue("widget_power", "0.0")
+        val status = readWidgetValue("widget_status", "offline")
         
         // Set device name and location
         views.setTextViewText(R.id.device_name, deviceId)
@@ -57,13 +65,6 @@ class SmartPowerSwitchWidget : AppWidgetProvider() {
             R.id.status_indicator,
             if (status == "online") "🟢" else "🔴"
         )
-        
-        // Set text color based on status
-        val statusColorRes = if (status == "online") {
-            android.R.color.holo_green_light
-        } else {
-            android.R.color.holo_red_light
-        }
         
         // Open app when widget is clicked
         val intent = Intent(context, MainActivity::class.java)
