@@ -5,6 +5,17 @@
         android:label="SmartSwitch"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <receiver
+            android:name="com.dnsc.edu.smartpowerswitch.SmartPowerSwitchWidget"
+            android:label="@string/app_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/smart_power_switch_widget_provider" />
+        </receiver>
         <activity
             android:name=".MainActivity"
             android:exported="true"
