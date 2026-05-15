@@ -1,4 +1,4 @@
-package com.example.smart_power_switch
+package com.dnsc.edu.smartpowerswitch
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
@@ -6,7 +6,6 @@ import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
-import android.content.SharedPreferences
 
 class SmartPowerSwitchWidget : AppWidgetProvider() {
     override fun onUpdate(
