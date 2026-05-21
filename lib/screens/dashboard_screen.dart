@@ -575,13 +575,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 12),
               TextField(
                 controller: nameCtrl,
-                decoration: _inputDeco('Full Name', Icons.business),
+                decoration: _inputDeco('Building Name', Icons.business),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: floorCtrl,
                 keyboardType: TextInputType.number,
-                decoration: _inputDeco('Number of Floors', Icons.layers),
+                decoration: _inputDeco('Building Floors', Icons.layers),
               ),
               if (error != null) ...[
                 const SizedBox(height: 10),

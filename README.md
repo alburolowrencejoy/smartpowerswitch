@@ -251,3 +251,7 @@ Version 2.0.0 - Dashboard Analytics & Bug Fixes
 - **ESP32** — IoT controller *(firmware coming soon)*
 - **PZEM-004T** — energy meter sensor
 - **Twilio SMS + SendGrid** — notifications *(planned)*
+
+
+firebase f : auto fetch powerrates
+             automation ::::
