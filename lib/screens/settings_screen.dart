@@ -8,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_colors.dart';
 import '../firebase_options.dart';
 import '../services/github_update_service.dart';
+import '../services/davao_light_rate_monitor.dart';
+import '../services/automation_scheduler_service.dart';
 import '../widgets/top_toast.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -26,12 +28,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _saving = false;
   bool _registeringIot = false;
   double _currentRate = 11.5;
+  DateTime? _lastRateUpdateTime;
   String _appVersion = '';
   GithubReleaseInfo? _githubRelease;
   bool _githubChecking = false;
+  bool _fetchingLatestRate = false;
 
   List<Map<String, dynamic>> _users = [];
+  List<Map<String, dynamic>> _rateHistory = [];
   String _openSectionKey = _firstSectionKey;
+
+  late DavaoLightRateMonitor _rateMonitor;
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -42,10 +49,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _rateMonitor = DavaoLightRateMonitor();
     _loadRate();
     _listenUsers();
     _loadAppVersion();
     _checkGithubRelease(silent: true);
+    _loadRateHistory();
   }
 
   @override
@@ -79,6 +88,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
+    
+    FirebaseDatabase.instance.ref('settings/lastRateUpdate').onValue.listen(
+        (event) {
+      if (!mounted) return;
+      final timestamp = (event.snapshot.value as num?)?.toInt();
+      if (timestamp != null) {
+        setState(() {
+          _lastRateUpdateTime =
+              DateTime.fromMillisecondsSinceEpoch(timestamp);
+        });
+      }
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
   }
 
   void _listenUsers() {
@@ -108,7 +131,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     setState(() => _saving = true);
     try {
-      await FirebaseDatabase.instance.ref('settings/electricityRate').set(rate);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final db = FirebaseDatabase.instance.ref();
+      
+      await db.update({
+        'settings/electricityRate': rate,
+        'settings/lastRateUpdate': timestamp,
+      });
+
+      await db.child('rate_changes/$timestamp').set({
+        'oldRate': _currentRate,
+        'newRate': rate,
+        'source': 'manual_update',
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+        'timestamp': timestamp,
+      });
+
+      await db.child('notifications').push().set({
+        'type': 'rate_change_manual',
+        'message': 'Electricity rate updated to ₱${rate.toStringAsFixed(2)}/kWh',
+        'oldRate': _currentRate,
+        'newRate': rate,
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+        'updatedByEmail': FirebaseAuth.instance.currentUser?.email ?? 'admin',
+        'timestamp': ServerValue.timestamp,
+      });
+
       if (!mounted) return;
       setState(() {
         _saving = false;
@@ -207,6 +255,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? 'Permission denied while registering IoT device.'
           : 'Failed to register IoT device: $e';
       TopToast.show(context, msg, isError: true);
+    }
+  }
+
+  void _loadRateHistory() {
+    FirebaseDatabase.instance.ref('rate_changes')
+        .orderByChild('timestamp')
+        .limitToLast(10)
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final data = event.snapshot.value as Map<dynamic, dynamic>?;
+      if (data == null) {
+        setState(() => _rateHistory = []);
+        return;
+      }
+      final list = data.entries.map((e) {
+        final val = Map<String, dynamic>.from(e.value as Map);
+        val['id'] = e.key;
+        return val;
+      }).toList();
+      list.sort((a, b) {
+        final aTime = (a['timestamp'] as num?)?.toInt() ?? 0;
+        final bTime = (b['timestamp'] as num?)?.toInt() ?? 0;
+        return bTime.compareTo(aTime);
+      });
+      setState(() => _rateHistory = list);
+    }, onError: (Object error) {
+      if (!mounted || _isPermissionDenied(error)) return;
+    });
+  }
+
+  Future<void> _fetchLatestRate() async {
+    setState(() => _fetchingLatestRate = true);
+    try {
+      final result = await _rateMonitor.monitorAndUpdateRate();
+      if (!mounted) return;
+      setState(() => _fetchingLatestRate = false);
+      
+      if (result.hasChanged) {
+        TopToast.show(
+          context,
+          'Rate updated: ₱${result.oldRate.toStringAsFixed(2)} → ₱${result.newRate.toStringAsFixed(2)}/kWh',
+        );
+      } else {
+        TopToast.show(context, 'No rate changes detected.');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _fetchingLatestRate = false);
+      TopToast.show(context, 'Failed to fetch rate: $e', isError: true);
     }
   }
 
@@ -608,6 +706,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
+    await AutomationSchedulerService.stop();
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
     Navigator.pushReplacementNamed(context, '/login');
@@ -646,6 +745,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return 'Too many attempts. Try later.';
       default:
         return code;
+    }
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    
+    if (diff.inSeconds < 60) {
+      return 'Just now';
+    } else if (diff.inMinutes < 60) {
+      return '${diff.inMinutes}m ago';
+    } else if (diff.inHours < 24) {
+      return '${diff.inHours}h ago';
+    } else if (diff.inDays < 7) {
+      return '${diff.inDays}d ago';
+    } else {
+      return '${dt.month}/${dt.day}/${dt.year}';
     }
   }
 
@@ -794,6 +910,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildRateSection() {
+    final lastUpdateText = _lastRateUpdateTime == null
+        ? 'Never'
+        : _formatDateTime(_lastRateUpdateTime!);
+    
     return _section(
       sectionKey: 'rate',
       title: 'Electricity Rate',
@@ -801,7 +921,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Current rate: ₱${_currentRate.toStringAsFixed(2)} / kWh',
             style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+        const SizedBox(height: 6),
+        Text('Last Updated: $lastUpdateText',
+            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
         const SizedBox(height: 12),
+        
+        // Fetch Latest Rate Button
+        SizedBox(
+          width: double.infinity,
+          height: 44,
+          child: OutlinedButton.icon(
+            onPressed: _fetchingLatestRate ? null : _fetchLatestRate,
+            icon: _fetchingLatestRate
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.greenDark,
+                    ),
+                  )
+                : const Icon(Icons.cloud_download_outlined, size: 18),
+            label: Text(
+              _fetchingLatestRate ? 'Fetching...' : 'Fetch Latest Rate',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.greenDark,
+              side: BorderSide(color: AppColors.greenDark.withAlpha(90)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ),
+        
+        const SizedBox(height: 12),
+        const Divider(height: 1),
+        const SizedBox(height: 12),
+        
+        const Text(
+          'Manual Update',
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textDark),
+        ),
+        const SizedBox(height: 10),
+        
         Row(children: [
           Expanded(
             child: TextField(
@@ -852,6 +1015,109 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ]),
+        
+        const SizedBox(height: 12),
+        const Divider(height: 1),
+        const SizedBox(height: 12),
+        
+        // Rate Change History Section
+        if (_rateHistory.isNotEmpty) ...[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Rate Change History',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark,
+                ),
+              ),
+              Text(
+                '${_rateHistory.length} changes',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ..._rateHistory.take(10).map((change) {
+            final timestamp = (change['timestamp'] as num?)?.toInt() ?? 0;
+            final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+            final oldRate = (change['oldRate'] as num?)?.toDouble() ?? 0.0;
+            final newRate = (change['newRate'] as num?)?.toDouble() ?? 0.0;
+            final source = (change['source'] as String?) ?? 'unknown';
+            final isManual = source == 'manual_update';
+            
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: isManual
+                          ? AppColors.greenDark.withAlpha(20)
+                          : AppColors.greenPale,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Icon(
+                        isManual ? Icons.edit : Icons.cloud_download,
+                        size: 16,
+                        color: isManual ? AppColors.greenDark : AppColors.greenMid,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '₱${oldRate.toStringAsFixed(2)} → ₱${newRate.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                        Text(
+                          '${_formatDateTime(dateTime)} • ${isManual ? 'Manual' : 'Auto'}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ] else
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: Text(
+                'No rate changes yet',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textMuted,
+                ),
+              ),
+            ),
+          ),
       ]),
     );
   }

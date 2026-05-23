@@ -71,7 +71,9 @@ class AutomationSchedule {
       onTime:  onTime,
       offTime: offTime,
       days:    days,
-      enabled: (data['enabled'] ?? true) as bool,
+      enabled: data['enabled'] is bool
+          ? data['enabled'] as bool
+          : (data['enabled'] ?? true).toString().toLowerCase().trim() == 'true',
     );
   }
 
