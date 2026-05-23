@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_mode.dart';
+import '../services/automation_scheduler_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/top_toast.dart';
 
@@ -155,6 +156,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
       // ignore: use_build_context_synchronously
+      await AutomationSchedulerService.startIfNeeded();
       Navigator.pushReplacementNamed(
         context,
         '/dashboard',

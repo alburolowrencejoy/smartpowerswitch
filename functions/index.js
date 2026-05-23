@@ -297,6 +297,9 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   return { success: true, message: 'Password updated successfully.' };
 });
 
+// ── Fetch Davao Light rates every 6 hours ───────────────────────
+require('./fetch_davao_light_rates');
+
 // ── Auto-write PZEM history when device kwh changes ─────────────
 const { writeHistoryForDevice } = require('./history_writer');
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../theme/app_colors.dart';
+import '../services/automation_scheduler_service.dart';
 import '../widgets/top_toast.dart';
 import 'campus_map_screen.dart';
 import 'automation_screen.dart';
@@ -505,6 +506,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _logout() async {
     await _cancelRealtimeSubs();
+    await AutomationSchedulerService.stop();
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
     Navigator.pushReplacementNamed(context, '/login');
