@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:developer';
 
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 /// Represents a change in electricity rates from Davao Light.
@@ -58,6 +58,13 @@ class DavaoLightRateMonitor {
       'https://www.davaolight.com/customer-services/faq';
   static const Duration _requestTimeout = Duration(seconds: 15);
   static const String _firebaseRatePath = 'settings/electricityRate';
+
+  static void debugPrint(String message) {
+    // Use print here so logging works even if Flutter debug utilities are
+    // unavailable in certain release/build environments.
+    // ignore: avoid_print
+    print(message);
+  }
 
   final FirebaseDatabase _firebaseDb;
 

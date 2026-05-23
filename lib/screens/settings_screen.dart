@@ -1104,10 +1104,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             );
-          }).toList(),
+          }),
         ] else
-          Padding(
-            padding: const EdgeInsets.all(16),
+          const Padding(
+            padding: EdgeInsets.all(16),
             child: Center(
               child: Text(
                 'No rate changes yet',

@@ -155,8 +155,8 @@ class _LoginScreenState extends State<LoginScreen> {
       await _saveRememberedCredentials();
 
       if (!mounted) return;
-      // ignore: use_build_context_synchronously
       await AutomationSchedulerService.startIfNeeded();
+      if (!mounted) return;
       Navigator.pushReplacementNamed(
         context,
         '/dashboard',

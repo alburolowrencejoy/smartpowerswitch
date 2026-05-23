@@ -97,6 +97,7 @@ The ESP32:
 
 - Reads relay state from `/devices/<DEVICE_ID>/relay`
 - Writes readings to `/devices/<DEVICE_ID>`
+- Evaluates dashboard automation schedules directly on the ESP32, so automations keep running when the app is closed
 - Uses `status`, `relay`, `voltage`, `current`, `power`, `kwh`, `powerFactor`, and `last_seen`
 
 ## Flash steps
@@ -117,6 +118,7 @@ The ESP32:
 - ESP32 syncs time from NTP
 - ESP32 polls Firebase every second for relay state
 - ESP32 pushes telemetry every 3 seconds
+- ESP32 checks automation schedules in Firebase and applies matching relay changes on-device
 
 ## Example Firebase device data
 
