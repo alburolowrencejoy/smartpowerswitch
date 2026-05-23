@@ -4,9 +4,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_colors.dart';
 import '../firebase_options.dart';
+import '../services/download_open_service.dart';
 import '../services/github_update_service.dart';
 import '../services/davao_light_rate_monitor.dart';
 import '../services/automation_scheduler_service.dart';
@@ -88,15 +88,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }, onError: (Object error) {
       if (!mounted || _isPermissionDenied(error)) return;
     });
-    
+
     FirebaseDatabase.instance.ref('settings/lastRateUpdate').onValue.listen(
         (event) {
       if (!mounted) return;
       final timestamp = (event.snapshot.value as num?)?.toInt();
       if (timestamp != null) {
         setState(() {
-          _lastRateUpdateTime =
-              DateTime.fromMillisecondsSinceEpoch(timestamp);
+          _lastRateUpdateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
         });
       }
     }, onError: (Object error) {
@@ -133,7 +132,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final db = FirebaseDatabase.instance.ref();
-      
+
       await db.update({
         'settings/electricityRate': rate,
         'settings/lastRateUpdate': timestamp,
@@ -149,7 +148,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       await db.child('notifications').push().set({
         'type': 'rate_change_manual',
-        'message': 'Electricity rate updated to ₱${rate.toStringAsFixed(2)}/kWh',
+        'message':
+            'Electricity rate updated to ₱${rate.toStringAsFixed(2)}/kWh',
         'oldRate': _currentRate,
         'newRate': rate,
         'updatedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
@@ -259,7 +259,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _loadRateHistory() {
-    FirebaseDatabase.instance.ref('rate_changes')
+    FirebaseDatabase.instance
+        .ref('rate_changes')
         .orderByChild('timestamp')
         .limitToLast(10)
         .onValue
@@ -292,7 +293,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final result = await _rateMonitor.monitorAndUpdateRate();
       if (!mounted) return;
       setState(() => _fetchingLatestRate = false);
-      
+
       if (result.hasChanged) {
         TopToast.show(
           context,
@@ -343,12 +344,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    final url = release.assetUrl ?? release.releaseUrl;
-    final launched = await launchUrl(
-      Uri.parse(url),
-      mode: LaunchMode.externalApplication,
-    );
-    if (!launched && mounted) {
+    final assetUrl = release.assetUrl ?? '';
+    final opened = assetUrl.isNotEmpty
+        ? await DownloadOpenService.downloadAndOpenRemoteFile(
+            assetUrl,
+            suggestedFileName: release.assetName,
+          )
+        : await DownloadOpenService.openRemoteUrl(release.releaseUrl);
+
+    if (!opened && mounted) {
       TopToast.show(context, 'Could not open the download link.',
           isError: true);
     }
@@ -751,7 +755,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _formatDateTime(DateTime dt) {
     final now = DateTime.now();
     final diff = now.difference(dt);
-    
+
     if (diff.inSeconds < 60) {
       return 'Just now';
     } else if (diff.inMinutes < 60) {
@@ -777,19 +781,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _buildIotInventorySection(),
-                const SizedBox(height: 12),
-                _buildRateSection(),
-                const SizedBox(height: 12),
-                _buildUsersSection(),
-                const SizedBox(height: 12),
-                _buildUpdaterSection(),
-                const SizedBox(height: 12),
-                _buildAccountSection(),
-                const SizedBox(height: 12),
-                _buildAppInfoSection(),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildIotInventorySection(),
+                    const SizedBox(height: 12),
+                    _buildRateSection(),
+                    const SizedBox(height: 12),
+                    _buildUsersSection(),
+                    const SizedBox(height: 12),
+                    _buildUpdaterSection(),
+                    const SizedBox(height: 12),
+                    _buildAccountSection(),
+                    const SizedBox(height: 12),
+                    _buildAppInfoSection(),
+                  ]),
             ),
           ),
         ]),
@@ -913,7 +919,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final lastUpdateText = _lastRateUpdateTime == null
         ? 'Never'
         : _formatDateTime(_lastRateUpdateTime!);
-    
+
     return _section(
       sectionKey: 'rate',
       title: 'Electricity Rate',
@@ -925,7 +931,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text('Last Updated: $lastUpdateText',
             style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
         const SizedBox(height: 12),
-        
+
         // Fetch Latest Rate Button
         SizedBox(
           width: double.infinity,
@@ -954,17 +960,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ),
-        
+
         const SizedBox(height: 12),
         const Divider(height: 1),
         const SizedBox(height: 12),
-        
+
         const Text(
           'Manual Update',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textDark),
+          style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textDark),
         ),
         const SizedBox(height: 10),
-        
+
         Row(children: [
           Expanded(
             child: TextField(
@@ -1015,11 +1024,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ]),
-        
+
         const SizedBox(height: 12),
         const Divider(height: 1),
         const SizedBox(height: 12),
-        
+
         // Rate Change History Section
         if (_rateHistory.isNotEmpty) ...[
           Row(
@@ -1050,7 +1059,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final newRate = (change['newRate'] as num?)?.toDouble() ?? 0.0;
             final source = (change['source'] as String?) ?? 'unknown';
             final isManual = source == 'manual_update';
-            
+
             return Container(
               margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(10),
@@ -1074,7 +1083,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Icon(
                         isManual ? Icons.edit : Icons.cloud_download,
                         size: 16,
-                        color: isManual ? AppColors.greenDark : AppColors.greenMid,
+                        color:
+                            isManual ? AppColors.greenDark : AppColors.greenMid,
                       ),
                     ),
                   ),

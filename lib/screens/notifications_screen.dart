@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_colors.dart';
+import '../services/download_open_service.dart';
 import '../widgets/top_toast.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -13,6 +14,9 @@ class NotificationsScreen extends StatefulWidget {
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
+  static const String _lastSeenNotificationTsKey =
+      'notifications_last_seen_timestamp';
+
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
   String? _errorText;
@@ -60,6 +64,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         _loading = false;
         _errorText = null;
       });
+
+      unawaited(_markNotificationsAsRead(list));
     }, onError: (Object error) {
       if (!mounted) return;
       final text = error.toString().toLowerCase();
@@ -75,13 +81,31 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     });
   }
 
+  Future<void> _markNotificationsAsRead(List<Map<String, dynamic>> list) async {
+    if (list.isEmpty) return;
+
+    final newestTimestamp = _notificationTimestamp(list.first['timestamp']);
+    if (newestTimestamp <= 0) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lastSeenNotificationTsKey, newestTimestamp);
+  }
+
   Future<void> _clearAll() async {
     try {
       await FirebaseDatabase.instance.ref('notifications').remove();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_lastSeenNotificationTsKey, 0);
     } catch (_) {
       if (!mounted) return;
       TopToast.error(context, 'Unable to clear notifications.');
     }
+  }
+
+  int _notificationTimestamp(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   Future<void> _openUrlExternal(String rawUrl) async {
@@ -90,15 +114,24 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return;
     }
 
-    final uri = Uri.tryParse(rawUrl.trim());
-    if (uri == null) {
-      TopToast.error(context, 'Invalid link.');
+    final launched = await DownloadOpenService.openRemoteUrl(rawUrl);
+    if (!launched && mounted) {
+      TopToast.error(context, 'Unable to open link.');
+    }
+  }
+
+  Future<void> _downloadAndOpenFile(String rawUrl, String assetName) async {
+    if (rawUrl.trim().isEmpty) {
+      TopToast.error(context, 'No download link available.');
       return;
     }
 
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!launched && mounted) {
-      TopToast.error(context, 'Unable to open link.');
+    final opened = await DownloadOpenService.downloadAndOpenRemoteFile(
+      rawUrl,
+      suggestedFileName: assetName,
+    );
+    if (!opened && mounted) {
+      TopToast.error(context, 'Unable to download and open the file.');
     }
   }
 
@@ -121,7 +154,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final versionLine = currentVersion.isNotEmpty && latestVersion.isNotEmpty
         ? '$currentVersion -> $latestVersion'
         : latestVersion;
-    final notes = changelog.trim().isNotEmpty ? changelog.trim() : details.trim();
+    final notes =
+        changelog.trim().isNotEmpty ? changelog.trim() : details.trim();
 
     showModalBottomSheet<void>(
       context: context,
@@ -165,7 +199,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   const SizedBox(height: 6),
                   Text(
                     message,
-                    style: const TextStyle(fontSize: 12, color: AppColors.textMid),
+                    style:
+                        const TextStyle(fontSize: 12, color: AppColors.textMid),
                   ),
                 ],
                 if (versionLine.isNotEmpty) ...[
@@ -189,7 +224,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   const SizedBox(height: 6),
                   Text(
                     'Published: ${publishedAt.day}/${publishedAt.month}/${publishedAt.year}',
-                    style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textMuted),
                   ),
                 ],
                 const SizedBox(height: 14),
@@ -218,7 +254,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           ? 'No detailed release notes were provided for this version.'
                           : notes,
                       style: const TextStyle(
-                          fontSize: 12.5, height: 1.35, color: AppColors.textDark),
+                          fontSize: 12.5,
+                          height: 1.35,
+                          color: AppColors.textDark),
                     ),
                   ),
                 ),
@@ -234,7 +272,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         label: const Text('Release Page'),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.greenDark,
-                          side: BorderSide(color: AppColors.greenDark.withAlpha(80)),
+                          side: BorderSide(
+                              color: AppColors.greenDark.withAlpha(80)),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -246,16 +285,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       child: ElevatedButton.icon(
                         onPressed: assetUrl.isEmpty
                             ? null
-                            : () => _openUrlExternal(assetUrl),
+                            : () => _downloadAndOpenFile(assetUrl, assetName),
                         icon: const Icon(Icons.download_rounded,
                             size: 16, color: Colors.white),
                         label: Text(
-                          assetName.isNotEmpty ? 'Download APK' : 'Download',
+                          assetName.isNotEmpty
+                              ? 'Download & Open APK'
+                              : 'Download',
                           style: const TextStyle(color: Colors.white),
                         ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.greenDark,
-                          disabledBackgroundColor: AppColors.textMuted.withAlpha(70),
+                          disabledBackgroundColor:
+                              AppColors.textMuted.withAlpha(70),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -475,28 +517,33 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(message,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-                const SizedBox(height: 4),
-                Text(sourceLine,
-                    style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-                if (isUpdate && details.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    details,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, color: AppColors.textMid),
-                  ),
-                ],
-                const SizedBox(height: 2),
-                Text(timeStr,
-                    style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(message,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textDark)),
+                    const SizedBox(height: 4),
+                    Text(sourceLine,
+                        style: const TextStyle(
+                            fontSize: 11, color: AppColors.textMuted)),
+                    if (isUpdate && details.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        details,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, color: AppColors.textMid),
+                      ),
+                    ],
+                    const SizedBox(height: 2),
+                    Text(timeStr,
+                        style: const TextStyle(
+                            fontSize: 10, color: AppColors.textMuted)),
+                  ]),
             ),
           ]),
         ),

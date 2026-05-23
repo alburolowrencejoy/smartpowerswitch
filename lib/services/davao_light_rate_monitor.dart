@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:firebase_database/firebase_database.dart';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 /// Represents a change in electricity rates from Davao Light.

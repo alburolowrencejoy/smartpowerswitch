@@ -684,12 +684,13 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   }
 
   Widget _buildMap() {
-    return GestureDetector(
-      onTap: _editMode ? null : _dismissPopup,
-      child: Stack(
-        children: [
-          // ── Map ──────────────────────────────────────────────
-          Positioned.fill(
+    return Stack(
+      children: [
+        // ── Map tap zone ─────────────────────────────────────
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _editMode ? null : _dismissPopup,
             child: InteractiveViewer(
               // Disable pan/zoom in edit mode so drags work correctly
               panEnabled: !_editMode,
@@ -714,6 +715,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
               ),
             ),
           ),
+        ),
 
           // ── Legend (top left) ─────────────────────────────────
           if (!_editMode)
@@ -877,8 +879,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                 ),
               ),
             ),
-        ],
-      ),
+      ],
     );
   }
 

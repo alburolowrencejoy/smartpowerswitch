@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_colors.dart';
 import '../services/automation_scheduler_service.dart';
 import '../widgets/top_toast.dart';
@@ -16,6 +17,9 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  static const String _lastSeenNotificationTsKey =
+      'notifications_last_seen_timestamp';
+
   int _selectedIndex = 0;
   String _role = 'faculty';
   String _userName = '';
@@ -44,12 +48,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _analyticsRange = 'daily';
   String _trendChartType = 'line';
   List<Map<String, dynamic>> _historyData = [];
+  int _unreadNotificationCount = 0;
+  int _lastSeenNotificationTimestamp = 0;
+  int _latestNotificationTimestamp = 0;
+  Object? _latestNotificationsRaw;
 
   StreamSubscription? _masterSub;
   StreamSubscription? _devicesSub;
   StreamSubscription? _rateSub;
   StreamSubscription? _historySub;
   StreamSubscription? _buildingsSub;
+  StreamSubscription? _notificationsSub;
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -63,7 +72,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await _rateSub?.cancel();
     await _historySub?.cancel();
     await _buildingsSub?.cancel();
+    await _notificationsSub?.cancel();
     _masterSub = _devicesSub = _rateSub = _historySub = _buildingsSub = null;
+    _notificationsSub = null;
   }
 
   @override
@@ -113,7 +124,124 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _listenToEnergyData();
       _listenToRate();
       _listenToHistory();
+      _loadNotificationReadState();
+      _listenToNotifications();
     }
+  }
+
+  Future<void> _loadNotificationReadState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _lastSeenNotificationTimestamp =
+          prefs.getInt(_lastSeenNotificationTsKey) ?? 0;
+      if (!mounted) return;
+      _recalculateUnreadNotificationCount();
+    } catch (_) {
+      // Keep the badge hidden if unread state cannot be loaded.
+    }
+  }
+
+  void _listenToNotifications() {
+    _notificationsSub?.cancel();
+    _notificationsSub = FirebaseDatabase.instance
+        .ref('notifications')
+        .orderByChild('timestamp')
+        .limitToLast(100)
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      _latestNotificationsRaw = event.snapshot.value;
+      _recalculateUnreadNotificationCount();
+    }, onError: (Object error) {
+      debugPrint('[NotificationsBadge] Listen error: $error');
+    });
+  }
+
+  void _recalculateUnreadNotificationCount() {
+    final raw = _latestNotificationsRaw;
+    if (raw == null || raw is! Map) {
+      if (!mounted) return;
+      setState(() {
+        _latestNotificationTimestamp = 0;
+        _unreadNotificationCount = 0;
+      });
+      return;
+    }
+
+    int unread = 0;
+    int latest = 0;
+    for (final value in raw.values) {
+      if (value is! Map) continue;
+      final map = Map<String, dynamic>.from(value);
+      final timestamp = _asTimestamp(map['timestamp']);
+      if (timestamp <= 0) continue;
+      if (timestamp > _lastSeenNotificationTimestamp) {
+        unread++;
+      }
+      if (timestamp > latest) {
+        latest = timestamp;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _latestNotificationTimestamp = latest;
+      _unreadNotificationCount = unread;
+    });
+  }
+
+  int _asTimestamp(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  Future<void> _openNotifications() async {
+    final latest = _latestNotificationTimestamp;
+    if (latest > 0) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_lastSeenNotificationTsKey, latest);
+      if (!mounted) return;
+      _lastSeenNotificationTimestamp = latest;
+      setState(() => _unreadNotificationCount = 0);
+    }
+
+    if (!mounted) return;
+    Navigator.pushNamed(context, '/notifications');
+  }
+
+  Widget _buildNotificationBadgeIcon({double size = 22}) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(Icons.notifications_outlined, color: Colors.white, size: size),
+        if (_unreadNotificationCount > 0)
+          Positioned(
+            right: -6,
+            top: -6,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              constraints: const BoxConstraints(minWidth: 18),
+              decoration: BoxDecoration(
+                color: AppColors.warning,
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(color: AppColors.greenDark, width: 1.5),
+              ),
+              child: Text(
+                _unreadNotificationCount > 99
+                    ? '99+'
+                    : _unreadNotificationCount.toString(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
   // ── Listen to buildings from Firebase ─────────────────────────────────────
@@ -406,11 +534,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final kwh = _asDouble(entry['kwh']);
       final cost = _asDouble(entry['cost']);
 
-      final bucket = grouped.putIfAbsent(label, () => {
-            'label': label,
-            'kwh': 0.0,
-            'cost': 0.0,
-          });
+      final bucket = grouped.putIfAbsent(
+          label,
+          () => {
+                'label': label,
+                'kwh': 0.0,
+                'cost': 0.0,
+              });
       bucket['kwh'] = (bucket['kwh'] as double) + kwh;
       bucket['cost'] = (bucket['cost'] as double) + cost;
     });
@@ -1078,10 +1208,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ]),
               ),
               IconButton(
-                  icon: const Icon(Icons.notifications_outlined,
-                      color: Colors.white, size: 22),
-                  onPressed: () =>
-                      Navigator.pushNamed(context, '/notifications')),
+                  icon: _buildNotificationBadgeIcon(),
+                  onPressed: _openNotifications),
               if (_role == 'admin')
                 IconButton(
                     icon: const Icon(Icons.settings_outlined,
@@ -1102,29 +1230,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onOpened: () {
                   if (mounted) setState(() => _compactMenuOpen = true);
                 },
-                icon: AnimatedContainer(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOut,
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: _compactMenuOpen
-                        ? AppColors.greenLight.withAlpha(46)
-                        : Colors.white.withAlpha(20),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white.withAlpha(60)),
-                  ),
-                  child: AnimatedRotation(
-                    turns: _compactMenuOpen ? 0.125 : 0,
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOut,
-                    child: Icon(
-                        _compactMenuOpen
-                            ? Icons.close_rounded
-                            : Icons.menu_rounded,
-                        color: Colors.white,
-                        size: 20),
-                  ),
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOut,
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: _compactMenuOpen
+                            ? AppColors.greenLight.withAlpha(46)
+                            : Colors.white.withAlpha(20),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white.withAlpha(60)),
+                      ),
+                      child: AnimatedRotation(
+                        turns: _compactMenuOpen ? 0.125 : 0,
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOut,
+                        child: Icon(
+                            _compactMenuOpen
+                                ? Icons.close_rounded
+                                : Icons.menu_rounded,
+                            color: Colors.white,
+                            size: 20),
+                      ),
+                    ),
+                    if (_unreadNotificationCount > 0)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1),
+                          constraints: const BoxConstraints(minWidth: 16),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning,
+                            borderRadius: BorderRadius.circular(99),
+                            border: Border.all(
+                                color: AppColors.greenDark, width: 1.2),
+                          ),
+                          child: Text(
+                            _unreadNotificationCount > 99
+                                ? '99+'
+                                : _unreadNotificationCount.toString(),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
                 onCanceled: () {
                   if (mounted) setState(() => _compactMenuOpen = false);
@@ -1132,7 +1292,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onSelected: (value) {
                   if (mounted) setState(() => _compactMenuOpen = false);
                   if (value == 'notifications') {
-                    Navigator.pushNamed(context, '/notifications');
+                    unawaited(_openNotifications());
                   } else if (value == 'settings') {
                     Navigator.pushNamed(context, '/settings');
                   } else if (value == 'logout') {

@@ -25,6 +25,7 @@ class BuildingFloorScreen extends StatefulWidget {
 class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   int _selectedFloor = 1;
   String? _selectedRoom;
+  String? _roomTogglingRoom;
 
   final Map<int, List<String>> _rooms = {};
   Map<String, dynamic> _devices = {};
@@ -50,6 +51,65 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final text = error.toString().toLowerCase();
     return text.contains('permission-denied') ||
         text.contains('permission_denied');
+  }
+
+  List<MapEntry<String, Map<String, dynamic>>> _roomDeviceEntries(String room) {
+    final roomDevices = <MapEntry<String, Map<String, dynamic>>>[];
+    _devices.forEach((id, d) {
+      if (d is Map && d['room']?.toString().trim() == room.trim()) {
+        roomDevices.add(MapEntry(id, Map<String, dynamic>.from(d)));
+      }
+    });
+    return roomDevices;
+  }
+
+  bool _roomRelayIsOn(String room) {
+    final roomDevices = _roomDeviceEntries(room);
+    if (roomDevices.isEmpty) return false;
+    return roomDevices.every((entry) => entry.value['relay'] == true);
+  }
+
+  Future<void> _setRoomRelays(String room, bool turnOn) async {
+    if (_roomTogglingRoom != null) return;
+
+    final roomDevices = _roomDeviceEntries(room);
+    if (roomDevices.isEmpty) {
+      TopToast.error(context, 'No utilities found in this room.');
+      return;
+    }
+
+    setState(() => _roomTogglingRoom = room);
+
+    try {
+      final db = FirebaseDatabase.instance.ref();
+      final writes = <Future<void>>[];
+
+      for (final entry in roomDevices) {
+        final deviceId = entry.key;
+        writes.add(db.child('devices/$deviceId/relay').set(turnOn));
+        writes.add(db
+            .child(
+                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/relay')
+            .set(turnOn));
+      }
+
+      await Future.wait(writes);
+
+      if (mounted) {
+        TopToast.success(
+          context,
+          '${turnOn ? 'Turned on' : 'Turned off'} all utilities in $room.',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        TopToast.error(context, 'Room switch failed: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _roomTogglingRoom = null);
+      }
+    }
   }
 
   @override
@@ -978,22 +1038,26 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 
   Widget _buildRoomCard(String room) {
-    int utilityCount = 0;
-    int onlineCount = 0;
+    final roomDevices = _roomDeviceEntries(room);
+    final utilityCount = roomDevices.length;
+    final onlineCount = roomDevices.where((entry) {
+      final device = entry.value;
+      return device['status'] == 'online';
+    }).length;
     bool hasLights = false;
     bool hasOutlets = false;
     bool hasAc = false;
 
-    _devices.forEach((id, d) {
-      if (d is Map && d['room']?.toString().trim() == room.trim()) {
-        utilityCount++;
-        if (d['status'] == 'online') onlineCount++;
-        final u = (d['utility'] ?? '').toString().toLowerCase();
-        if (u == 'lights') hasLights = true;
-        if (u == 'outlets') hasOutlets = true;
-        if (u == 'ac') hasAc = true;
-      }
-    });
+    for (final entry in roomDevices) {
+      final device = entry.value;
+      final u = (device['utility'] ?? '').toString().toLowerCase();
+      if (u == 'lights') hasLights = true;
+      if (u == 'outlets') hasOutlets = true;
+      if (u == 'ac') hasAc = true;
+    }
+
+    final roomSwitchOn = _roomRelayIsOn(room);
+    final roomSwitchBusy = _roomTogglingRoom == room;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1037,6 +1101,36 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                       ),
                     ]),
               ),
+              if (isAdmin && utilityCount > 0) ...[
+                const SizedBox(width: 8),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text('Main',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textMuted.withAlpha(220),
+                        )),
+                    const SizedBox(height: 4),
+                    SizedBox(
+                      width: 52,
+                      height: 30,
+                      child: Switch.adaptive(
+                        value: roomSwitchOn,
+                        onChanged: roomSwitchBusy
+                            ? null
+                            : (value) => _setRoomRelays(room, value),
+                        activeThumbColor: AppColors.greenLight,
+                        activeTrackColor: AppColors.greenMid.withAlpha(80),
+                        inactiveThumbColor: Colors.white,
+                        inactiveTrackColor: AppColors.textMuted.withAlpha(70),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               if (hasLights)
                 _utilityDot(Icons.lightbulb_outline, const Color(0xFFE8922A)),
               if (hasOutlets)

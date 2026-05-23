@@ -20,6 +20,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   String _trendChartType = 'line';
   bool _exporting = false;
   String? _deletingHistoryKey;
+  int? _chartSelectedIndex;
 
   final List<Map<String, String>> _ranges = [
     {'key': 'daily', 'label': 'Daily'},
@@ -145,23 +146,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
       if (_matchingKeyCount(directMap, targetRange) > 0) return directMap;
     }
 
-    final keys = ['daily', 'weekly', 'monthly', 'yearly'];
-    String bestKey = targetRange;
-    int bestScore = -1;
-
-    for (final k in keys) {
-      final node = root[k];
-      if (node is! Map) continue;
-      final map = Map<String, dynamic>.from(node);
-      final score = _matchingKeyCount(map, targetRange);
-      if (score > bestScore) {
-        bestScore = score;
-        bestKey = k;
-      }
-    }
-
-    final best = root[bestKey];
-    return best is Map ? Map<String, dynamic>.from(best) : <String, dynamic>{};
+    // Do not fall back to another range bucket here.
+    // If the requested bucket is missing or malformed, the caller will
+    // fall back to raw history grouping instead of borrowing another range.
+    return <String, dynamic>{};
   }
 
   int _matchingKeyCount(Map<String, dynamic> node, String range) {
@@ -188,9 +176,70 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   void _setRange(String key) {
-    setState(() => _range = key);
+    setState(() {
+      _range = key;
+      _chartSelectedIndex = null;
+    });
     _deletedEntries.clear();
     _listenHistory();
+  }
+
+  void _clearChartSelection() {
+    if (_chartSelectedIndex == null) return;
+    setState(() => _chartSelectedIndex = null);
+  }
+
+  void _updateChartSelection(Offset localPosition, Size size) {
+    if (_historyData.isEmpty || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+
+    final index = _trendChartType == 'bar'
+        ? _indexForBarPosition(localPosition.dx, size.width)
+        : _indexForLinePosition(localPosition.dx, size.width);
+
+    if (index == null) return;
+    if (_chartSelectedIndex == index) return;
+
+    setState(() => _chartSelectedIndex = index);
+  }
+
+  int? _indexForLinePosition(double x, double width) {
+    if (_historyData.length < 2) return null;
+    final stepX = width / (_historyData.length - 1);
+    if (stepX <= 0) return null;
+    final index = (x / stepX).round().clamp(0, _historyData.length - 1);
+    return index;
+  }
+
+  int? _indexForBarPosition(double x, double width) {
+    if (_historyData.isEmpty) return null;
+    final slotWidth = width / _historyData.length;
+    if (slotWidth <= 0) return null;
+    final index = (x / slotWidth).floor().clamp(0, _historyData.length - 1);
+    return index;
+  }
+
+  String _chartSelectionTitle() {
+    if (_chartSelectedIndex == null ||
+        _chartSelectedIndex! < 0 ||
+        _chartSelectedIndex! >= _historyData.length) {
+      return 'Tap or hover a point';
+    }
+
+    final entry = _historyData[_chartSelectedIndex!];
+    final label = entry['label'].toString();
+    final kwh = (entry['kwh'] as num).toDouble();
+
+    final rangeLabel = switch (_range) {
+      'daily' => 'Day',
+      'weekly' => 'Week',
+      'monthly' => 'Month',
+      'yearly' => 'Year',
+      _ => 'Period',
+    };
+
+    return '$rangeLabel: $label · ${kwh.toStringAsFixed(2)} kWh';
   }
 
   Future<void> _deleteHistoryEntry(String label) async {
@@ -265,8 +314,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   List<Map<String, dynamic>> _parseRangeEntries(
       Map<String, dynamic> root, String rangeKey, [Set<String> deleted = const {}]) {
-    final hasDirectRangeNode = root[rangeKey] is Map;
-    final data = _pickRangeNode(root, rangeKey);
+    final directRangeNode = root[rangeKey];
+    final hasDirectRangeNode = directRangeNode is Map &&
+      _matchingKeyCount(Map<String, dynamic>.from(directRangeNode), rangeKey) > 0;
+    final data = hasDirectRangeNode
+      ? Map<String, dynamic>.from(directRangeNode)
+      : _pickRangeNode(root, rangeKey);
     final list = <Map<String, dynamic>>[];
 
     data.forEach((key, val) {
@@ -1052,24 +1105,114 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     child: Text('No data yet',
                         style: TextStyle(
                             fontSize: 13, color: AppColors.textMuted))))
-            : SizedBox(
-                height: 160,
-                child: CustomPaint(
-                  painter: _trendChartType == 'bar'
-                      ? _BarChartPainter(
-                          data: _historyData
-                              .map((d) => (d['kwh'] as num).toDouble())
-                              .toList(),
-                          maxKwh: _maxKwh,
-                        )
-                      : _LineChartPainter(
-                          data: _historyData
-                              .map((d) => (d['kwh'] as num).toDouble())
-                              .toList(),
-                          maxKwh: _maxKwh,
+            : LayoutBuilder(
+                builder: (context, constraints) {
+                  final chartWidth = (_historyData.length * 54.0)
+                      .clamp(constraints.maxWidth, constraints.maxWidth * 2.8)
+                      .toDouble();
+                  final chartSize = Size(chartWidth, 160);
+                  final values = _historyData
+                      .map((d) => (d['kwh'] as num).toDouble())
+                      .toList();
+                  return Column(
+                    children: [
+                      MouseRegion(
+                        onHover: (event) => _updateChartSelection(
+                          event.localPosition,
+                          chartSize,
                         ),
-                  child: Container(),
-                ),
+                        onExit: (_) => _clearChartSelection(),
+                        child: Listener(
+                          behavior: HitTestBehavior.opaque,
+                          onPointerDown: (event) => _updateChartSelection(
+                            event.localPosition,
+                            chartSize,
+                          ),
+                          onPointerMove: (event) => _updateChartSelection(
+                            event.localPosition,
+                            chartSize,
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: InteractiveViewer(
+                              constrained: false,
+                              minScale: 1.0,
+                              maxScale: 4.0,
+                              panEnabled: true,
+                              scaleEnabled: true,
+                              boundaryMargin:
+                                  const EdgeInsets.symmetric(horizontal: 48),
+                              child: SizedBox(
+                                width: chartWidth,
+                                height: 160,
+                                child: CustomPaint(
+                                  painter: _trendChartType == 'bar'
+                                      ? _BarChartPainter(
+                                          data: values,
+                                          maxKwh: _maxKwh,
+                                          selectedIndex: _chartSelectedIndex,
+                                        )
+                                      : _LineChartPainter(
+                                          data: values,
+                                          maxKwh: _maxKwh,
+                                          selectedIndex: _chartSelectedIndex,
+                                        ),
+                                  child: Container(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        child: Container(
+                          key: ValueKey(_chartSelectedIndex ?? -1),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: _chartSelectedIndex == null
+                                ? AppColors.greenPale.withAlpha(90)
+                                : AppColors.greenDark.withAlpha(18),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: _chartSelectedIndex == null
+                                  ? AppColors.greenMid.withAlpha(36)
+                                  : AppColors.greenDark.withAlpha(60),
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _chartSelectionTitle(),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: _chartSelectedIndex == null
+                                      ? AppColors.textMuted
+                                      : AppColors.greenDark,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Pinch to zoom, drag to pan, hover or tap a point',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: AppColors.textMuted.withAlpha(210),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
         const SizedBox(height: 8),
         if (_historyData.isNotEmpty)
@@ -1461,8 +1604,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 class _LineChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
+  final int? selectedIndex;
 
-  _LineChartPainter({required this.data, required this.maxKwh});
+  _LineChartPainter({
+    required this.data,
+    required this.maxKwh,
+    required this.selectedIndex,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1529,32 +1677,39 @@ class _LineChartPainter extends CustomPainter {
     canvas.drawPath(linePath, linePaint);
 
     for (int i = 0; i < data.length; i++) {
+      final isSelected = selectedIndex == i;
+      final radius = isSelected ? 5.5 : 3.5;
       canvas.drawCircle(
           off(i),
-          3.5,
+          radius,
           Paint()
-            ..color = const Color(0xFF1A5C35)
+            ..color = isSelected ? const Color(0xFF0F3D22) : const Color(0xFF1A5C35)
             ..style = PaintingStyle.fill);
       canvas.drawCircle(
           off(i),
-          3.5,
+          radius,
           Paint()
             ..color = Colors.white
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5);
+            ..strokeWidth = isSelected ? 2.2 : 1.5);
     }
   }
 
   @override
   bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh;
+      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
 }
 
 class _BarChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
+  final int? selectedIndex;
 
-  _BarChartPainter({required this.data, required this.maxKwh});
+  _BarChartPainter({
+    required this.data,
+    required this.maxKwh,
+    required this.selectedIndex,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1571,23 +1726,38 @@ class _BarChartPainter extends CustomPainter {
 
     final slotWidth = size.width / data.length;
     final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
-    final barPaint = Paint()..color = const Color(0xFF2E9E52);
 
     for (int i = 0; i < data.length; i++) {
       final normalized = (data[i] / safeMaxKwh).clamp(0.0, 1.0);
       final barHeight = normalized * size.height;
       final left = i * slotWidth + (slotWidth - barWidth) / 2;
       final top = size.height - barHeight;
+      final isSelected = selectedIndex == i;
 
       final rect = RRect.fromRectAndRadius(
         Rect.fromLTWH(left, top, barWidth, barHeight),
         const Radius.circular(4),
       );
-      canvas.drawRRect(rect, barPaint);
+      canvas.drawRRect(
+        rect,
+        Paint()
+          ..color = isSelected ? const Color(0xFF1A5C35) : const Color(0xFF2E9E52),
+      );
+
+      if (isSelected) {
+        canvas.drawRRect(
+          rect.inflate(1.5),
+          Paint()
+            ..color = Colors.transparent
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5
+            ..color = const Color(0xFF0F3D22),
+        );
+      }
     }
   }
 
   @override
   bool shouldRepaint(_BarChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh;
+      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
 }

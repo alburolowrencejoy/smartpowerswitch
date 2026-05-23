@@ -89,18 +89,19 @@ class AutomationSchedule {
 // ─── Device Picker Dialog ─────────────────────────────────────────────────────
 
 class _DevicePickerDialog extends StatefulWidget {
-  const _DevicePickerDialog();
+  final List<String> buildingList;
+  final Map<String, int> buildingFloors;
+
+  const _DevicePickerDialog({
+    required this.buildingList,
+    required this.buildingFloors,
+  });
 
   @override
   State<_DevicePickerDialog> createState() => _DevicePickerDialogState();
 }
 
 class _DevicePickerDialogState extends State<_DevicePickerDialog> {
-  static const List<String> _buildingList = ['IC','ILEGG','ITED','IAAS','ADMIN'];
-  static const Map<String, int> _buildingFloors = {
-    'IC': 2, 'ILEGG': 2, 'ITED': 2, 'IAAS': 1, 'ADMIN': 1,
-  };
-
   String? _selectedBuilding;
   int?    _selectedFloor;
   String? _selectedRoom;
@@ -114,6 +115,9 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
 
   bool _loadingRooms   = false;
   bool _loadingDevices = false;
+
+  List<String> get _buildingList => widget.buildingList;
+  Map<String, int> get _buildingFloors => widget.buildingFloors;
 
   void _onBuildingChanged(String? b) {
     setState(() {
@@ -214,13 +218,26 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
           // Step 1 — Building
           _stepLabel('1', 'Building'),
           const SizedBox(height: 6),
-          _dropdown<String>(
-            value: _selectedBuilding,
-            hint: 'Select building',
-            items: _buildingList,
-            labelOf: (b) => b,
-            onChanged: _onBuildingChanged,
-          ),
+          _buildingList.isEmpty
+              ? Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppColors.greenPale,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    'No buildings found',
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+                  ),
+                )
+              : _dropdown<String>(
+                  value: _selectedBuilding,
+                  hint: 'Select building',
+                  items: _buildingList,
+                  labelOf: (b) => b,
+                  onChanged: _onBuildingChanged,
+                ),
           const SizedBox(height: 14),
 
           // Step 2 — Floor
@@ -374,25 +391,66 @@ class AutomationScreen extends StatefulWidget {
 class _AutomationScreenState extends State<AutomationScreen> {
   List<AutomationSchedule> _schedules = [];
   StreamSubscription<DatabaseEvent>? _sub;
+  StreamSubscription<DatabaseEvent>? _buildingsSub;
   bool _loading  = true;
+  bool _loadingBuildings = true;
   String? _errorText;
 
   bool get isAdmin => widget.role == 'admin';
 
   static const List<String> _allDays  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  static const List<String> _buildings = ['IC','ILEGG','ITED','IAAS','ADMIN'];
   static const List<String> _utilities = ['All','Lights','Outlets','AC'];
+
+  List<String> _buildings = [];
+  Map<String, int> _buildingFloors = {};
 
   @override
   void initState() {
     super.initState();
     _listenSchedules();
+    _listenBuildings();
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _buildingsSub?.cancel();
     super.dispose();
+  }
+
+  void _listenBuildings() {
+    _buildingsSub?.cancel();
+    _buildingsSub = FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
+      if (!mounted) return;
+      final raw = event.snapshot.value;
+      final list = <String>[];
+      final floors = <String, int>{};
+
+      if (raw is Map) {
+            final map = Map<String, dynamic>.from(raw);
+        for (final entry in map.entries) {
+          final buildingCode = entry.key.toString();
+          if (entry.value is Map) {
+            final data = Map<String, dynamic>.from(entry.value as Map);
+            final floorCount = (data['floors'] as num?)?.toInt() ?? 1;
+            list.add(buildingCode);
+            floors[buildingCode] = floorCount < 1 ? 1 : floorCount;
+          }
+        }
+      }
+
+      list.sort();
+      setState(() {
+        _buildings = list;
+        _buildingFloors = floors;
+        _loadingBuildings = false;
+      });
+    }, onError: (Object error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingBuildings = false;
+      });
+    });
   }
 
   void _listenSchedules() {
@@ -493,8 +551,21 @@ class _AutomationScreenState extends State<AutomationScreen> {
 
               // Target — conditional on scope
               if (scope == 'building') ...[
-                _dropdownField('Building', target == 'all' ? _buildings.first : target,
-                    _buildings, (v) => setS(() => target = v!)),
+                _loadingBuildings
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: LinearProgressIndicator(color: AppColors.greenMid),
+                      )
+                    : _dropdownField(
+                        'Building',
+                        _buildings.isEmpty
+                            ? target
+                            : (_buildings.contains(target)
+                                ? target
+                                : _buildings.first),
+                        _buildings,
+                        (v) => setS(() => target = v!),
+                      ),
                 const SizedBox(height: 12),
               ],
 
@@ -510,7 +581,10 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   onTap: () async {
                     final result = await showDialog<Map<String, String>>(
                       context: ctx,
-                      builder: (_) => const _DevicePickerDialog(),
+                      builder: (_) => _DevicePickerDialog(
+                        buildingList: _buildings,
+                        buildingFloors: _buildingFloors,
+                      ),
                     );
                     if (result != null) {
                       setS(() {
@@ -619,10 +693,13 @@ class _AutomationScreenState extends State<AutomationScreen> {
                 if (scope == 'device' && target == 'all') {
                   setS(() => error = 'Please select a device'); return;
                 }
+                if (scope == 'building' && !_buildings.contains(target)) {
+                  setS(() => error = 'Please select a building');
+                  return;
+                }
 
                 final finalTarget  = scope == 'global'  ? 'all'
                     : scope == 'utility' ? target
-                    : target == 'all'    ? _buildings.first
                     : target;
                 final finalUtility = scope == 'utility' ? target : utility;
                 final onTimeStr = '${onTime.hour.toString().padLeft(2,'0')}:${onTime.minute.toString().padLeft(2,'0')}';
