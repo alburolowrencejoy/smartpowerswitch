@@ -1,4 +1,6 @@
-const functions = require('firebase-functions');
+// Use the v1 compatibility API for Realtime Database and HTTPS onCall triggers
+// while still using v2 scheduler for cron-style scheduling.
+const functions = require('firebase-functions/v1');
 const admin = require('firebase-admin');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 
