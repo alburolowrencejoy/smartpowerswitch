@@ -1102,21 +1102,15 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                     ]),
               ),
               if (isAdmin && utilityCount > 0) ...[
-                const SizedBox(width: 8),
+                const SizedBox(width: 12),
                 Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Text('Main',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textMuted.withAlpha(220),
-                        )),
-                    const SizedBox(height: 4),
                     SizedBox(
-                      width: 52,
-                      height: 30,
+                      width: 50,
+                      height: 28,
                       child: Switch.adaptive(
                         value: roomSwitchOn,
                         onChanged: roomSwitchBusy
@@ -1131,17 +1125,20 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   ],
                 ),
               ],
-              if (hasLights)
-                _utilityDot(Icons.lightbulb_outline, const Color(0xFFE8922A)),
-              if (hasOutlets)
-                Padding(
-                    padding: const EdgeInsets.only(left: 5),
-                    child: _utilityDot(
-                        Icons.electrical_services, AppColors.greenMid)),
-              if (hasAc)
-                Padding(
-                    padding: const EdgeInsets.only(left: 5),
-                    child: _utilityDot(Icons.ac_unit, const Color(0xFF2196F3))),
+              // Show utility icons only when the main switch is not displayed
+              if (!(isAdmin && utilityCount > 0)) ...[
+                if (hasLights)
+                  _utilityDot(Icons.lightbulb_outline, const Color(0xFFE8922A)),
+                if (hasOutlets)
+                  Padding(
+                      padding: const EdgeInsets.only(left: 5),
+                      child: _utilityDot(
+                          Icons.electrical_services, AppColors.greenMid)),
+                if (hasAc)
+                  Padding(
+                      padding: const EdgeInsets.only(left: 5),
+                      child: _utilityDot(Icons.ac_unit, const Color(0xFF2196F3))),
+              ],
               const SizedBox(width: 8),
               const Icon(Icons.chevron_right,
                   color: AppColors.textMuted, size: 20),
@@ -1404,7 +1401,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   }
 }
 
-class _AnimatedUtilityIcon extends StatefulWidget {
+class _AnimatedUtilityIcon extends StatelessWidget {
   final String utility;
   final bool isOn;
   final bool isOnline;
@@ -1414,41 +1411,6 @@ class _AnimatedUtilityIcon extends StatefulWidget {
     required this.isOn,
     required this.isOnline,
   });
-
-  @override
-  State<_AnimatedUtilityIcon> createState() => _AnimatedUtilityIconState();
-}
-
-class _AnimatedUtilityIconState extends State<_AnimatedUtilityIcon>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: widget.isOn ? 1100 : 1500),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void didUpdateWidget(covariant _AnimatedUtilityIcon oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.isOn != widget.isOn ||
-        oldWidget.isOnline != widget.isOnline) {
-      _controller.duration = Duration(milliseconds: widget.isOn ? 1100 : 1500);
-      if (!_controller.isAnimating) {
-        _controller.repeat(reverse: true);
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
 
   IconData _iconForUtility(String u) {
     switch (u.toLowerCase()) {
@@ -1467,63 +1429,29 @@ class _AnimatedUtilityIconState extends State<_AnimatedUtilityIcon>
     }
   }
 
-  Color _colorForUtility(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return const Color(0xFFE8922A);
-      case 'outlet':
-      case 'outlets':
-        return AppColors.greenMid;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return const Color(0xFF2196F3);
-      default:
-        return AppColors.textMuted;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final utilityColor = _colorForUtility(widget.utility);
-    final icon = _iconForUtility(widget.utility);
+    final icon = _iconForUtility(utility);
+    final isActiveHighlight = isOnline && isOn;
+    const highlight = Color(0xFFF2C94C);
 
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        final pulse = 0.5 + (_controller.value * 0.5);
-        final scale =
-            widget.isOn ? 0.98 + (pulse * 0.16) : 0.95 + (pulse * 0.07);
-        final glow = widget.isOn
-            ? utilityColor.withAlpha((70 + (pulse * 120)).toInt())
-            : Colors.grey.withAlpha((22 + (pulse * 40)).toInt());
-        final fill = widget.isOn
-            ? utilityColor.withAlpha((28 + (pulse * 56)).toInt())
-            : Colors.grey.withAlpha((16 + (pulse * 28)).toInt());
-        final iconColor = widget.isOn
-            ? utilityColor
-            : AppColors.textMuted.withAlpha((180 + (pulse * 45)).toInt());
+    final fill = isActiveHighlight
+        ? highlight.withAlpha(28)
+        : Colors.grey.withAlpha(14);
+    final iconColor = isActiveHighlight
+        ? highlight
+        : AppColors.textMuted.withAlpha(180);
+    final glow = isActiveHighlight ? highlight.withAlpha(60) : Colors.transparent;
 
-        return Transform.scale(
-          scale: scale,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            decoration: BoxDecoration(
-              color: fill,
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: [
-                BoxShadow(
-                  color: glow,
-                  blurRadius: widget.isOn ? 12 + (pulse * 10) : 4 + (pulse * 3),
-                  spreadRadius: widget.isOn ? 1 + (pulse * 1.5) : 0,
-                ),
-              ],
-            ),
-            child: Icon(icon, size: 18, color: iconColor),
-          ),
-        );
-      },
+    return Container(
+      decoration: BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: glow == Colors.transparent
+            ? null
+            : [BoxShadow(color: glow, blurRadius: 12, spreadRadius: 1)],
+      ),
+      child: Icon(icon, size: 18, color: iconColor),
     );
   }
 }

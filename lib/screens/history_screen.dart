@@ -21,6 +21,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _exporting = false;
   String? _deletingHistoryKey;
   int? _chartSelectedIndex;
+  Offset? _chartHoverPosition;
+  double _chartZoomLevel = 1.0;
+  final _zoomRadius = 60.0;
+  final _maxZoom = 5.0;
 
   final List<Map<String, String>> _ranges = [
     {'key': 'daily', 'label': 'Daily'},
@@ -1073,10 +1077,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.greenMid.withAlpha(26)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Expanded(
-            child: Column(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Expanded(
+              child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('Consumption Trend',
@@ -1128,36 +1135,56 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             event.localPosition,
                             chartSize,
                           ),
-                          onPointerMove: (event) => _updateChartSelection(
-                            event.localPosition,
-                            chartSize,
-                          ),
+                          onPointerMove: (event) {
+                            _updateChartSelection(
+                              event.localPosition,
+                              chartSize,
+                            );
+                            setState(() {
+                              _chartHoverPosition = event.localPosition;
+                              _chartZoomLevel = _maxZoom;
+                            });
+                          },
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(14),
-                            child: InteractiveViewer(
-                              constrained: false,
-                              minScale: 1.0,
-                              maxScale: 4.0,
-                              panEnabled: true,
-                              scaleEnabled: true,
-                              boundaryMargin:
-                                  const EdgeInsets.symmetric(horizontal: 48),
-                              child: SizedBox(
-                                width: chartWidth,
-                                height: 160,
-                                child: CustomPaint(
-                                  painter: _trendChartType == 'bar'
-                                      ? _BarChartPainter(
-                                          data: values,
-                                          maxKwh: _maxKwh,
-                                          selectedIndex: _chartSelectedIndex,
-                                        )
-                                      : _LineChartPainter(
-                                          data: values,
-                                          maxKwh: _maxKwh,
-                                          selectedIndex: _chartSelectedIndex,
-                                        ),
-                                  child: Container(),
+                            child: SizedBox(
+                              height: 160,
+                              child: MouseRegion(
+                                onHover: (event) {
+                                  setState(() {
+                                    _chartHoverPosition = event.localPosition;
+                                    _chartZoomLevel = _maxZoom;
+                                  });
+                                },
+                                onExit: (_) {
+                                  setState(() {
+                                    _chartHoverPosition = null;
+                                    _chartZoomLevel = 1.0;
+                                  });
+                                },
+                                child: SizedBox(
+                                  width: chartWidth,
+                                  height: 160,
+                                  child: CustomPaint(
+                                    painter: _trendChartType == 'bar'
+                                        ? _BarChartPainter(
+                                            data: values,
+                                            maxKwh: _maxKwh,
+                                            selectedIndex: _chartSelectedIndex,
+                                            hoverPosition: _chartHoverPosition,
+                                            zoomLevel: _chartZoomLevel,
+                                            zoomRadius: _zoomRadius,
+                                          )
+                                        : _LineChartPainter(
+                                            data: values,
+                                            maxKwh: _maxKwh,
+                                            selectedIndex: _chartSelectedIndex,
+                                            hoverPosition: _chartHoverPosition,
+                                            zoomLevel: _chartZoomLevel,
+                                            zoomRadius: _zoomRadius,
+                                          ),
+                                    child: Container(),
+                                  ),
                                 ),
                               ),
                             ),
@@ -1605,11 +1632,17 @@ class _LineChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
   final int? selectedIndex;
+  final Offset? hoverPosition;
+  final double zoomLevel;
+  final double zoomRadius;
 
   _LineChartPainter({
     required this.data,
     required this.maxKwh,
     required this.selectedIndex,
+    this.hoverPosition,
+    this.zoomLevel = 1.0,
+    this.zoomRadius = 100.0,
   });
 
   @override
@@ -1677,38 +1710,214 @@ class _LineChartPainter extends CustomPainter {
     canvas.drawPath(linePath, linePaint);
 
     for (int i = 0; i < data.length; i++) {
-      final isSelected = selectedIndex == i;
-      final radius = isSelected ? 5.5 : 3.5;
       canvas.drawCircle(
           off(i),
-          radius,
+          3.5,
           Paint()
-            ..color = isSelected ? const Color(0xFF0F3D22) : const Color(0xFF1A5C35)
+            ..color = const Color(0xFF1A5C35)
             ..style = PaintingStyle.fill);
       canvas.drawCircle(
           off(i),
-          radius,
+          3.5,
           Paint()
             ..color = Colors.white
             ..style = PaintingStyle.stroke
-            ..strokeWidth = isSelected ? 2.2 : 1.5);
+            ..strokeWidth = 1.5);
     }
+
+    // Draw zoom magnification effect
+    if (hoverPosition != null && zoomLevel > 1.0) {
+      _drawZoomMagnifier(canvas, size, hoverPosition!, zoomLevel);
+    }
+  }
+
+  void _drawZoomMagnifier(Canvas canvas, Size size, Offset hoverPos, double zoom) {
+    final radius = zoomRadius;
+    
+    if (data.length < 2) return;
+    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
+    final stepX = size.width / (data.length - 1);
+
+    Offset off(int i) {
+      final x = i * stepX;
+      final y = size.height - (data[i] / safeMaxKwh) * size.height;
+      return Offset(x, y.clamp(0.0, size.height));
+    }
+
+    // Magnifier center follows pointer position directly
+    final magnifierCenter = Offset(
+      hoverPos.dx.clamp(0, size.width),
+      hoverPos.dy.clamp(0, size.height),
+    );
+
+    // Draw white background circle to hide chart underneath
+    canvas.drawCircle(
+      magnifierCenter,
+      radius,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.fill,
+    );
+
+    // Save canvas state for clipping
+    canvas.save();
+    
+    // Clip to circle
+    canvas.clipPath(
+      Path()..addOval(Rect.fromCircle(center: magnifierCenter, radius: radius)),
+    );
+    
+    // Helper to transform a point for zooming around magnifier center
+    Offset zoomTransform(Offset pt) {
+      return Offset(
+        magnifierCenter.dx + (pt.dx - magnifierCenter.dx) * zoom,
+        magnifierCenter.dy + (pt.dy - magnifierCenter.dy) * zoom,
+      );
+    }
+    
+    // Draw grid lines
+    final gridPaint = Paint()
+      ..color = const Color(0xFF2E9E52).withAlpha(20)
+      ..strokeWidth = 1 / zoom;
+    for (int i = 1; i < 4; i++) {
+      final y = size.height * i / 4;
+      canvas.drawLine(
+        zoomTransform(Offset(0, y)),
+        zoomTransform(Offset(size.width, y)),
+        gridPaint,
+      );
+    }
+
+    // Draw line/fill
+    final linePaint = Paint()
+      ..color = const Color(0xFF2E9E52)
+      ..strokeWidth = 2.5 / zoom
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final fillPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color(0xFF2E9E52).withAlpha(80),
+          const Color(0xFF2E9E52).withAlpha(0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..style = PaintingStyle.fill;
+
+    final fillPath = Path();
+    fillPath.moveTo(zoomTransform(Offset(0, size.height)).dx, zoomTransform(Offset(0, size.height)).dy);
+    fillPath.lineTo(zoomTransform(off(0)).dx, zoomTransform(off(0)).dy);
+    for (int i = 1; i < data.length; i++) {
+      final prev = off(i - 1);
+      final curr = off(i);
+      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+      final currZ = zoomTransform(curr);
+      final cp1Z = zoomTransform(cp1);
+      final cp2Z = zoomTransform(cp2);
+      fillPath.cubicTo(cp1Z.dx, cp1Z.dy, cp2Z.dx, cp2Z.dy, currZ.dx, currZ.dy);
+    }
+    fillPath.lineTo(zoomTransform(Offset(size.width, size.height)).dx, zoomTransform(Offset(size.width, size.height)).dy);
+    fillPath.close();
+    canvas.drawPath(fillPath, fillPaint);
+
+    final linePath = Path();
+    linePath.moveTo(zoomTransform(off(0)).dx, zoomTransform(off(0)).dy);
+    for (int i = 1; i < data.length; i++) {
+      final prev = off(i - 1);
+      final curr = off(i);
+      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+      final currZ = zoomTransform(curr);
+      final cp1Z = zoomTransform(cp1);
+      final cp2Z = zoomTransform(cp2);
+      linePath.cubicTo(cp1Z.dx, cp1Z.dy, cp2Z.dx, cp2Z.dy, currZ.dx, currZ.dy);
+    }
+    
+    canvas.drawPath(linePath, linePaint);
+    
+    // Draw all data points with zoomed positions
+    for (int i = 0; i < data.length; i++) {
+      final pos = off(i);
+      final posZ = zoomTransform(pos);
+      
+      // Fill circle
+      canvas.drawCircle(
+        posZ,
+        3.5 / zoom,
+        Paint()
+          ..color = const Color(0xFF1A5C35)
+          ..style = PaintingStyle.fill,
+      );
+      
+      // Stroke circle
+      canvas.drawCircle(
+        posZ,
+        3.5 / zoom,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5 / zoom,
+      );
+    }
+    
+    canvas.restore();
+
+    // Draw circle border on top
+    canvas.drawCircle(
+      magnifierCenter,
+      radius,
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(120)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+
+    // Draw subtle crosshair at center to show zoom focus point
+    const crosshairSize = 8.0;
+    canvas.drawLine(
+      Offset(magnifierCenter.dx - crosshairSize, magnifierCenter.dy),
+      Offset(magnifierCenter.dx + crosshairSize, magnifierCenter.dy),
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(80)
+        ..strokeWidth = 1,
+    );
+    canvas.drawLine(
+      Offset(magnifierCenter.dx, magnifierCenter.dy - crosshairSize),
+      Offset(magnifierCenter.dx, magnifierCenter.dy + crosshairSize),
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(80)
+        ..strokeWidth = 1,
+    );
   }
 
   @override
   bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
+      old.data != data ||
+      old.maxKwh != maxKwh ||
+      old.selectedIndex != selectedIndex ||
+      old.hoverPosition != hoverPosition ||
+      old.zoomLevel != zoomLevel;
 }
 
 class _BarChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
   final int? selectedIndex;
+  final Offset? hoverPosition;
+  final double zoomLevel;
+  final double zoomRadius;
 
   _BarChartPainter({
     required this.data,
     required this.maxKwh,
     required this.selectedIndex,
+    this.hoverPosition,
+    this.zoomLevel = 1.0,
+    this.zoomRadius = 100.0,
   });
 
   @override
@@ -1732,7 +1941,6 @@ class _BarChartPainter extends CustomPainter {
       final barHeight = normalized * size.height;
       final left = i * slotWidth + (slotWidth - barWidth) / 2;
       final top = size.height - barHeight;
-      final isSelected = selectedIndex == i;
 
       final rect = RRect.fromRectAndRadius(
         Rect.fromLTWH(left, top, barWidth, barHeight),
@@ -1741,23 +1949,126 @@ class _BarChartPainter extends CustomPainter {
       canvas.drawRRect(
         rect,
         Paint()
-          ..color = isSelected ? const Color(0xFF1A5C35) : const Color(0xFF2E9E52),
+          ..color = const Color(0xFF2E9E52),
+      );
+    }
+
+    // Draw zoom magnification effect
+    if (hoverPosition != null && zoomLevel > 1.0) {
+      _drawBarZoomMagnifier(canvas, size, hoverPosition!, zoomLevel);
+    }
+  }
+
+  void _drawBarZoomMagnifier(Canvas canvas, Size size, Offset hoverPos, double zoom) {
+    final radius = zoomRadius;
+    
+    if (data.isEmpty) return;
+    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
+    final slotWidth = size.width / data.length;
+
+    // Magnifier center follows pointer position directly
+    final magnifierCenter = Offset(
+      hoverPos.dx.clamp(0, size.width),
+      hoverPos.dy.clamp(0, size.height),
+    );
+
+    // Draw white background circle to hide chart underneath
+    canvas.drawCircle(
+      magnifierCenter,
+      radius,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.fill,
+    );
+
+    // Save canvas state for clipping
+    canvas.save();
+    
+    // Clip to circle
+    canvas.clipPath(
+      Path()..addOval(Rect.fromCircle(center: magnifierCenter, radius: radius)),
+    );
+    
+    // Helper to transform a point for zooming around magnifier center
+    Offset zoomTransform(Offset pt) {
+      return Offset(
+        magnifierCenter.dx + (pt.dx - magnifierCenter.dx) * zoom,
+        magnifierCenter.dy + (pt.dy - magnifierCenter.dy) * zoom,
+      );
+    }
+    
+    // Draw grid lines
+    final gridPaint = Paint()
+      ..color = const Color(0xFF2E9E52).withAlpha(20)
+      ..strokeWidth = 1 / zoom;
+    for (int i = 1; i < 4; i++) {
+      final y = size.height * i / 4;
+      canvas.drawLine(
+        zoomTransform(Offset(0, y)),
+        zoomTransform(Offset(size.width, y)),
+        gridPaint,
+      );
+    }
+
+    // Draw zoomed bars
+    final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
+
+    for (int i = 0; i < data.length; i++) {
+      final normalized = (data[i] / safeMaxKwh).clamp(0.0, 1.0);
+      final barHeight = normalized * size.height;
+      final left = i * slotWidth + (slotWidth - barWidth) / 2;
+      final top = size.height - barHeight;
+
+      final rectTopLeft = zoomTransform(Offset(left, top));
+      final rectBottomRight = zoomTransform(Offset(left + barWidth, top + barHeight));
+      
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromPoints(rectTopLeft, rectBottomRight),
+        Radius.circular(4 / zoom),
       );
 
-      if (isSelected) {
-        canvas.drawRRect(
-          rect.inflate(1.5),
-          Paint()
-            ..color = Colors.transparent
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5
-            ..color = const Color(0xFF0F3D22),
-        );
-      }
+      canvas.drawRRect(
+        rect,
+        Paint()
+          ..color = const Color(0xFF2E9E52),
+      );
     }
+    
+    canvas.restore();
+
+    // Draw circle border on top
+    canvas.drawCircle(
+      magnifierCenter,
+      radius,
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(120)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+
+    // Draw subtle crosshair at center to show zoom focus point
+    const crosshairSize = 8.0;
+    canvas.drawLine(
+      Offset(magnifierCenter.dx - crosshairSize, magnifierCenter.dy),
+      Offset(magnifierCenter.dx + crosshairSize, magnifierCenter.dy),
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(80)
+        ..strokeWidth = 1,
+    );
+    canvas.drawLine(
+      Offset(magnifierCenter.dx, magnifierCenter.dy - crosshairSize),
+      Offset(magnifierCenter.dx, magnifierCenter.dy + crosshairSize),
+      Paint()
+        ..color = const Color(0xFF2E9E52).withAlpha(80)
+        ..strokeWidth = 1,
+    );
   }
 
   @override
   bool shouldRepaint(_BarChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
+      old.data != data ||
+      old.maxKwh != maxKwh ||
+      old.selectedIndex != selectedIndex ||
+      old.hoverPosition != hoverPosition ||
+      old.zoomLevel != zoomLevel;
 }
