@@ -21,10 +21,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _exporting = false;
   String? _deletingHistoryKey;
   int? _chartSelectedIndex;
-  Offset? _chartHoverPosition;
-  double _chartZoomLevel = 1.0;
-  final _zoomRadius = 60.0;
-  final _maxZoom = 5.0;
+  String? _expandedRangeKey;
+  // selection is handled via dropdown or tap; hover/magnify removed
 
   final List<Map<String, String>> _ranges = [
     {'key': 'daily', 'label': 'Daily'},
@@ -37,8 +35,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
   StreamSubscription? _historySub;
   StreamSubscription? _deletedSub;
 
+  Map<String, dynamic> _historyRoot = {};
   List<Map<String, dynamic>> _historyData = [];
   Set<String> _deletedEntries = {}; // Tracks deleted tombstones for current range
+  Map<String, Set<String>> _deletedEntriesByRange = {
+    'daily': {},
+    'weekly': {},
+    'monthly': {},
+    'yearly': {},
+  };
 
   Map<String, double> _utilityTotals = {};
   Map<String, double> _buildingTotals = {};
@@ -117,7 +122,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
         final map = Map<String, dynamic>.from(event.snapshot.value as Map);
         deleted.addAll(map.keys);
       }
-      if (mounted) setState(() => _deletedEntries = deleted);
+      if (mounted) {
+        setState(() {
+          _deletedEntries = deleted;
+          _deletedEntriesByRange[_range] = deleted;
+        });
+      }
       _updateHistoryDisplay(); // Refresh UI with deleted filter
     });
     
@@ -128,17 +138,48 @@ class _HistoryScreenState extends State<HistoryScreen> {
     });
   }
   
-  void _updateHistoryDisplay() {
+  Future<void> _updateHistoryDisplay() async {
     if (!mounted) return;
-    final snapshot = FirebaseDatabase.instance.ref('history');
-    snapshot.get().then((event) {
-      if (event.value is! Map) {
-        if (mounted) setState(() => _historyData = []);
-        return;
+    final snapshot = await FirebaseDatabase.instance.ref('history').get();
+    if (snapshot.value is! Map) {
+      if (mounted) {
+        setState(() {
+          _historyRoot = {};
+          _historyData = [];
+        });
       }
-      final root = Map<String, dynamic>.from(event.value as Map);
-      final list = _parseRangeEntries(root, _range, _deletedEntries);
-      if (mounted) setState(() => _historyData = list);
+      return;
+    }
+
+    final root = Map<String, dynamic>.from(snapshot.value as Map);
+    final deletedMap = <String, Set<String>>{};
+    for (final range in ['daily', 'weekly', 'monthly', 'yearly']) {
+      final deletedSnapshot =
+          await FirebaseDatabase.instance.ref('history/deleted/$range').get();
+      final deleted = <String>{};
+      if (deletedSnapshot.value is Map) {
+        final map = Map<String, dynamic>.from(deletedSnapshot.value as Map);
+        deleted.addAll(map.keys);
+      }
+      deletedMap[range] = deleted;
+    }
+
+    final list = _parseRangeEntries(
+      root,
+      _range,
+      deletedMap[_range] ?? _deletedEntries,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _historyRoot = root;
+      _deletedEntriesByRange = deletedMap;
+      _deletedEntries = deletedMap[_range] ?? {};
+      _historyData = list;
+      if (_chartSelectedIndex != null &&
+          (_chartSelectedIndex! < 0 || _chartSelectedIndex! >= _historyData.length)) {
+        _chartSelectedIndex = null;
+      }
     });
   }
 
@@ -188,11 +229,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _listenHistory();
   }
 
-  void _clearChartSelection() {
-    if (_chartSelectedIndex == null) return;
-    setState(() => _chartSelectedIndex = null);
-  }
-
   void _updateChartSelection(Offset localPosition, Size size) {
     if (_historyData.isEmpty || size.width <= 0 || size.height <= 0) {
       return;
@@ -204,7 +240,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     if (index == null) return;
     if (_chartSelectedIndex == index) return;
-
     setState(() => _chartSelectedIndex = index);
   }
 
@@ -1000,37 +1035,145 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildRangeSelector() {
-    return Container(
-      height: 44,
-      decoration: BoxDecoration(
-          color: AppColors.greenPale, borderRadius: BorderRadius.circular(12)),
-      child: Row(
-        children: _ranges.map((r) {
-          final isSelected = _range == r['key'];
-          return Expanded(
-            child: GestureDetector(
-              onTap: () => _setRange(r['key']!),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                margin: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: isSelected ? AppColors.greenDark : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Center(
-                  child: Text(r['label']!,
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color:
-                              isSelected ? Colors.white : AppColors.textMid)),
-                ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          height: 52,
+          decoration: BoxDecoration(
+              color: AppColors.greenPale,
+              borderRadius: BorderRadius.circular(12)),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: _ranges.map((r) {
+                final isSelected = _range == r['key'];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _setRange(r['key']!),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: isSelected ? AppColors.greenDark : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              r['label']!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: isSelected ? Colors.white : AppColors.textMid,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Builder(builder: (btnContext) {
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTapDown: (details) => _showRangeDropdown(
+                                  btnContext, r['key']!, details.globalPosition),
+                              child: SizedBox(
+                                width: 28,
+                                height: 28,
+                                child: Center(
+                                  child: Icon(
+                                    Icons.arrow_drop_down,
+                                    size: 22,
+                                    color: isSelected ? Colors.white : AppColors.textMid,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+
+        // Accordion replaced by dropdown menu anchored to the button.
+      ],
+    );
+  }
+
+  Future<void> _showRangeDropdown(BuildContext btnContext, String rangeKey, Offset globalTap) async {
+    final entries = _parseRangeEntries(
+      _historyRoot,
+      rangeKey,
+      _deletedEntriesByRange[rangeKey] ?? {},
+    );
+    if (entries.isEmpty) return;
+
+    final overlay = Overlay.of(btnContext)?.context.findRenderObject() as RenderBox?;
+    final btnBox = btnContext.findRenderObject() as RenderBox?;
+    if (overlay == null || btnBox == null) return;
+
+    final btnTopLeft = btnBox.localToGlobal(Offset.zero, ancestor: overlay);
+    final left = btnTopLeft.dx;
+    final top = btnTopLeft.dy + btnBox.size.height;
+    final right = overlay.size.width - left - btnBox.size.width;
+    final bottom = overlay.size.height - top;
+
+    final position = RelativeRect.fromLTRB(left, top, right, bottom);
+
+    final rawMenuWidth = btnBox.size.width + 24;
+    final menuWidth = rawMenuWidth.clamp(160.0, overlay.size.width - 40.0);
+
+    // Ensure the menu is positioned so it does not overflow the screen to the left.
+    double desiredLeft = btnTopLeft.dx;
+    // If there's not enough space to the right of the button, try aligning the menu to the button's right edge.
+    if (desiredLeft + menuWidth > overlay.size.width - 12.0) {
+      desiredLeft = btnTopLeft.dx + btnBox.size.width - menuWidth;
+    }
+    // Clamp into visible area with a small margin.
+    desiredLeft = desiredLeft.clamp(12.0, overlay.size.width - menuWidth - 12.0);
+
+    final adjustedRight = overlay.size.width - desiredLeft - menuWidth;
+    final adjustedPosition = RelativeRect.fromLTRB(desiredLeft, top, adjustedRight, bottom);
+
+    final selected = await showMenu<int>(
+      context: btnContext,
+      position: adjustedPosition,
+      items: List.generate(entries.length, (i) {
+        final label = entries[i]['label'].toString();
+        return PopupMenuItem<int>(
+          value: i,
+          child: SizedBox(
+            width: menuWidth,
+            child: Center(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
               ),
             ),
-          );
-        }).toList(),
-      ),
+          ),
+        );
+      }),
     );
+
+    if (selected == null) return;
+
+    setState(() {
+      _range = rangeKey;
+      _historyData = entries;
+      _chartSelectedIndex = selected;
+    });
+    _listenHistory();
   }
 
   Widget _buildSummaryRow() {
@@ -1098,6 +1241,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ],
             ),
           ),
+          
           if (canSwitchChart) ...[
             _chartTypeButton('line', Icons.show_chart),
             const SizedBox(width: 6),
@@ -1123,70 +1267,30 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       .toList();
                   return Column(
                     children: [
-                      MouseRegion(
-                        onHover: (event) => _updateChartSelection(
-                          event.localPosition,
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (details) => _updateChartSelection(
+                          details.localPosition,
                           chartSize,
                         ),
-                        onExit: (_) => _clearChartSelection(),
-                        child: Listener(
-                          behavior: HitTestBehavior.opaque,
-                          onPointerDown: (event) => _updateChartSelection(
-                            event.localPosition,
-                            chartSize,
-                          ),
-                          onPointerMove: (event) {
-                            _updateChartSelection(
-                              event.localPosition,
-                              chartSize,
-                            );
-                            setState(() {
-                              _chartHoverPosition = event.localPosition;
-                              _chartZoomLevel = _maxZoom;
-                            });
-                          },
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(14),
-                            child: SizedBox(
-                              height: 160,
-                              child: MouseRegion(
-                                onHover: (event) {
-                                  setState(() {
-                                    _chartHoverPosition = event.localPosition;
-                                    _chartZoomLevel = _maxZoom;
-                                  });
-                                },
-                                onExit: (_) {
-                                  setState(() {
-                                    _chartHoverPosition = null;
-                                    _chartZoomLevel = 1.0;
-                                  });
-                                },
-                                child: SizedBox(
-                                  width: chartWidth,
-                                  height: 160,
-                                  child: CustomPaint(
-                                    painter: _trendChartType == 'bar'
-                                        ? _BarChartPainter(
-                                            data: values,
-                                            maxKwh: _maxKwh,
-                                            selectedIndex: _chartSelectedIndex,
-                                            hoverPosition: _chartHoverPosition,
-                                            zoomLevel: _chartZoomLevel,
-                                            zoomRadius: _zoomRadius,
-                                          )
-                                        : _LineChartPainter(
-                                            data: values,
-                                            maxKwh: _maxKwh,
-                                            selectedIndex: _chartSelectedIndex,
-                                            hoverPosition: _chartHoverPosition,
-                                            zoomLevel: _chartZoomLevel,
-                                            zoomRadius: _zoomRadius,
-                                          ),
-                                    child: Container(),
-                                  ),
-                                ),
-                              ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: SizedBox(
+                            width: chartWidth,
+                            height: 160,
+                            child: CustomPaint(
+                              painter: _trendChartType == 'bar'
+                                  ? _BarChartPainter(
+                                      data: values,
+                                      maxKwh: _maxKwh,
+                                      selectedIndex: _chartSelectedIndex,
+                                    )
+                                  : _LineChartPainter(
+                                      data: values,
+                                      maxKwh: _maxKwh,
+                                      selectedIndex: _chartSelectedIndex,
+                                    ),
+                              child: Container(),
                             ),
                           ),
                         ),
@@ -1632,22 +1736,14 @@ class _LineChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
   final int? selectedIndex;
-  final Offset? hoverPosition;
-  final double zoomLevel;
-  final double zoomRadius;
-
   _LineChartPainter({
     required this.data,
     required this.maxKwh,
     required this.selectedIndex,
-    this.hoverPosition,
-    this.zoomLevel = 1.0,
-    this.zoomRadius = 100.0,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (data.length < 2) return;
     final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
 
     final linePaint = Paint()
@@ -1668,10 +1764,10 @@ class _LineChartPainter extends CustomPainter {
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
       ..style = PaintingStyle.fill;
 
-    final stepX = size.width / (data.length - 1);
+    final stepX = data.length < 2 ? 0.0 : size.width / (data.length - 1);
 
     Offset off(int i) {
-      final x = i * stepX;
+      final x = data.length == 1 ? size.width / 2 : i * stepX;
       final y = size.height - (data[i] / safeMaxKwh) * size.height;
       return Offset(x, y.clamp(0.0, size.height));
     }
@@ -1698,226 +1794,56 @@ class _LineChartPainter extends CustomPainter {
     fillPath.close();
     canvas.drawPath(fillPath, fillPaint);
 
-    final linePath = Path();
-    linePath.moveTo(off(0).dx, off(0).dy);
-    for (int i = 1; i < data.length; i++) {
-      final prev = off(i - 1);
-      final curr = off(i);
-      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
-      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
-      linePath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+    if (data.length >= 2) {
+      final linePath = Path();
+      linePath.moveTo(off(0).dx, off(0).dy);
+      for (int i = 1; i < data.length; i++) {
+        final prev = off(i - 1);
+        final curr = off(i);
+        final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+        final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+        linePath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+      }
+      canvas.drawPath(linePath, linePaint);
+    } else {
+      canvas.drawLine(
+        Offset(off(0).dx, size.height),
+        off(0),
+        linePaint,
+      );
     }
-    canvas.drawPath(linePath, linePaint);
 
-    for (int i = 0; i < data.length; i++) {
+    // Highlight selected point only; keep all other points invisible.
+    if (selectedIndex != null && selectedIndex! >= 0 && selectedIndex! < data.length) {
+      final p = off(selectedIndex!);
       canvas.drawCircle(
-          off(i),
-          3.5,
+          p,
+          6.0,
           Paint()
-            ..color = const Color(0xFF1A5C35)
+            ..color = const Color(0xFF2874A6)
             ..style = PaintingStyle.fill);
       canvas.drawCircle(
-          off(i),
-          3.5,
+          p,
+          6.0,
           Paint()
             ..color = Colors.white
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.5);
     }
-
-    // Draw zoom magnification effect
-    if (hoverPosition != null && zoomLevel > 1.0) {
-      _drawZoomMagnifier(canvas, size, hoverPosition!, zoomLevel);
-    }
   }
-
-  void _drawZoomMagnifier(Canvas canvas, Size size, Offset hoverPos, double zoom) {
-    final radius = zoomRadius;
-    
-    if (data.length < 2) return;
-    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
-    final stepX = size.width / (data.length - 1);
-
-    Offset off(int i) {
-      final x = i * stepX;
-      final y = size.height - (data[i] / safeMaxKwh) * size.height;
-      return Offset(x, y.clamp(0.0, size.height));
-    }
-
-    // Magnifier center follows pointer position directly
-    final magnifierCenter = Offset(
-      hoverPos.dx.clamp(0, size.width),
-      hoverPos.dy.clamp(0, size.height),
-    );
-
-    // Draw white background circle to hide chart underneath
-    canvas.drawCircle(
-      magnifierCenter,
-      radius,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.fill,
-    );
-
-    // Save canvas state for clipping
-    canvas.save();
-    
-    // Clip to circle
-    canvas.clipPath(
-      Path()..addOval(Rect.fromCircle(center: magnifierCenter, radius: radius)),
-    );
-    
-    // Helper to transform a point for zooming around magnifier center
-    Offset zoomTransform(Offset pt) {
-      return Offset(
-        magnifierCenter.dx + (pt.dx - magnifierCenter.dx) * zoom,
-        magnifierCenter.dy + (pt.dy - magnifierCenter.dy) * zoom,
-      );
-    }
-    
-    // Draw grid lines
-    final gridPaint = Paint()
-      ..color = const Color(0xFF2E9E52).withAlpha(20)
-      ..strokeWidth = 1 / zoom;
-    for (int i = 1; i < 4; i++) {
-      final y = size.height * i / 4;
-      canvas.drawLine(
-        zoomTransform(Offset(0, y)),
-        zoomTransform(Offset(size.width, y)),
-        gridPaint,
-      );
-    }
-
-    // Draw line/fill
-    final linePaint = Paint()
-      ..color = const Color(0xFF2E9E52)
-      ..strokeWidth = 2.5 / zoom
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final fillPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          const Color(0xFF2E9E52).withAlpha(80),
-          const Color(0xFF2E9E52).withAlpha(0),
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..style = PaintingStyle.fill;
-
-    final fillPath = Path();
-    fillPath.moveTo(zoomTransform(Offset(0, size.height)).dx, zoomTransform(Offset(0, size.height)).dy);
-    fillPath.lineTo(zoomTransform(off(0)).dx, zoomTransform(off(0)).dy);
-    for (int i = 1; i < data.length; i++) {
-      final prev = off(i - 1);
-      final curr = off(i);
-      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
-      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
-      final currZ = zoomTransform(curr);
-      final cp1Z = zoomTransform(cp1);
-      final cp2Z = zoomTransform(cp2);
-      fillPath.cubicTo(cp1Z.dx, cp1Z.dy, cp2Z.dx, cp2Z.dy, currZ.dx, currZ.dy);
-    }
-    fillPath.lineTo(zoomTransform(Offset(size.width, size.height)).dx, zoomTransform(Offset(size.width, size.height)).dy);
-    fillPath.close();
-    canvas.drawPath(fillPath, fillPaint);
-
-    final linePath = Path();
-    linePath.moveTo(zoomTransform(off(0)).dx, zoomTransform(off(0)).dy);
-    for (int i = 1; i < data.length; i++) {
-      final prev = off(i - 1);
-      final curr = off(i);
-      final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
-      final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
-      final currZ = zoomTransform(curr);
-      final cp1Z = zoomTransform(cp1);
-      final cp2Z = zoomTransform(cp2);
-      linePath.cubicTo(cp1Z.dx, cp1Z.dy, cp2Z.dx, cp2Z.dy, currZ.dx, currZ.dy);
-    }
-    
-    canvas.drawPath(linePath, linePaint);
-    
-    // Draw all data points with zoomed positions
-    for (int i = 0; i < data.length; i++) {
-      final pos = off(i);
-      final posZ = zoomTransform(pos);
-      
-      // Fill circle
-      canvas.drawCircle(
-        posZ,
-        3.5 / zoom,
-        Paint()
-          ..color = const Color(0xFF1A5C35)
-          ..style = PaintingStyle.fill,
-      );
-      
-      // Stroke circle
-      canvas.drawCircle(
-        posZ,
-        3.5 / zoom,
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5 / zoom,
-      );
-    }
-    
-    canvas.restore();
-
-    // Draw circle border on top
-    canvas.drawCircle(
-      magnifierCenter,
-      radius,
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(120)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5,
-    );
-
-    // Draw subtle crosshair at center to show zoom focus point
-    const crosshairSize = 8.0;
-    canvas.drawLine(
-      Offset(magnifierCenter.dx - crosshairSize, magnifierCenter.dy),
-      Offset(magnifierCenter.dx + crosshairSize, magnifierCenter.dy),
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(80)
-        ..strokeWidth = 1,
-    );
-    canvas.drawLine(
-      Offset(magnifierCenter.dx, magnifierCenter.dy - crosshairSize),
-      Offset(magnifierCenter.dx, magnifierCenter.dy + crosshairSize),
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(80)
-        ..strokeWidth = 1,
-    );
-  }
-
   @override
   bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data ||
-      old.maxKwh != maxKwh ||
-      old.selectedIndex != selectedIndex ||
-      old.hoverPosition != hoverPosition ||
-      old.zoomLevel != zoomLevel;
+      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
 }
 
 class _BarChartPainter extends CustomPainter {
   final List<double> data;
   final double maxKwh;
   final int? selectedIndex;
-  final Offset? hoverPosition;
-  final double zoomLevel;
-  final double zoomRadius;
-
   _BarChartPainter({
     required this.data,
     required this.maxKwh,
     required this.selectedIndex,
-    this.hoverPosition,
-    this.zoomLevel = 1.0,
-    this.zoomRadius = 100.0,
   });
 
   @override
@@ -1953,122 +1879,26 @@ class _BarChartPainter extends CustomPainter {
       );
     }
 
-    // Draw zoom magnification effect
-    if (hoverPosition != null && zoomLevel > 1.0) {
-      _drawBarZoomMagnifier(canvas, size, hoverPosition!, zoomLevel);
-    }
-  }
-
-  void _drawBarZoomMagnifier(Canvas canvas, Size size, Offset hoverPos, double zoom) {
-    final radius = zoomRadius;
-    
-    if (data.isEmpty) return;
-    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
-    final slotWidth = size.width / data.length;
-
-    // Magnifier center follows pointer position directly
-    final magnifierCenter = Offset(
-      hoverPos.dx.clamp(0, size.width),
-      hoverPos.dy.clamp(0, size.height),
-    );
-
-    // Draw white background circle to hide chart underneath
-    canvas.drawCircle(
-      magnifierCenter,
-      radius,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.fill,
-    );
-
-    // Save canvas state for clipping
-    canvas.save();
-    
-    // Clip to circle
-    canvas.clipPath(
-      Path()..addOval(Rect.fromCircle(center: magnifierCenter, radius: radius)),
-    );
-    
-    // Helper to transform a point for zooming around magnifier center
-    Offset zoomTransform(Offset pt) {
-      return Offset(
-        magnifierCenter.dx + (pt.dx - magnifierCenter.dx) * zoom,
-        magnifierCenter.dy + (pt.dy - magnifierCenter.dy) * zoom,
-      );
-    }
-    
-    // Draw grid lines
-    final gridPaint = Paint()
-      ..color = const Color(0xFF2E9E52).withAlpha(20)
-      ..strokeWidth = 1 / zoom;
-    for (int i = 1; i < 4; i++) {
-      final y = size.height * i / 4;
-      canvas.drawLine(
-        zoomTransform(Offset(0, y)),
-        zoomTransform(Offset(size.width, y)),
-        gridPaint,
-      );
-    }
-
-    // Draw zoomed bars
-    final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
-
-    for (int i = 0; i < data.length; i++) {
-      final normalized = (data[i] / safeMaxKwh).clamp(0.0, 1.0);
+    // Highlight selected bar if any
+    if (selectedIndex != null && selectedIndex! >= 0 && selectedIndex! < data.length) {
+      final idx = selectedIndex!;
+      final slotWidth = size.width / data.length;
+      final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
+      final normalized = (data[idx] / safeMaxKwh).clamp(0.0, 1.0);
       final barHeight = normalized * size.height;
-      final left = i * slotWidth + (slotWidth - barWidth) / 2;
+      final left = idx * slotWidth + (slotWidth - barWidth) / 2;
       final top = size.height - barHeight;
-
-      final rectTopLeft = zoomTransform(Offset(left, top));
-      final rectBottomRight = zoomTransform(Offset(left + barWidth, top + barHeight));
-      
       final rect = RRect.fromRectAndRadius(
-        Rect.fromPoints(rectTopLeft, rectBottomRight),
-        Radius.circular(4 / zoom),
+        Rect.fromLTWH(left, top, barWidth, barHeight),
+        const Radius.circular(4),
       );
-
       canvas.drawRRect(
         rect,
-        Paint()
-          ..color = const Color(0xFF2E9E52),
+        Paint()..color = const Color(0xFF2874A6),
       );
     }
-    
-    canvas.restore();
-
-    // Draw circle border on top
-    canvas.drawCircle(
-      magnifierCenter,
-      radius,
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(120)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5,
-    );
-
-    // Draw subtle crosshair at center to show zoom focus point
-    const crosshairSize = 8.0;
-    canvas.drawLine(
-      Offset(magnifierCenter.dx - crosshairSize, magnifierCenter.dy),
-      Offset(magnifierCenter.dx + crosshairSize, magnifierCenter.dy),
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(80)
-        ..strokeWidth = 1,
-    );
-    canvas.drawLine(
-      Offset(magnifierCenter.dx, magnifierCenter.dy - crosshairSize),
-      Offset(magnifierCenter.dx, magnifierCenter.dy + crosshairSize),
-      Paint()
-        ..color = const Color(0xFF2E9E52).withAlpha(80)
-        ..strokeWidth = 1,
-    );
   }
-
   @override
   bool shouldRepaint(_BarChartPainter old) =>
-      old.data != data ||
-      old.maxKwh != maxKwh ||
-      old.selectedIndex != selectedIndex ||
-      old.hoverPosition != hoverPosition ||
-      old.zoomLevel != zoomLevel;
+      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
 }

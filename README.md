@@ -253,5 +253,13 @@ Version 2.0.0 - Dashboard Analytics & Bug Fixes
 - **Twilio SMS + SendGrid** — notifications *(planned)*
 
 
-firebase f : auto fetch powerrates
-             automation ::::
+<!-- firebase f : auto fetch powerrates
+             automation :::: -->
+             ui card devices
+             each device accumulated fix
+             finalization of history nodes totals khw and cost
+             notification alerts 
+             
+             optimization:
+             big data handling 
+             ui improvements

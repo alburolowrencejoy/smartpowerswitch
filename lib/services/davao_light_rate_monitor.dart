@@ -49,8 +49,6 @@ class RateChangeData {
 /// uses JavaScript to render rates dynamically, this service attempts to
 /// parse available rate numbers from the page content.
 ///
-/// TODO: Update this to use Davao Light's API or a structured data source once available.
-/// TODO: Consider implementing a web scraping solution with Selenium or similar if HTML parsing becomes unreliable.
 class DavaoLightRateMonitor {
   static const String _logPrefix = '[DavaoLightRateMonitor]';
   static const String _davaoLightFaqUrl =
@@ -177,8 +175,6 @@ class DavaoLightRateMonitor {
   /// 3. Looks for "rate" followed by a number
   /// 4. Looks for "kwh" or "kWh" followed by a number
   ///
-  /// TODO: This is a best-effort approach. Once Davao Light provides an API
-  /// or structured data feed, switch to that instead of HTML parsing.
   ///
   /// Returns:
   ///   The extracted rate as a double, or null if no valid rate was found.
