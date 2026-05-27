@@ -21,7 +21,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _exporting = false;
   String? _deletingHistoryKey;
   int? _chartSelectedIndex;
-  String? _expandedRangeKey;
   // selection is handled via dropdown or tap; hover/magnify removed
 
   final List<Map<String, String>> _ranges = [
@@ -111,29 +110,26 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void _listenHistory() {
     _historySub?.cancel();
     _deletedSub?.cancel();
-    
-    // Listen to deleted tombstones for current range
+
     _deletedSub = FirebaseDatabase.instance
         .ref('history/deleted/$_range')
         .onValue
         .listen((event) {
-      final deleted = <String>{};
-      if (event.snapshot.value is Map) {
-        final map = Map<String, dynamic>.from(event.snapshot.value as Map);
-        deleted.addAll(map.keys);
-      }
-      if (mounted) {
-        setState(() {
-          _deletedEntries = deleted;
-          _deletedEntriesByRange[_range] = deleted;
+          final deleted = <String>{};
+          if (event.snapshot.value is Map) {
+            final map = Map<String, dynamic>.from(event.snapshot.value as Map);
+            deleted.addAll(map.keys);
+          }
+          if (mounted) {
+            setState(() {
+              _deletedEntries = deleted;
+              _deletedEntriesByRange[_range] = deleted;
+            });
+          }
+          _updateHistoryDisplay();
         });
-      }
-      _updateHistoryDisplay(); // Refresh UI with deleted filter
-    });
-    
-    // Listen to history data
-    _historySub =
-        FirebaseDatabase.instance.ref('history').onValue.listen((event) {
+
+    _historySub = FirebaseDatabase.instance.ref('history').onValue.listen((event) {
       _updateHistoryDisplay();
     });
   }
@@ -960,6 +956,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     const SizedBox(height: 20),
                     _buildLineChart(),
                     const SizedBox(height: 20),
+                    _buildAlgorithmPlaceholderCard(),
+                    const SizedBox(height: 20),
                     _buildDeviceStatusCard(),
                     const SizedBox(height: 20),
                     _buildTopUtilityCard(),
@@ -1117,7 +1115,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
     if (entries.isEmpty) return;
 
-    final overlay = Overlay.of(btnContext)?.context.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
     final btnBox = btnContext.findRenderObject() as RenderBox?;
     if (overlay == null || btnBox == null) return;
 
@@ -1126,8 +1124,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final top = btnTopLeft.dy + btnBox.size.height;
     final right = overlay.size.width - left - btnBox.size.width;
     final bottom = overlay.size.height - top;
-
-    final position = RelativeRect.fromLTRB(left, top, right, bottom);
 
     final rawMenuWidth = btnBox.size.width + 24;
     final menuWidth = rawMenuWidth.clamp(160.0, overlay.size.width - 40.0);
@@ -1224,142 +1220,249 @@ class _HistoryScreenState extends State<HistoryScreen> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            const Expanded(
-              child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Consumption Trend',
-                    style: TextStyle(
+          Row(
+            children: [
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Consumption Trend',
+                      style: TextStyle(
                         fontFamily: 'Outfit',
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-                SizedBox(height: 4),
-                Text('kWh over time (realtime)',
-                    style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
-              ],
-            ),
-          ),
-          
-          if (canSwitchChart) ...[
-            _chartTypeButton('line', Icons.show_chart),
-            const SizedBox(width: 6),
-            _chartTypeButton('bar', Icons.bar_chart),
-          ],
-        ]),
-        const SizedBox(height: 20),
-        _historyData.isEmpty
-            ? const Center(
-                child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: 30),
-                    child: Text('No data yet',
-                        style: TextStyle(
-                            fontSize: 13, color: AppColors.textMuted))))
-            : LayoutBuilder(
-                builder: (context, constraints) {
-                  final chartWidth = (_historyData.length * 54.0)
-                      .clamp(constraints.maxWidth, constraints.maxWidth * 2.8)
-                      .toDouble();
-                  final chartSize = Size(chartWidth, 160);
-                  final values = _historyData
-                      .map((d) => (d['kwh'] as num).toDouble())
-                      .toList();
-                  return Column(
-                    children: [
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTapDown: (details) => _updateChartSelection(
-                          details.localPosition,
-                          chartSize,
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: SizedBox(
-                            width: chartWidth,
-                            height: 160,
-                            child: CustomPaint(
-                              painter: _trendChartType == 'bar'
-                                  ? _BarChartPainter(
-                                      data: values,
-                                      maxKwh: _maxKwh,
-                                      selectedIndex: _chartSelectedIndex,
-                                    )
-                                  : _LineChartPainter(
-                                      data: values,
-                                      maxKwh: _maxKwh,
-                                      selectedIndex: _chartSelectedIndex,
-                                    ),
-                              child: Container(),
-                            ),
-                          ),
-                        ),
+                        color: AppColors.textDark,
                       ),
-                      const SizedBox(height: 10),
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 180),
-                        child: Container(
-                          key: ValueKey(_chartSelectedIndex ?? -1),
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: _chartSelectedIndex == null
-                                ? AppColors.greenPale.withAlpha(90)
-                                : AppColors.greenDark.withAlpha(18),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _chartSelectedIndex == null
-                                  ? AppColors.greenMid.withAlpha(36)
-                                  : AppColors.greenDark.withAlpha(60),
-                            ),
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      'kWh over time (realtime)',
+                      style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              if (canSwitchChart) ...[
+                _chartTypeButton('line', Icons.show_chart),
+                const SizedBox(width: 6),
+                _chartTypeButton('bar', Icons.bar_chart),
+              ],
+            ],
+          ),
+          const SizedBox(height: 20),
+          _historyData.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 30),
+                    child: Text(
+                      'No data yet',
+                      style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+                    ),
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final chartWidth = (_historyData.length * 54.0)
+                        .clamp(constraints.maxWidth, constraints.maxWidth * 2.8)
+                        .toDouble();
+                    final chartSize = Size(chartWidth, 160);
+                    final values = _historyData
+                        .map((d) => (d['kwh'] as num).toDouble())
+                        .toList();
+                    return Column(
+                      children: [
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                _chartSelectionTitle(),
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: _chartSelectedIndex == null
-                                      ? AppColors.textMuted
-                                      : AppColors.greenDark,
+                              SizedBox(
+                                width: 38,
+                                height: 160,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: const [
+                                    Text('200',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.textMuted)),
+                                    Text('150',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.textMuted)),
+                                    Text('100',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.textMuted)),
+                                    Text('50',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.textMuted)),
+                                    Text('0',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.textMuted)),
+                                  ],
                                 ),
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Pinch to zoom, drag to pan, hover or tap a point',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: AppColors.textMuted.withAlpha(210),
+                              const SizedBox(width: 8),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTapDown: (details) => _updateChartSelection(
+                                  details.localPosition,
+                                  chartSize,
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(14),
+                                  child: SizedBox(
+                                    width: chartWidth,
+                                    height: 160,
+                                    child: CustomPaint(
+                                      painter: _trendChartType == 'bar'
+                                          ? _BarChartPainter(
+                                              data: values,
+                                              maxKwh: _maxKwh,
+                                              selectedIndex: _chartSelectedIndex,
+                                            )
+                                          : _LineChartPainter(
+                                              data: values,
+                                              maxKwh: _maxKwh,
+                                              selectedIndex: _chartSelectedIndex,
+                                            ),
+                                      child: Container(),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                    ],
-                  );
-                },
+                        const SizedBox(height: 10),
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          child: Container(
+                            key: ValueKey(_chartSelectedIndex ?? -1),
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _chartSelectedIndex == null
+                                  ? AppColors.greenPale.withAlpha(90)
+                                  : AppColors.greenDark.withAlpha(18),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: _chartSelectedIndex == null
+                                    ? AppColors.greenMid.withAlpha(36)
+                                    : AppColors.greenDark.withAlpha(60),
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _chartSelectionTitle(),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: _chartSelectedIndex == null
+                                        ? AppColors.textMuted
+                                        : AppColors.greenDark,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Pinch to zoom, drag to pan, hover or tap a point',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: AppColors.textMuted.withAlpha(210),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+          const SizedBox(height: 8),
+          if (_historyData.isNotEmpty)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _historyData.first['label'],
+                  style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                ),
+                if (_historyData.length > 2)
+                  Text(
+                    _historyData[_historyData.length ~/ 2]['label'],
+                    style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                  ),
+                Text(
+                  _historyData.last['label'],
+                  style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAlgorithmPlaceholderCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Algorithm Graph',
+            style: TextStyle(
+              fontFamily: 'Outfit',
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Placeholder for the full history algorithm graph.',
+            style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+          ),
+          const SizedBox(height: 20),
+          Container(
+            height: 160,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: AppColors.greenPale.withAlpha(70),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: AppColors.greenMid.withAlpha(28)),
+            ),
+            child: const Center(
+              child: Text(
+                'Coming soon',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textMuted,
+                ),
               ),
-        const SizedBox(height: 8),
-        if (_historyData.isNotEmpty)
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(_historyData.first['label'],
-                style:
-                    const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            if (_historyData.length > 2)
-              Text(_historyData[_historyData.length ~/ 2]['label'],
-                  style:
-                      const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            Text(_historyData.last['label'],
-                style:
-                    const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-          ]),
-      ]),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
