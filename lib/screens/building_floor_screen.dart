@@ -1265,6 +1265,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final status = device['status'] as String? ?? 'offline';
     final relay = device['relay'] as bool? ?? false;
     final isOnline = status == 'online';
+    final isActive = relay;
     final color = _utilityColor(utility);
 
     return Container(
@@ -1273,10 +1274,10 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: relay && isOnline
+          color: isActive
               ? color.withAlpha(102)
               : AppColors.greenMid.withAlpha(26),
-          width: relay && isOnline ? 1.5 : 1,
+          width: isActive ? 1.5 : 1,
         ),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1290,7 +1291,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
             ),
             child: _AnimatedUtilityIcon(
               utility: utility,
-              isOn: relay && isOnline,
+              isOn: isActive,
               isOnline: isOnline,
             ),
           ),
@@ -1300,7 +1301,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               height: 8,
               decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: isOnline ? AppColors.success : AppColors.offline)),
+                  color: isActive ? AppColors.success : AppColors.offline)),
         ]),
         const SizedBox(height: 6),
         Text(_utilityLabel(utility),
@@ -1312,13 +1313,11 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         Text(deviceId,
             style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
             overflow: TextOverflow.ellipsis),
-        Text(isOnline ? (relay ? 'ON' : 'OFF') : 'Offline',
+        Text(isActive ? 'ON' : 'OFF',
             style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
-                color: isOnline
-                    ? (relay ? AppColors.success : AppColors.textMuted)
-                    : AppColors.offline)),
+            color: isActive ? AppColors.success : AppColors.offline)),
         const Spacer(),
         Row(children: [
           Expanded(
@@ -1432,7 +1431,7 @@ class _AnimatedUtilityIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final icon = _iconForUtility(utility);
-    final isActiveHighlight = isOnline && isOn;
+    final isActiveHighlight = isOn;
     const highlight = Color(0xFFF2C94C);
 
     final fill = isActiveHighlight

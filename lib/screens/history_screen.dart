@@ -333,6 +333,50 @@ class _HistoryScreenState extends State<HistoryScreen> {
   double get _totalCost =>
       _historyData.fold(0, (s, d) => s + (d['cost'] as num).toDouble());
 
+  /// Compute totals for the currently-selected range but limited to the
+  /// "current period" (today / this week / this month / this year).
+  Map<String, double> _currentPeriodTotals() {
+    final entries = _parseRangeEntries(
+      _historyRoot,
+      _range,
+      _deletedEntriesByRange[_range] ?? {},
+    );
+
+    if (entries.isEmpty) return {'kwh': 0.0, 'cost': 0.0};
+
+    final now = DateTime.now();
+    final currentLabel = _rangeLabel(now, _range);
+
+    final filtered = entries.where((e) {
+      final label = e['label'].toString();
+      if (_range == 'monthly') {
+        // monthly labels are YYYY-MM, keep any label within current month
+        return label.startsWith(currentLabel);
+      }
+      // daily, weekly, yearly labels should match exactly
+      return label == currentLabel;
+    }).toList();
+
+    final kwh = filtered.fold<double>(0.0, (s, e) => s + (e['kwh'] as double));
+    final cost = filtered.fold<double>(0.0, (s, e) => s + (e['cost'] as double));
+    return {'kwh': kwh, 'cost': cost};
+  }
+
+  String _currentPeriodLabel() {
+    switch (_range) {
+      case 'daily':
+        return 'Today';
+      case 'weekly':
+        return 'This week';
+      case 'monthly':
+        return 'This month';
+      case 'yearly':
+        return 'This year';
+      default:
+        return '';
+    }
+  }
+
   double _chartMaxForRange(String range) {
     switch (range) {
       case 'daily':
@@ -1301,18 +1345,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildSummaryRow() {
+    final totals = _currentPeriodTotals();
+    final periodLabel = _currentPeriodLabel();
     return Row(children: [
       Expanded(
-          child: _summaryCard(
-              'Total kWh', '${_totalKwh.toStringAsFixed(1)} kWh', Icons.bolt)),
+        child: _summaryCard('Total kWh', '${totals['kwh']!.toStringAsFixed(1)} kWh', Icons.bolt, subtitle: periodLabel)),
       const SizedBox(width: 12),
       Expanded(
-          child: _summaryCard('Total Cost',
-              '₱ ${_totalCost.toStringAsFixed(0)}', Icons.payments_outlined)),
+        child: _summaryCard('Total Cost', '₱ ${totals['cost']!.toStringAsFixed(0)}', Icons.payments_outlined, subtitle: periodLabel)),
     ]);
   }
 
-  Widget _summaryCard(String label, String value, IconData icon) {
+  Widget _summaryCard(String label, String value, IconData icon, {String? subtitle}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1329,8 +1373,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
+        const SizedBox(height: 6),
         Text(label,
             style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(subtitle,
+              style: const TextStyle(fontSize: 11, color: AppColors.textMid)),
+        ],
       ]),
     );
   }

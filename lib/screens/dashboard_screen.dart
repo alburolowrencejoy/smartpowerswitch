@@ -2214,21 +2214,6 @@ class _LineChartPainter extends CustomPainter {
           (p.dx + c.dx) / 2, p.dy, (p.dx + c.dx) / 2, c.dy, c.dx, c.dy);
     }
     canvas.drawPath(linePath, linePaint);
-    for (int i = 0; i < data.length; i++) {
-      canvas.drawCircle(
-          off(i),
-          3.5,
-          Paint()
-            ..color = AppColors.greenDark
-            ..style = PaintingStyle.fill);
-      canvas.drawCircle(
-          off(i),
-          3.5,
-          Paint()
-            ..color = Colors.white
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5);
-    }
   }
 
   @override

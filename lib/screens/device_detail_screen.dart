@@ -52,6 +52,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       building: widget.building,
       room: widget.room,
     );
+    _loadPersistedReading();
     _listenToDevice();
     _fetchRate();
   }
@@ -93,7 +94,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
       // Calculate delta from PZEM meter reading
       double kwhDelta = 0.0;
-      if (_lastReportedMeterKwh > 0.0) {
+      if (_lastReportedMeterKwh >= 0.0) {
         kwhDelta = meterKwh - _lastReportedMeterKwh;
         // If meter reset detected (new reading < old), use new reading as delta
         if (kwhDelta < 0.0) {
@@ -139,6 +140,28 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         _lastRecordedSeen = lastSeen;
       }
     });
+  }
+
+  Future<void> _loadPersistedReading() async {
+    try {
+      final snap = await FirebaseDatabase.instance
+          .ref('readings/${widget.building}/${widget.room}/${widget.deviceId}')
+          .get();
+
+      if (!mounted || snap.value == null || snap.value is! Map) return;
+
+      final data = Map<String, dynamic>.from(snap.value as Map);
+      final cumulative = (data['cumulative_kwh'] as num?)?.toDouble();
+      if (cumulative == null) return;
+
+      setState(() {
+        _lastValidEnergy = cumulative;
+        _lastReportedMeterKwh = cumulative;
+        _hasPzemReadings = true;
+      });
+    } catch (e) {
+      debugPrint('[DeviceDetail] Failed to load persisted reading: $e');
+    }
   }
 
   void _fetchRate() {
