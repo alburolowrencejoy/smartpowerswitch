@@ -332,13 +332,134 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _historyData.fold(0, (s, d) => s + (d['kwh'] as num).toDouble());
   double get _totalCost =>
       _historyData.fold(0, (s, d) => s + (d['cost'] as num).toDouble());
-  double get _maxKwh => _historyData.isEmpty
-      ? 1
-      : _historyData.fold(
-          0.0,
-          (m, d) => (d['kwh'] as num).toDouble() > m
-              ? (d['kwh'] as num).toDouble()
-              : m);
+
+  double _chartMaxForRange(String range) {
+    switch (range) {
+      case 'daily':
+        return 50.0;
+      case 'weekly':
+        return 100.0;
+      case 'monthly':
+        return 150.0;
+      case 'yearly':
+        return 1000.0;
+      default:
+        return 100.0;
+    }
+  }
+
+  String _formatAxisTick(double value) {
+    final rounded = value.roundToDouble();
+    if ((value - rounded).abs() < 0.001) {
+      return rounded.toInt().toString();
+    }
+    return value.toStringAsFixed(1);
+  }
+
+  List<String> _chartYAxisLabels() {
+    final max = _chartMaxForRange(_range);
+    const segments = 5;
+    final step = max / segments;
+    return List<String>.generate(
+      segments + 1,
+      (i) => _formatAxisTick(max - (step * i)),
+    );
+  }
+
+  List<Map<String, dynamic>> _dailyHistoryEntries() {
+    return _parseRangeEntries(
+      _historyRoot,
+      'daily',
+      _deletedEntriesByRange['daily'] ?? const {},
+    );
+  }
+
+  List<double> _forecastValues(List<double> history, int horizon) {
+    if (history.isEmpty) return List<double>.filled(horizon, 0.0);
+    if (history.length == 1) {
+      return List<double>.filled(horizon, history.first < 0 ? 0.0 : history.first);
+    }
+
+    final n = history.length.toDouble();
+    final meanX = (n - 1) / 2.0;
+    final meanY = history.fold<double>(0.0, (sum, value) => sum + value) / n;
+    double numerator = 0.0;
+    double denominator = 0.0;
+
+    for (var i = 0; i < history.length; i++) {
+      final dx = i - meanX;
+      final dy = history[i] - meanY;
+      numerator += dx * dy;
+      denominator += dx * dx;
+    }
+
+    final slope = denominator == 0 ? 0.0 : numerator / denominator;
+    final intercept = meanY - slope * meanX;
+
+    return List<double>.generate(horizon, (i) {
+      final x = history.length + i;
+      final value = intercept + slope * x;
+      return value < 0 ? 0.0 : value;
+    });
+  }
+
+  double _averageRateFromEntries(List<Map<String, dynamic>> entries) {
+    double totalKwh = 0.0;
+    double totalCost = 0.0;
+
+    for (final entry in entries) {
+      totalKwh += (entry['kwh'] as num).toDouble();
+      totalCost += (entry['cost'] as num).toDouble();
+    }
+
+    if (totalKwh <= 0) return 0.0;
+    return totalCost / totalKwh;
+  }
+
+  DateTime? _tryParseDailyLabel(String label) => DateTime.tryParse(label);
+
+  String _formatDailyLabel(DateTime date) =>
+      '${date.year}-${_pad(date.month)}-${_pad(date.day)}';
+
+  _PredictionSeries? _buildPredictionSeries() {
+    final dailyEntries = _dailyHistoryEntries();
+    if (dailyEntries.isEmpty) return null;
+
+    final actualValues = dailyEntries
+        .map((entry) => (entry['kwh'] as num).toDouble())
+        .toList();
+    final actualLabels = dailyEntries
+        .map((entry) => entry['label'].toString())
+        .toList();
+
+    final regressionWindow = actualValues.length > 90
+        ? actualValues.sublist(actualValues.length - 90)
+        : actualValues;
+    final forecastValues = _forecastValues(regressionWindow, 30);
+
+    final lastLabel = actualLabels.isNotEmpty ? actualLabels.last : null;
+    final lastDate = lastLabel == null ? null : _tryParseDailyLabel(lastLabel);
+    final forecastLabels = <String>[];
+    if (lastDate != null) {
+      for (var i = 1; i <= forecastValues.length; i++) {
+        forecastLabels.add(_formatDailyLabel(lastDate.add(Duration(days: i))));
+      }
+    }
+
+    final predictedKwh = forecastValues.fold<double>(0.0, (sum, value) => sum + value);
+    final averageRate = _averageRateFromEntries(dailyEntries);
+    final predictedBill = predictedKwh * averageRate;
+
+    return _PredictionSeries(
+      actualValues: actualValues,
+      actualLabels: actualLabels,
+      forecastValues: forecastValues,
+      forecastLabels: forecastLabels,
+      predictedKwh: predictedKwh,
+      predictedBill: predictedBill,
+      averageRate: averageRate,
+    );
+  }
 
   // ── CSV Export ───────────────────────────────────────────────────────────────
   double _asDouble(dynamic value) {
@@ -956,7 +1077,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     const SizedBox(height: 20),
                     _buildLineChart(),
                     const SizedBox(height: 20),
-                    _buildAlgorithmPlaceholderCard(),
+                    _buildPredictionCard(),
                     const SizedBox(height: 20),
                     _buildDeviceStatusCard(),
                     const SizedBox(height: 20),
@@ -1041,13 +1162,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
           decoration: BoxDecoration(
               color: AppColors.greenPale,
               borderRadius: BorderRadius.circular(12)),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: _ranges.map((r) {
-                final isSelected = _range == r['key'];
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Row(
+            children: _ranges.asMap().entries.map((entry) {
+              final index = entry.key;
+              final r = entry.value;
+              final isSelected = _range == r['key'];
+              return Expanded(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    index == 0 ? 6 : 3,
+                    6,
+                    index == _ranges.length - 1 ? 6 : 3,
+                    6,
+                  ),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: () => _setRange(r['key']!),
@@ -1059,7 +1186,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
                         children: [
                           Flexible(
                             child: Text(
@@ -1073,19 +1199,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 6),
+                          const SizedBox(width: 4),
                           Builder(builder: (btnContext) {
                             return GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onTapDown: (details) => _showRangeDropdown(
-                                  btnContext, r['key']!, details.globalPosition),
+                                btnContext,
+                                r['key']!,
+                                details.globalPosition,
+                              ),
                               child: SizedBox(
-                                width: 28,
-                                height: 28,
+                                width: 24,
+                                height: 24,
                                 child: Center(
                                   child: Icon(
                                     Icons.arrow_drop_down,
-                                    size: 22,
+                                    size: 20,
                                     color: isSelected ? Colors.white : AppColors.textMid,
                                   ),
                                 ),
@@ -1096,9 +1225,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       ),
                     ),
                   ),
-                );
-              }).toList(),
-            ),
+                ),
+              );
+            }).toList(),
           ),
         ),
 
@@ -1122,7 +1251,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final btnTopLeft = btnBox.localToGlobal(Offset.zero, ancestor: overlay);
     final left = btnTopLeft.dx;
     final top = btnTopLeft.dy + btnBox.size.height;
-    final right = overlay.size.width - left - btnBox.size.width;
     final bottom = overlay.size.height - top;
 
     final rawMenuWidth = btnBox.size.width + 24;
@@ -1209,6 +1337,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Widget _buildLineChart() {
     final canSwitchChart = _historyData.length > 1;
+    final yAxisLabels = _chartYAxisLabels();
+    final chartMaxKwh = _chartMaxForRange(_range);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1277,36 +1407,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              SizedBox(
+                                SizedBox(
                                 width: 38,
                                 height: 160,
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: const [
-                                    Text('200',
-                                        style: TextStyle(
+                                  children: yAxisLabels
+                                      .map(
+                                        (label) => Text(
+                                          label,
+                                          style: const TextStyle(
                                             fontSize: 10,
-                                            color: AppColors.textMuted)),
-                                    Text('150',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.textMuted)),
-                                    Text('100',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.textMuted)),
-                                    Text('50',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.textMuted)),
-                                    Text('0',
-                                        style: TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.textMuted)),
-                                  ],
+                                            color: AppColors.textMuted,
+                                          ),
+                                        ),
+                                      )
+                                      .toList(),
                                 ),
-                              ),
+                                ),
                               const SizedBox(width: 8),
                               GestureDetector(
                                 behavior: HitTestBehavior.opaque,
@@ -1323,12 +1442,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                       painter: _trendChartType == 'bar'
                                           ? _BarChartPainter(
                                               data: values,
-                                              maxKwh: _maxKwh,
+                                              maxKwh: chartMaxKwh,
                                               selectedIndex: _chartSelectedIndex,
                                             )
                                           : _LineChartPainter(
                                               data: values,
-                                              maxKwh: _maxKwh,
+                                              maxKwh: chartMaxKwh,
                                               selectedIndex: _chartSelectedIndex,
                                             ),
                                       child: Container(),
@@ -1416,7 +1535,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  Widget _buildAlgorithmPlaceholderCard() {
+  Widget _buildPredictionCard() {
+    final series = _buildPredictionSeries();
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1428,7 +1549,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Algorithm Graph',
+            'Next Month Prediction',
             style: TextStyle(
               fontFamily: 'Outfit',
               fontSize: 14,
@@ -1437,32 +1558,149 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Placeholder for the full history algorithm graph.',
-            style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+          Text(
+            series == null
+                ? 'Waiting for daily RTDB history data.'
+                : 'Forecast derived from live daily history in RTDB.',
+            style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
           ),
           const SizedBox(height: 20),
-          Container(
-            height: 160,
-            width: double.infinity,
-            decoration: BoxDecoration(
-              color: AppColors.greenPale.withAlpha(70),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: AppColors.greenMid.withAlpha(28)),
-            ),
-            child: const Center(
-              child: Text(
-                'Coming soon',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textMuted,
+          if (series == null || series.actualValues.length < 2)
+            Container(
+              height: 160,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: AppColors.greenPale.withAlpha(70),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.greenMid.withAlpha(28)),
+              ),
+              child: const Center(
+                child: Text(
+                  'Need at least 2 daily points to forecast',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textMuted,
+                  ),
                 ),
               ),
+            )
+          else ...[
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final actualWindow = series.actualValues.length > 90
+                    ? series.actualValues.sublist(series.actualValues.length - 90)
+                    : series.actualValues;
+                final chartWidth = constraints.maxWidth;
+                final chartHeight = 180.0;
+                final chartMax = [
+                  ...actualWindow,
+                  ...series.forecastValues,
+                ].fold<double>(0.0, (maxValue, value) => value > maxValue ? value : maxValue);
+                final safeMax = chartMax <= 0 ? 1.0 : chartMax * 1.1;
+
+                return Column(
+                  children: [
+                    SizedBox(
+                      width: chartWidth,
+                      height: chartHeight,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: CustomPaint(
+                          painter: _ForecastChartPainter(
+                            actualData: actualWindow,
+                            forecastData: series.forecastValues,
+                            maxKwh: safeMax,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _miniForecastStat(
+                            'Projected 30-day kWh',
+                            series.predictedKwh.toStringAsFixed(2),
+                            Icons.bolt,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _miniForecastStat(
+                            'Estimated bill',
+                            '₱ ${series.predictedBill.toStringAsFixed(2)}',
+                            Icons.payments_outlined,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _forecastLegendDot('Actual', const Color(0xFF2E9E52)),
+                        _forecastLegendDot('Forecast', const Color(0xFFF59E0B)),
+                        Text(
+                          'Avg rate: ₱ ${series.averageRate.toStringAsFixed(2)}/kWh',
+                          style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _miniForecastStat(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.greenPale.withAlpha(65),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.greenMid.withAlpha(28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: AppColors.greenDark),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              fontFamily: 'Outfit',
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _forecastLegendDot(String label, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 5),
+        Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+      ],
     );
   }
 
@@ -1878,8 +2116,8 @@ class _LineChartPainter extends CustomPainter {
     final gridPaint = Paint()
       ..color = const Color(0xFF2E9E52).withAlpha(20)
       ..strokeWidth = 1;
-    for (int i = 1; i < 4; i++) {
-      final y = size.height * i / 4;
+    for (int i = 1; i < 5; i++) {
+      final y = size.height * i / 5;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
     }
 
@@ -1957,8 +2195,8 @@ class _BarChartPainter extends CustomPainter {
     final gridPaint = Paint()
       ..color = const Color(0xFF2E9E52).withAlpha(20)
       ..strokeWidth = 1;
-    for (int i = 1; i < 4; i++) {
-      final y = size.height * i / 4;
+    for (int i = 1; i < 5; i++) {
+      final y = size.height * i / 5;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
     }
 
@@ -2004,4 +2242,159 @@ class _BarChartPainter extends CustomPainter {
   @override
   bool shouldRepaint(_BarChartPainter old) =>
       old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
+}
+
+class _PredictionSeries {
+  _PredictionSeries({
+    required this.actualValues,
+    required this.actualLabels,
+    required this.forecastValues,
+    required this.forecastLabels,
+    required this.predictedKwh,
+    required this.predictedBill,
+    required this.averageRate,
+  });
+
+  final List<double> actualValues;
+  final List<String> actualLabels;
+  final List<double> forecastValues;
+  final List<String> forecastLabels;
+  final double predictedKwh;
+  final double predictedBill;
+  final double averageRate;
+}
+
+class _ForecastChartPainter extends CustomPainter {
+  final List<double> actualData;
+  final List<double> forecastData;
+  final double maxKwh;
+
+  _ForecastChartPainter({
+    required this.actualData,
+    required this.forecastData,
+    required this.maxKwh,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (actualData.isEmpty) return;
+
+    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
+    final allData = <double>[...actualData, ...forecastData];
+    final totalCount = allData.length;
+    final stepX = totalCount < 2 ? 0.0 : size.width / (totalCount - 1);
+
+    Offset off(int i) {
+      final x = totalCount == 1 ? size.width / 2 : i * stepX;
+      final y = size.height - (allData[i] / safeMaxKwh) * size.height;
+      return Offset(x, y.clamp(0.0, size.height));
+    }
+
+    final gridPaint = Paint()
+      ..color = const Color(0xFF2E9E52).withAlpha(18)
+      ..strokeWidth = 1;
+    for (int i = 1; i < 5; i++) {
+      final y = size.height * i / 5;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+    }
+
+    final boundaryIndex = actualData.length - 1;
+    if (boundaryIndex >= 0) {
+      final boundaryX = off(boundaryIndex).dx;
+      canvas.drawLine(
+        Offset(boundaryX, 0),
+        Offset(boundaryX, size.height),
+        Paint()
+          ..color = const Color(0xFFF59E0B).withAlpha(60)
+          ..strokeWidth = 1,
+      );
+    }
+
+    if (actualData.length >= 2) {
+      final actualPath = Path()..moveTo(off(0).dx, off(0).dy);
+      for (int i = 1; i < actualData.length; i++) {
+        final prev = off(i - 1);
+        final curr = off(i);
+        final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+        final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+        actualPath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+      }
+
+      final fillPath = Path()
+        ..moveTo(off(0).dx, size.height)
+        ..lineTo(off(0).dx, off(0).dy);
+      for (int i = 1; i < actualData.length; i++) {
+        final prev = off(i - 1);
+        final curr = off(i);
+        final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+        final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+        fillPath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+      }
+      fillPath
+        ..lineTo(off(actualData.length - 1).dx, size.height)
+        ..close();
+
+      canvas.drawPath(
+        fillPath,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF2E9E52).withAlpha(70),
+              const Color(0xFF2E9E52).withAlpha(0),
+            ],
+          ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)),
+      );
+      canvas.drawPath(
+        actualPath,
+        Paint()
+          ..color = const Color(0xFF2E9E52)
+          ..strokeWidth = 2.5
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+    } else {
+      canvas.drawCircle(
+        off(0),
+        4.0,
+        Paint()..color = const Color(0xFF2E9E52),
+      );
+    }
+
+    if (forecastData.isNotEmpty) {
+      final forecastPath = Path();
+      final startIndex = actualData.length - 1;
+      forecastPath.moveTo(off(startIndex).dx, off(startIndex).dy);
+      for (int i = actualData.length; i < allData.length; i++) {
+        final prev = off(i - 1);
+        final curr = off(i);
+        final cp1 = Offset((prev.dx + curr.dx) / 2, prev.dy);
+        final cp2 = Offset((prev.dx + curr.dx) / 2, curr.dy);
+        forecastPath.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, curr.dx, curr.dy);
+      }
+      canvas.drawPath(
+        forecastPath,
+        Paint()
+          ..color = const Color(0xFFF59E0B)
+          ..strokeWidth = 2.5
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+
+      canvas.drawCircle(
+        off(actualData.length - 1),
+        4.5,
+        Paint()..color = const Color(0xFFF59E0B),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ForecastChartPainter old) =>
+      old.actualData != actualData ||
+      old.forecastData != forecastData ||
+      old.maxKwh != maxKwh;
 }
