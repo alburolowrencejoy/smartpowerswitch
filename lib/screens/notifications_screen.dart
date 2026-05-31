@@ -126,12 +126,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return;
     }
 
+    // Inform the user the download is starting.
+    TopToast.threshold(context, 'Downloading update...');
     final opened = await DownloadOpenService.downloadAndOpenRemoteFile(
       rawUrl,
       suggestedFileName: assetName,
     );
     if (!opened && mounted) {
-      TopToast.error(context, 'Unable to download and open the file.');
+      TopToast.error(context, 'Unable to download or open the update. Opening release page instead.');
+      // Try opening the release page in browser as a fallback
+      await DownloadOpenService.openRemoteUrl(rawUrl);
+    } else if (opened && mounted) {
+      TopToast.success(context, 'Update downloaded and opened.');
     }
   }
 
@@ -469,17 +475,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final timestamp = notif['timestamp'] as int? ?? 0;
     final isHigh = type == 'high_consumption';
     final isUpdate = type == 'app_update';
+    final isRateChange = type == 'rate_change' || type == 'rate_change_manual' || type == 'rate_change_manual';
 
-    final color = isUpdate
+    final color = isRateChange
+      ? AppColors.greenMid
+      : isUpdate
         ? AppColors.greenMid
         : isHigh
-            ? AppColors.warning
-            : AppColors.error;
-    final icon = isUpdate
+          ? AppColors.warning
+          : AppColors.error;
+    final icon = isRateChange
+      ? Icons.check_circle
+      : isUpdate
         ? Icons.system_update_alt_outlined
         : isHigh
-            ? Icons.warning_amber_outlined
-            : Icons.wifi_off;
+          ? Icons.warning_amber_outlined
+          : Icons.wifi_off;
     final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
     final timeStr =
         '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}  ${dt.day}/${dt.month}/${dt.year}';

@@ -72,14 +72,25 @@ async function fetchLatestRate() {
  * @returns {number|null} The extracted rate as a number, or null if not found
  */
 function parseRateFromHtml(htmlContent) {
+  const ctxLower = htmlContent.toLowerCase();
+  function isNearKwh(start, end) {
+    const left = Math.max(0, start - 40);
+    const right = Math.min(htmlContent.length, end + 40);
+    const ctx = ctxLower.substring(left, right);
+    return ctx.includes('kwh') || ctx.includes('/kwh') || ctx.includes('per kwh');
+  }
   // Strategy 1: Look for "PHP X.XXXX" pattern
   const phpPattern = /PHP\s*([\d.]+)/i;
-  let match = phpPattern.exec(htmlContent);
+  match = phpPattern.exec(htmlContent);
   if (match && match[1]) {
     const rate = parseFloat(match[1]);
     if (rate > 0 && rate < 100) {
-      console.log(`${LOG_PREFIX} Found rate via PHP pattern: $${rate}`);
-      return rate;
+      const start = match.index || 0;
+      const end = start + match[0].length;
+      if (isNearKwh(start, end) || rate >= 5.0) {
+        console.log(`${LOG_PREFIX} Found rate via PHP pattern: $${rate}`);
+        return rate;
+      }
     }
   }
 
@@ -90,8 +101,12 @@ function parseRateFromHtml(htmlContent) {
     if (match[1]) {
       const rate = parseFloat(match[1]);
       if (rate > 0 && rate < 100) {
-        console.log(`${LOG_PREFIX} Found rate via dollar pattern: $${rate}`);
-        return rate;
+        const start = match.index || 0;
+        const end = start + match[0].length;
+        if (isNearKwh(start, end) || rate >= 5.0) {
+          console.log(`${LOG_PREFIX} Found rate via dollar pattern: $${rate}`);
+          return rate;
+        }
       }
     }
     match = dollarPattern.exec(htmlContent);
@@ -103,8 +118,12 @@ function parseRateFromHtml(htmlContent) {
   if (match && match[1]) {
     const rate = parseFloat(match[1]);
     if (rate > 0 && rate < 100) {
-      console.log(`${LOG_PREFIX} Found rate via rate pattern: $${rate}`);
-      return rate;
+      const start = match.index || 0;
+      const end = start + match[0].length;
+      if (isNearKwh(start, end) || rate >= 5.0) {
+        console.log(`${LOG_PREFIX} Found rate via rate pattern: $${rate}`);
+        return rate;
+      }
     }
   }
 

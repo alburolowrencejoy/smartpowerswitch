@@ -179,17 +179,25 @@ class DavaoLightRateMonitor {
   /// Returns:
   ///   The extracted rate as a double, or null if no valid rate was found.
   double? _parseRateFromHtml(String htmlContent) {
-    // Strategy 1: Look for "PHP X.XXXX" pattern
+    // Helper: check if the match is near a 'kWh' context
+    bool _isNearKwh(int start, int end) {
+      final left = (start - 40).clamp(0, htmlContent.length);
+      final right = (end + 40).clamp(0, htmlContent.length);
+      final ctx = htmlContent.substring(left, right).toLowerCase();
+      return ctx.contains('kwh') || ctx.contains('/kwh') || ctx.contains('per kwh');
+    }
+
+    // Strategy 1: Look for "PHP X.XXXX" pattern but prefer matches near kWh context
     final phpPattern = RegExp(r'PHP\s*([\d.]+)', caseSensitive: false);
-    final phpMatch = phpPattern.firstMatch(htmlContent);
-    if (phpMatch != null) {
-      final rateStr = phpMatch.group(1);
-      if (rateStr != null) {
-        final rate = double.tryParse(rateStr);
-        if (rate != null && rate > 0 && rate < 100) {
-          debugPrint('$_logPrefix Found rate via PHP pattern: \$$rate');
-          return rate;
-        }
+    for (final m in phpPattern.allMatches(htmlContent)) {
+      final rateStr = m.group(1);
+      if (rateStr == null) continue;
+      final rate = double.tryParse(rateStr);
+      if (rate == null) continue;
+      if (!(rate > 0 && rate < 100)) continue;
+      if (_isNearKwh(m.start, m.end) || rate >= 5.0) {
+        debugPrint('$_logPrefix Found rate via PHP pattern: \$$rate');
+        return rate;
       }
     }
 
@@ -198,12 +206,13 @@ class DavaoLightRateMonitor {
     final dollarPattern = RegExp(r'\$\s*([\d.]+)');
     for (final match in dollarPattern.allMatches(htmlContent)) {
       final rateStr = match.group(1);
-      if (rateStr != null) {
-        final rate = double.tryParse(rateStr);
-        if (rate != null && rate > 0 && rate < 100) {
-          debugPrint('$_logPrefix Found rate via dollar pattern: \$$rate');
-          return rate;
-        }
+      if (rateStr == null) continue;
+      final rate = double.tryParse(rateStr);
+      if (rate == null) continue;
+      if (!(rate > 0 && rate < 100)) continue;
+      if (_isNearKwh(match.start, match.end) || rate >= 5.0) {
+        debugPrint('$_logPrefix Found rate via dollar pattern: \$$rate');
+        return rate;
       }
     }
 
@@ -212,12 +221,13 @@ class DavaoLightRateMonitor {
       r'rate\s*[:\=]?\s*(?:php\s*)?([\d.]+)',
       caseSensitive: false,
     );
-    final rateMatch = ratePattern.firstMatch(htmlContent);
-    if (rateMatch != null) {
-      final rateStr = rateMatch.group(1);
-      if (rateStr != null) {
-        final rate = double.tryParse(rateStr);
-        if (rate != null && rate > 0 && rate < 100) {
+    for (final m in ratePattern.allMatches(htmlContent)) {
+      final rateStr = m.group(1);
+      if (rateStr == null) continue;
+      final rate = double.tryParse(rateStr);
+      if (rate == null) continue;
+      if (rate > 0 && rate < 100) {
+        if (_isNearKwh(m.start, m.end) || rate >= 5.0) {
           debugPrint('$_logPrefix Found rate via rate pattern: \$$rate');
           return rate;
         }

@@ -1455,18 +1455,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ? 'Good afternoon'
             : 'Good evening';
     return Row(children: [
-      Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(greeting,
+          style: TextStyle(fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
+        Row(children: [
+          Text(_userName.isNotEmpty ? _userName : 'User',
             style: TextStyle(
-                fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
-        Text(_userName.isNotEmpty ? _userName : 'User',
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: compact ? 19 : 22,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
+              fontFamily: 'Outfit',
+              fontSize: compact ? 19 : 22,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textDark)),
+          if (_role == 'admin') ...[
+            const SizedBox(width: 8),
+            Icon(Icons.star, size: compact ? 18 : 22, color: AppColors.greenLight),
+          ],
+        ]),
       ])),
       Container(
         padding: EdgeInsets.symmetric(
@@ -1511,9 +1514,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('This Month Energy Consumed',
+            Text('Energy consumed this mnth',
               style: TextStyle(
-                  fontSize: compact ? 11 : 12, color: const Color(0xB3C2EDD0))),
+                fontSize: compact ? 11 : 12, color: const Color(0xB3C2EDD0))),
           SizedBox(height: compact ? 4 : 6),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text(_safeFormatDouble(_monthlyKwh, 2),

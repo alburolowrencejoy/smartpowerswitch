@@ -345,16 +345,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     final assetUrl = release.assetUrl ?? '';
-    final opened = assetUrl.isNotEmpty
-        ? await DownloadOpenService.downloadAndOpenRemoteFile(
-            assetUrl,
-            suggestedFileName: release.assetName,
-          )
-        : await DownloadOpenService.openRemoteUrl(release.releaseUrl);
+    if (assetUrl.isEmpty) {
+      // No direct asset — open the release page
+      final openedUrl = await DownloadOpenService.openRemoteUrl(release.releaseUrl);
+      if (!openedUrl && mounted) {
+        TopToast.show(context, 'Could not open the release page.', isError: true);
+      }
+      return;
+    }
 
+    TopToast.threshold(context, 'Downloading update...');
+    final opened = await DownloadOpenService.downloadAndOpenRemoteFile(
+      assetUrl,
+      suggestedFileName: release.assetName,
+    );
     if (!opened && mounted) {
-      TopToast.show(context, 'Could not open the download link.',
-          isError: true);
+      TopToast.error(context, 'Unable to download or open the update. Opening release page instead.');
+      await DownloadOpenService.openRemoteUrl(release.releaseUrl);
+    } else if (opened && mounted) {
+      TopToast.success(context, 'Update downloaded and opened.');
     }
   }
 

@@ -28,23 +28,31 @@ class DownloadOpenService {
     }
 
     try {
-      final response = await http.get(uri);
-      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+      final client = http.Client();
+      try {
+        final request = http.Request('GET', uri);
+        request.headers['User-Agent'] = 'SmartPowerSwitch-Updater';
+        final streamed = await client.send(request).timeout(const Duration(seconds: 30));
+        if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+          return launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+
+        final bytes = await streamed.stream.toBytes();
+        if (bytes.isEmpty) return launchUrl(uri, mode: LaunchMode.externalApplication);
+
+        final directory = await getTemporaryDirectory();
+        final fileName = _resolveFileName(uri, suggestedFileName);
+        final file = File('${directory.path}/$fileName');
+        await file.writeAsBytes(bytes, flush: true);
+
+        final result = await OpenFilex.open(file.path);
+        if (result.type == ResultType.done) return true;
         return launchUrl(uri, mode: LaunchMode.externalApplication);
+      } finally {
+        client.close();
       }
-
-      final directory = await getTemporaryDirectory();
-      final fileName = _resolveFileName(uri, suggestedFileName);
-      final file = File('${directory.path}/$fileName');
-      await file.writeAsBytes(response.bodyBytes, flush: true);
-
-      final result = await OpenFilex.open(file.path);
-      if (result.type == ResultType.done) {
-        return true;
-      }
-
-      return launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
+    } catch (e) {
+      // If anything fails, fallback to opening the remote URL in browser
       return launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }

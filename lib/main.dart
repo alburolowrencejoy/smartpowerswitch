@@ -16,6 +16,7 @@ import 'services/device_service.dart';
 import 'services/update_notification_service.dart';
 import 'services/home_widget_service.dart';
 import 'services/global_readings_listener.dart';
+import 'services/prediction_service.dart';
 import 'theme/app_colors.dart';
 
 void main() async {
@@ -25,12 +26,19 @@ void main() async {
   );
   await RuntimeModeService.initialize();
   // Start global background listener (updates everywhere, no screen required)
-  unawaited(GlobalReadingsListener().initialize());
+  unawaited(() async { await GlobalReadingsListener().initialize(); }());
   // Start background device listener (continues regardless of screen state)
   DeviceService().initialize();
+  // Start in-app periodic prediction service (computes fallback forecasts and
+  // writes them to RTDB). Interval default: 6 hours.
+  unawaited(() async {
+    try {
+      await PredictionService().initialize();
+    } catch (_) {}
+  }());
   // Initialize home screen widget
   await HomeWidgetService.initialize();
-  unawaited(UpdateNotificationService.checkAndNotifyIfNewRelease());
+  unawaited(() async { await UpdateNotificationService.checkAndNotifyIfNewRelease(); }());
   runApp(const SmartPowerSwitchApp());
 }
 

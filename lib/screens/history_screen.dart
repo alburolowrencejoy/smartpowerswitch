@@ -33,6 +33,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   StreamSubscription? _devicesSub;
   StreamSubscription? _historySub;
   StreamSubscription? _deletedSub;
+  StreamSubscription? _settingsSub;
 
   Map<String, dynamic> _historyRoot = {};
   List<Map<String, dynamic>> _historyData = [];
@@ -54,6 +55,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     super.initState();
     _listenDevices();
     _listenHistory();
+    _listenSettings();
   }
 
   @override
@@ -61,7 +63,20 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _devicesSub?.cancel();
     _historySub?.cancel();
     _deletedSub?.cancel();
+    _settingsSub?.cancel();
     super.dispose();
+  }
+
+  double _electricityRate = 11.5;
+
+  void _listenSettings() {
+    _settingsSub = FirebaseDatabase.instance
+        .ref('settings/electricityRate')
+        .onValue
+        .listen((event) {
+      final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
+      if (mounted) setState(() => _electricityRate = rate);
+    }, onError: (_) {});
   }
 
   void _listenDevices() {
@@ -328,10 +343,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  double get _totalKwh =>
-      _historyData.fold(0, (s, d) => s + (d['kwh'] as num).toDouble());
-  double get _totalCost =>
-      _historyData.fold(0, (s, d) => s + (d['cost'] as num).toDouble());
+    // Removed unused total getters (_totalKwh, _totalCost) — totals are
+    // computed via _currentPeriodTotals() or by folding over _historyData
+    // where needed.
 
   /// Compute totals for the currently-selected range but limited to the
   /// "current period" (today / this week / this month / this year).
@@ -492,7 +506,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     final predictedKwh = forecastValues.fold<double>(0.0, (sum, value) => sum + value);
     final averageRate = _averageRateFromEntries(dailyEntries);
-    final predictedBill = predictedKwh * averageRate;
+    final predictedBill = predictedKwh * _electricityRate;
 
     return _PredictionSeries(
       actualValues: actualValues,
@@ -1293,7 +1307,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     if (overlay == null || btnBox == null) return;
 
     final btnTopLeft = btnBox.localToGlobal(Offset.zero, ancestor: overlay);
-    final left = btnTopLeft.dx;
     final top = btnTopLeft.dy + btnBox.size.height;
     final bottom = overlay.size.height - top;
 
@@ -1349,10 +1362,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final periodLabel = _currentPeriodLabel();
     return Row(children: [
       Expanded(
-        child: _summaryCard('Total kWh', '${totals['kwh']!.toStringAsFixed(1)} kWh', Icons.bolt, subtitle: periodLabel)),
+        child: _summaryCard('', '${totals['kwh']!.toStringAsFixed(1)} kWh', Icons.bolt, subtitle: periodLabel)),
       const SizedBox(width: 12),
       Expanded(
-        child: _summaryCard('Total Cost', '₱ ${totals['cost']!.toStringAsFixed(0)}', Icons.payments_outlined, subtitle: periodLabel)),
+        child: _summaryCard('', '₱ ${totals['cost']!.toStringAsFixed(0)}', Icons.payments_outlined, subtitle: periodLabel)),
     ]);
   }
 
@@ -1368,14 +1381,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
         Icon(icon, size: 20, color: AppColors.greenMid),
         const SizedBox(height: 10),
         Text(value,
-            style: const TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
-        const SizedBox(height: 6),
-        Text(label,
+          style: const TextStyle(
+            fontFamily: 'Outfit',
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textDark)),
+        if (label.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(label,
             style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+        ],
         if (subtitle != null) ...[
           const SizedBox(height: 4),
           Text(subtitle,
@@ -1452,61 +1467,63 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         .toList();
                     return Column(
                       children: [
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                                SizedBox(
-                                width: 38,
-                                height: 160,
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: yAxisLabels
-                                      .map(
-                                        (label) => Text(
-                                          label,
-                                          style: const TextStyle(
-                                            fontSize: 10,
-                                            color: AppColors.textMuted,
-                                          ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 38,
+                              height: 160,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: yAxisLabels
+                                    .map(
+                                      (label) => Text(
+                                        label,
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: AppColors.textMuted,
                                         ),
-                                      )
-                                      .toList(),
-                                ),
-                                ),
-                              const SizedBox(width: 8),
-                              GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTapDown: (details) => _updateChartSelection(
-                                  details.localPosition,
-                                  chartSize,
-                                ),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(14),
-                                  child: SizedBox(
-                                    width: chartWidth,
-                                    height: 160,
-                                    child: CustomPaint(
-                                      painter: _trendChartType == 'bar'
-                                          ? _BarChartPainter(
-                                              data: values,
-                                              maxKwh: chartMaxKwh,
-                                              selectedIndex: _chartSelectedIndex,
-                                            )
-                                          : _LineChartPainter(
-                                              data: values,
-                                              maxKwh: chartMaxKwh,
-                                              selectedIndex: _chartSelectedIndex,
-                                            ),
-                                      child: Container(),
+                                      ),
+                                    )
+                                    .toList(),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTapDown: (details) => _updateChartSelection(
+                                    details.localPosition,
+                                    chartSize,
+                                  ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(14),
+                                    child: SizedBox(
+                                      width: chartWidth,
+                                      height: 160,
+                                      child: CustomPaint(
+                                        painter: _trendChartType == 'bar'
+                                            ? _BarChartPainter(
+                                                data: values,
+                                                maxKwh: chartMaxKwh,
+                                                selectedIndex: _chartSelectedIndex,
+                                              )
+                                            : _LineChartPainter(
+                                                data: values,
+                                                maxKwh: chartMaxKwh,
+                                                selectedIndex: _chartSelectedIndex,
+                                              ),
+                                        child: Container(),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 10),
                         AnimatedSwitcher(
@@ -1642,19 +1659,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ? series.actualValues.sublist(series.actualValues.length - 90)
                     : series.actualValues;
                 final chartWidth = constraints.maxWidth;
-                final chartHeight = 180.0;
-                final chartMax = [
-                  ...actualWindow,
-                  ...series.forecastValues,
-                ].fold<double>(0.0, (maxValue, value) => value > maxValue ? value : maxValue);
-                final safeMax = chartMax <= 0 ? 1.0 : chartMax * 1.1;
+                const chartHeight = 180.0;
+                // Force the predictive chart vertical range to 0 - 150
+                const chartMaxFixed = 150.0;
+                final safeMax = chartMaxFixed;
 
                 return Column(
                   children: [
                     SizedBox(
                       width: chartWidth,
                       height: chartHeight,
-                      child: ClipRRect(
+                          child: ClipRRect(
                         borderRadius: BorderRadius.circular(14),
                         child: CustomPaint(
                           painter: _ForecastChartPainter(
@@ -1692,7 +1707,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         _forecastLegendDot('Actual', const Color(0xFF2E9E52)),
                         _forecastLegendDot('Forecast', const Color(0xFFF59E0B)),
                         Text(
-                          'Avg rate: ₱ ${series.averageRate.toStringAsFixed(2)}/kWh',
+                          'Rate: ₱ ${_electricityRate.toStringAsFixed(2)}/kWh',
                           style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
                         ),
                       ],
