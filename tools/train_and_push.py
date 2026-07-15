@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import firebase_admin
-from firebase_admin import credentials, db, storage
+from firebase_admin import credentials, db, storage, exceptions
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -39,7 +39,11 @@ def init_firebase():
 
 def fetch_daily_history():
     ref = db.reference('history/daily')
-    data = ref.get()
+    try:
+        data = ref.get()
+    except exceptions.UnauthenticatedError as e:
+        print(f'Unable to read history/daily from RTDB: {e}')
+        return pd.DataFrame()
     if not isinstance(data, dict):
         return pd.DataFrame()
     rows = []
@@ -145,7 +149,11 @@ def push_forecast(payload):
         'values': payload['values'],
         'predicted_kwh_total': payload['predicted_kwh_total'],
     }
-    ref.set(data)
+    try:
+        ref.set(data)
+    except exceptions.UnauthenticatedError as e:
+        print(f'Unable to write history/predictions/daily to RTDB: {e}')
+        return False
     # also set model URL if provided
     try:
         model_url = payload.get('model_url')
@@ -153,6 +161,7 @@ def push_forecast(payload):
             db.reference('history/predictions/model_url').set(model_url)
     except Exception:
         pass
+    return True
 
 
 def main():
@@ -164,8 +173,8 @@ def main():
         print('Not enough data to train')
         return
     print('Forecast generated, total predicted kWh:', result['predicted_kwh_total'])
-    push_forecast(result)
-    print('Forecast pushed to RTDB at history/predictions/daily')
+    if push_forecast(result):
+        print('Forecast pushed to RTDB at history/predictions/daily')
 
 
 if __name__ == '__main__':
