@@ -1239,7 +1239,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                       decoration: BoxDecoration(
-                        color: isSelected ? AppColors.greenDark : Colors.transparent,
+                        color: isSelected ? AppColors.greenDark : AppColors.greenPale,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
@@ -1253,7 +1253,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
-                                color: isSelected ? Colors.white : AppColors.textMid,
+                                  color: isSelected ? Colors.white : AppColors.greenDark,
                               ),
                             ),
                           ),
@@ -1273,7 +1273,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                   child: Icon(
                                     Icons.arrow_drop_down,
                                     size: 20,
-                                    color: isSelected ? Colors.white : AppColors.textMid,
+                                    color: isSelected ? Colors.white : AppColors.greenDark,
                                   ),
                                 ),
                               ),
@@ -1662,7 +1662,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 const chartHeight = 180.0;
                 // Force the predictive chart vertical range to 0 - 150
                 const chartMaxFixed = 150.0;
-                final safeMax = chartMaxFixed;
+                const safeMax = chartMaxFixed;
 
                 return Column(
                   children: [

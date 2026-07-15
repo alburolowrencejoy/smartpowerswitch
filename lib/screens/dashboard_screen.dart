@@ -1168,7 +1168,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(width: 10),
             const Expanded(
-              child: Text('SmartPowerSwitch',
+              child: Text('Smart Switch',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -1514,12 +1514,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Energy consumed this mnth',
-              style: TextStyle(
-                fontSize: compact ? 11 : 12, color: const Color(0xB3C2EDD0))),
+          Text('Energy consumed today',
+              style: TextStyle(fontSize: compact ? 11 : 12, color: Colors.white)),
           SizedBox(height: compact ? 4 : 6),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text(_safeFormatDouble(_monthlyKwh, 2),
+            Text(_safeFormatDouble(_totalKwh, 2),
                 style: TextStyle(
                     fontFamily: 'Outfit',
                     fontSize: compact ? 32 : 40,
@@ -1530,7 +1529,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Text('kWh',
                     style: TextStyle(
                         fontSize: compact ? 13 : 14,
-                        color: AppColors.greenLight,
+                        color: Colors.white,
                         fontWeight: FontWeight.w500))),
           ]),
           SizedBox(height: compact ? 12 : 16),
@@ -1553,23 +1552,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ]),
       ),
-      SizedBox(height: compact ? 10 : 12),
-      Row(children: [
-        Expanded(
-            child: _statCard('Today', '${_safeFormatDouble(_totalKwh, 1)} kWh',
-                Icons.bolt, AppColors.greenMid,
-                compact: compact)),
-        SizedBox(width: compact ? 8 : 10),
-        Expanded(
-            child: _statCard('Online', '$_assignedDevices devices', Icons.wifi,
-                AppColors.greenLight,
-                compact: compact)),
-        SizedBox(width: compact ? 8 : 10),
-        Expanded(
-            child: _statCard(
-                'Status', 'Live', Icons.check_circle, AppColors.greenPale,
-                textColor: AppColors.greenDark, compact: compact)),
-      ]),
     ]);
   }
 
@@ -1584,7 +1566,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label,
           style: TextStyle(
-              fontSize: compact ? 9 : 10, color: const Color(0x99C2EDD0))),
+              fontSize: compact ? 9 : 10, color: Colors.white)),
       const SizedBox(height: 2),
       Text(value,
           maxLines: 1,
@@ -1675,6 +1657,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: AppColors.textMuted)),
               ])),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(
+                '${_safeFormatDouble(_buildingEnergy[code] ?? 0, 1)} kWh this month',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: compact ? 9 : 10, color: Colors.black)),
+              const SizedBox(height: 3),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -1687,13 +1676,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       fontWeight: FontWeight.w700,
                       color: color)),
             ),
-            const SizedBox(height: 3),
-            Text(
-                '${_safeFormatDouble(_buildingEnergy[code] ?? 0, 1)} kWh this month',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: compact ? 9 : 10, color: AppColors.textMuted)),
           ]),
           const SizedBox(width: 6),
           const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
@@ -1773,7 +1755,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                         color:
-                            isSelected ? Colors.white : AppColors.textMuted))),
+                            isSelected ? Colors.white : AppColors.greenDark))),
           ),
         ));
       }).toList()),

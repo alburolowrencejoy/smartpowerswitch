@@ -180,7 +180,7 @@ class DavaoLightRateMonitor {
   ///   The extracted rate as a double, or null if no valid rate was found.
   double? _parseRateFromHtml(String htmlContent) {
     // Helper: check if the match is near a 'kWh' context
-    bool _isNearKwh(int start, int end) {
+    bool isNearKwh(int start, int end) {
       final left = (start - 40).clamp(0, htmlContent.length);
       final right = (end + 40).clamp(0, htmlContent.length);
       final ctx = htmlContent.substring(left, right).toLowerCase();
@@ -195,7 +195,7 @@ class DavaoLightRateMonitor {
       final rate = double.tryParse(rateStr);
       if (rate == null) continue;
       if (!(rate > 0 && rate < 100)) continue;
-      if (_isNearKwh(m.start, m.end) || rate >= 5.0) {
+      if (isNearKwh(m.start, m.end) || rate >= 5.0) {
         debugPrint('$_logPrefix Found rate via PHP pattern: \$$rate');
         return rate;
       }
@@ -210,7 +210,7 @@ class DavaoLightRateMonitor {
       final rate = double.tryParse(rateStr);
       if (rate == null) continue;
       if (!(rate > 0 && rate < 100)) continue;
-      if (_isNearKwh(match.start, match.end) || rate >= 5.0) {
+      if (isNearKwh(match.start, match.end) || rate >= 5.0) {
         debugPrint('$_logPrefix Found rate via dollar pattern: \$$rate');
         return rate;
       }
@@ -227,7 +227,7 @@ class DavaoLightRateMonitor {
       final rate = double.tryParse(rateStr);
       if (rate == null) continue;
       if (rate > 0 && rate < 100) {
-        if (_isNearKwh(m.start, m.end) || rate >= 5.0) {
+        if (isNearKwh(m.start, m.end) || rate >= 5.0) {
           debugPrint('$_logPrefix Found rate via rate pattern: \$$rate');
           return rate;
         }
