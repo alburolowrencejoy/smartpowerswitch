@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../config/app_mode.dart';
-import '../services/automation_scheduler_service.dart';
-import '../theme/app_colors.dart';
-import '../widgets/top_toast.dart';
+import '../../config/app_mode.dart';
+import '../../services/automation_scheduler_service.dart';
+import '../../theme/app_colors.dart';
+import '../../widgets/top_toast.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -29,11 +29,24 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   bool _rememberMe = false;
   String? _errorMessage;
+  String? _infoMessage;
+  bool _didReadRouteArgs = false;
 
   @override
   void initState() {
     super.initState();
     _loadRememberedCredentials();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didReadRouteArgs) return;
+    _didReadRouteArgs = true;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map && args['forceLogoutReason'] == 'inactivity') {
+      _infoMessage = 'You were signed out after 20 minutes of inactivity.';
+    }
   }
 
   @override
@@ -112,7 +125,6 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       final uid = cred.user!.uid;
-      final user = cred.user!;
 
       final snap = await FirebaseDatabase.instance.ref('users/$uid').get();
 
@@ -123,25 +135,6 @@ class _LoginScreenState extends State<LoginScreen> {
         final data = Map<String, dynamic>.from(snap.value as Map);
         role = data['role'] as String? ?? 'faculty';
         name = data['name'] as String? ?? name;
-
-        final newPassword = data['passwordReset'] as String?;
-        if (newPassword != null && newPassword.isNotEmpty) {
-          try {
-            await user.updatePassword(newPassword);
-            await FirebaseDatabase.instance
-                .ref('users/$uid/passwordReset')
-                .remove();
-            if (mounted) {
-              TopToast.success(
-                context,
-                'Your password has been updated by an admin.',
-                visibleFor: const Duration(seconds: 3),
-              );
-            }
-          } catch (_) {
-            // Continue login if password update fails.
-          }
-        }
       } else {
         await FirebaseDatabase.instance.ref('users/$uid').set({
           'email': _emailController.text.trim(),
@@ -328,6 +321,10 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_infoMessage != null) ...[
+              _buildInfoBox(),
+              SizedBox(height: compact ? 14 : 18),
+            ],
             _buildField(
               'EMAIL ADDRESS',
               Icons.email_outlined,
@@ -579,6 +576,26 @@ class _LoginScreenState extends State<LoginScreen> {
           },
         ),
       ],
+    );
+  }
+
+  Widget _buildInfoBox() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.greenMid.withAlpha(20),
+        border: Border.all(color: AppColors.greenMid.withAlpha(51)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        const Icon(Icons.info_outline, size: 16, color: AppColors.greenDark),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(_infoMessage!,
+              style: const TextStyle(fontSize: 12, color: AppColors.greenDark)),
+        ),
+      ]),
     );
   }
 

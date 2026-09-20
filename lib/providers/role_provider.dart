@@ -12,7 +12,10 @@ class RoleProvider extends ChangeNotifier {
   String get name    => _name;
   String get email   => _email;
   bool   get loaded  => _loaded;
-  bool   get isAdmin => _role == 'admin';
+  bool   get isAdmin => _role == 'admin' ||
+      _role == 'main_admin' ||
+      _role == 'super_admin' ||
+      _role == 'institute_admin';
 
   Future<void> load() async {
     final user = FirebaseAuth.instance.currentUser;

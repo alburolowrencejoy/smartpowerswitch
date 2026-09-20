@@ -1,12 +1,17 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:syncfusion_flutter_xlsio/xlsio.dart' as xlsio;
-import '../theme/app_colors.dart';
-import '../widgets/top_toast.dart';
+import '../../theme/app_colors.dart';
+import '../../theme/institute_colors.dart';
+import '../../utils/placeholder_data.dart';
+import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -30,14 +35,49 @@ class _HistoryScreenState extends State<HistoryScreen> {
     {'key': 'yearly', 'label': 'Yearly'},
   ];
 
-  StreamSubscription? _devicesSub;
+  // Combines `devices` + `settings/electricityRate` (stable for the life of
+  // this screen). `history` + `history/deleted/$_range` stay as their own
+  // pair below since the deleted path is re-subscribed per selected range
+  // and their handlers already re-fetch a consistent snapshot via `.get()`
+  // rather than reading `event.snapshot.value` directly.
+  StreamSubscription? _devicesRateSub;
   StreamSubscription? _historySub;
   StreamSubscription? _deletedSub;
-  StreamSubscription? _settingsSub;
+
+  // True once the devices/rate stream has emitted at least once.
+  bool _devicesRateLoaded = false;
+  // True once `_updateHistoryDisplay` has completed at least once.
+  bool _historyLoaded = false;
+  // True until both of the above have happened once; never reverts to true
+  // afterwards, so a transient null/empty result on either can't blank out
+  // data this screen has already shown this session.
+  bool _isLoading = true;
+
+  // Set only if either listener fails (or the overall load times out)
+  // before the first successful load ever completes -- gives the skeleton
+  // shimmer a real escape hatch instead of spinning forever.
+  String? _errorText;
+  Timer? _loadTimeoutTimer;
+  bool _postLoadErrorNotified = false;
+
+  bool _isPermissionDenied(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('permission-denied') ||
+        text.contains('permission_denied');
+  }
 
   Map<String, dynamic> _historyRoot = {};
   List<Map<String, dynamic>> _historyData = [];
-  Set<String> _deletedEntries = {}; // Tracks deleted tombstones for current range
+
+  /// History rows for the chart/list, backfilled with realistic-looking
+  /// placeholder rows while the first load is still in flight so the
+  /// skeleton shimmer has something to draw bones over.
+  List<Map<String, dynamic>> get _historyDisplay =>
+      _historyData.isEmpty && _isLoading
+          ? placeholderHistoryList()
+          : _historyData;
+  Set<String> _deletedEntries =
+      {}; // Tracks deleted tombstones for current range
   Map<String, Set<String>> _deletedEntriesByRange = {
     'daily': {},
     'weekly': {},
@@ -50,76 +90,180 @@ class _HistoryScreenState extends State<HistoryScreen> {
   int _onlineCount = 0;
   int _offlineCount = 0;
 
+  // ── Institute theming ──────────────────────────────────────────────────
+  // This screen is a standalone pushed route (no role/institute constructor
+  // args -- see main.dart's '/history' route), so role/institute are
+  // hydrated directly from the signed-in user's own record, mirroring
+  // dashboard_screen.dart's _hydrateSessionFromAuth.
+  String _role = 'faculty';
+  String? _institute;
+
+  InstitutePalette get _palette =>
+      InstituteTheme.resolve(_role, _institute).palette;
+
+  Future<void> _hydrateSessionFromAuth() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final data = snap.value;
+      if (data is! Map) return;
+      final map = Map<String, dynamic>.from(data);
+      final role = (map['role'] as String?) ?? 'faculty';
+      final institute = (map['institute'] as String?)?.trim();
+      if (!mounted) return;
+      setState(() {
+        _role = role;
+        _institute = institute;
+      });
+    } catch (_) {
+      // Keep existing role defaults if role hydration fails.
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    _listenDevices();
+    _hydrateSessionFromAuth();
+    _listenDevicesAndRate();
     _listenHistory();
-    _listenSettings();
+    _startLoadTimeoutTimer();
   }
 
   @override
   void dispose() {
-    _devicesSub?.cancel();
+    _devicesRateSub?.cancel();
     _historySub?.cancel();
     _deletedSub?.cancel();
-    _settingsSub?.cancel();
+    _loadTimeoutTimer?.cancel();
     super.dispose();
+  }
+
+  void _startLoadTimeoutTimer() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !_isLoading) return;
+      setState(() {
+        _isLoading = false;
+        _errorText = 'Taking too long to load history. Check your connection.';
+      });
+    });
+  }
+
+  /// Clears the error state and re-attaches every listener from scratch.
+  /// Used by the Retry button shown when the first load fails.
+  void _retryLoad() {
+    _devicesRateSub?.cancel();
+    _historySub?.cancel();
+    _deletedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
+    setState(() {
+      _errorText = null;
+      _isLoading = true;
+      _devicesRateLoaded = false;
+      _historyLoaded = false;
+      _postLoadErrorNotified = false;
+    });
+    _listenDevicesAndRate();
+    _listenHistory();
+    _startLoadTimeoutTimer();
+  }
+
+  void _handleLoadError(Object error) {
+    if (!mounted) return;
+    debugPrint('[History] Listen error: $error');
+    _loadTimeoutTimer?.cancel();
+    if (_isLoading) {
+      // Never loaded successfully yet -- surface a real error state
+      // instead of leaving the skeleton shimmer spinning forever.
+      setState(() {
+        _devicesRateLoaded = true;
+        _historyLoaded = true;
+        _isLoading = false;
+        _errorText = _isPermissionDenied(error)
+            ? 'You do not have permission to view history.'
+            : 'Failed to load history.';
+      });
+    } else if (!_postLoadErrorNotified) {
+      // Already showing real data this session -- keep it on screen and
+      // just surface a lightweight, non-blocking notice.
+      _postLoadErrorNotified = true;
+      TopToast.show(
+        context,
+        'Lost connection to live history data.',
+        isError: true,
+      );
+    }
   }
 
   double _electricityRate = 11.5;
 
-  void _listenSettings() {
-    _settingsSub = FirebaseDatabase.instance
-        .ref('settings/electricityRate')
-        .onValue
-        .listen((event) {
-      final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
-      if (mounted) setState(() => _electricityRate = rate);
-    }, onError: (_) {});
-  }
+  // ── devices + electricity rate, combined so a transient null on either
+  // path can't blank out totals this screen already loaded this session.
+  void _listenDevicesAndRate() {
+    _devicesRateSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
+    ]).listen((events) {
+      if (!mounted) return;
+      setState(() {
+        final raw = events[0].snapshot.value;
+        if (raw is Map) {
+          final data = Map<String, dynamic>.from(raw);
+          final Map<String, double> utilityTotals = {};
+          final Map<String, double> buildingTotals = {};
+          int online = 0, offline = 0;
 
-  void _listenDevices() {
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      final raw = event.snapshot.value;
-      if (raw == null) return;
+          data.forEach((id, val) {
+            if (val is! Map) return;
+            final device = Map<String, dynamic>.from(val);
+            final utility = (device['utility'] ?? 'Unknown').toString();
+            final building = (device['building'] ?? 'Unknown').toString();
+            final kwh = (device['kwh'] ?? 0.0) as num;
+            final lastSeen = device['last_seen'];
+            final isOnline = lastSeen != null &&
+                lastSeen != 0 &&
+                DateTime.now()
+                        .difference(DateTime.fromMillisecondsSinceEpoch(
+                            lastSeen as int))
+                        .inMinutes <
+                    2;
 
-      final data = Map<String, dynamic>.from(raw as Map);
-      final Map<String, double> utilityTotals = {};
-      final Map<String, double> buildingTotals = {};
-      int online = 0, offline = 0;
+            utilityTotals[utility] =
+                (utilityTotals[utility] ?? 0) + kwh.toDouble();
+            buildingTotals[building] =
+                (buildingTotals[building] ?? 0) + kwh.toDouble();
+            isOnline ? online++ : offline++;
+          });
 
-      data.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        final utility = (device['utility'] ?? 'Unknown').toString();
-        final building = (device['building'] ?? 'Unknown').toString();
-        final kwh = (device['kwh'] ?? 0.0) as num;
-        final lastSeen = device['last_seen'];
-        final isOnline = lastSeen != null &&
-            lastSeen != 0 &&
-            DateTime.now()
-                    .difference(
-                        DateTime.fromMillisecondsSinceEpoch(lastSeen as int))
-                    .inMinutes <
-                2;
-
-        utilityTotals[utility] = (utilityTotals[utility] ?? 0) + kwh.toDouble();
-        buildingTotals[building] =
-            (buildingTotals[building] ?? 0) + kwh.toDouble();
-        isOnline ? online++ : offline++;
-      });
-
-      if (mounted) {
-        setState(() {
           _utilityTotals = utilityTotals;
           _buildingTotals = buildingTotals;
           _onlineCount = online;
           _offlineCount = offline;
-        });
-      }
-    });
+        } else if (!_devicesRateLoaded) {
+          _utilityTotals = {};
+          _buildingTotals = {};
+          _onlineCount = 0;
+          _offlineCount = 0;
+        }
+
+        final rateRaw = events[1].snapshot.value;
+        if (rateRaw is num) {
+          _electricityRate = rateRaw.toDouble();
+        } else if (!_devicesRateLoaded) {
+          _electricityRate = 11.5;
+        }
+
+        _devicesRateLoaded = true;
+        _isLoading = !(_devicesRateLoaded && _historyLoaded);
+        if (!_isLoading) {
+          _errorText = null;
+          _postLoadErrorNotified = false;
+        }
+      });
+      if (!_isLoading) _loadTimeoutTimer?.cancel();
+    }, onError: _handleLoadError);
   }
 
   void _listenHistory() {
@@ -130,49 +274,65 @@ class _HistoryScreenState extends State<HistoryScreen> {
         .ref('history/deleted/$_range')
         .onValue
         .listen((event) {
-          final deleted = <String>{};
-          if (event.snapshot.value is Map) {
-            final map = Map<String, dynamic>.from(event.snapshot.value as Map);
-            deleted.addAll(map.keys);
-          }
-          if (mounted) {
-            setState(() {
-              _deletedEntries = deleted;
-              _deletedEntriesByRange[_range] = deleted;
-            });
-          }
-          _updateHistoryDisplay();
+      final deleted = <String>{};
+      if (event.snapshot.value is Map) {
+        final map = Map<String, dynamic>.from(event.snapshot.value as Map);
+        deleted.addAll(map.keys);
+      }
+      if (mounted) {
+        setState(() {
+          _deletedEntries = deleted;
+          _deletedEntriesByRange[_range] = deleted;
         });
-
-    _historySub = FirebaseDatabase.instance.ref('history').onValue.listen((event) {
+      }
       _updateHistoryDisplay();
-    });
+    }, onError: _handleLoadError);
+
+    _historySub = FirebaseDatabase.instance
+        .ref('history')
+        .onValue
+        .listen((event) {
+      _updateHistoryDisplay();
+    }, onError: _handleLoadError);
   }
-  
+
   Future<void> _updateHistoryDisplay() async {
     if (!mounted) return;
     final snapshot = await FirebaseDatabase.instance.ref('history').get();
     if (snapshot.value is! Map) {
       if (mounted) {
         setState(() {
-          _historyRoot = {};
-          _historyData = [];
+          // Only accept "no history" before the first successful load --
+          // once real data has been shown this session, a later empty
+          // result (e.g. a reconnect blip) must not blank it back out.
+          if (!_historyLoaded) {
+            _historyRoot = {};
+            _historyData = [];
+          }
+          _historyLoaded = true;
+          _isLoading = !(_devicesRateLoaded && _historyLoaded);
+          if (!_isLoading) {
+            _errorText = null;
+            _postLoadErrorNotified = false;
+          }
         });
+        if (!_isLoading) _loadTimeoutTimer?.cancel();
       }
       return;
     }
 
     final root = Map<String, dynamic>.from(snapshot.value as Map);
+    const ranges = ['daily', 'weekly', 'monthly', 'yearly'];
+    final deletedSnapshots = await Future.wait(ranges.map((range) =>
+        FirebaseDatabase.instance.ref('history/deleted/$range').get()));
     final deletedMap = <String, Set<String>>{};
-    for (final range in ['daily', 'weekly', 'monthly', 'yearly']) {
-      final deletedSnapshot =
-          await FirebaseDatabase.instance.ref('history/deleted/$range').get();
+    for (var i = 0; i < ranges.length; i++) {
       final deleted = <String>{};
-      if (deletedSnapshot.value is Map) {
-        final map = Map<String, dynamic>.from(deletedSnapshot.value as Map);
-        deleted.addAll(map.keys);
+      final value = deletedSnapshots[i].value;
+      if (value is Map) {
+        deleted.addAll(Map<String, dynamic>.from(value).keys);
       }
-      deletedMap[range] = deleted;
+      deletedMap[ranges[i]] = deleted;
     }
 
     final list = _parseRangeEntries(
@@ -188,10 +348,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _deletedEntries = deletedMap[_range] ?? {};
       _historyData = list;
       if (_chartSelectedIndex != null &&
-          (_chartSelectedIndex! < 0 || _chartSelectedIndex! >= _historyData.length)) {
+          (_chartSelectedIndex! < 0 ||
+              _chartSelectedIndex! >= _historyData.length)) {
         _chartSelectedIndex = null;
       }
+      _historyLoaded = true;
+      _isLoading = !(_devicesRateLoaded && _historyLoaded);
+      if (!_isLoading) {
+        _errorText = null;
+        _postLoadErrorNotified = false;
+      }
     });
+    if (!_isLoading) _loadTimeoutTimer?.cancel();
   }
 
   Map<String, dynamic> _pickRangeNode(
@@ -320,16 +488,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
     setState(() => _deletingHistoryKey = label);
 
     try {
-      await FirebaseDatabase.instance
-          .ref('history/$_range/$label')
-          .remove();
+      await FirebaseDatabase.instance.ref('history/$_range/$label').remove();
 
       await FirebaseDatabase.instance
           .ref('history/deleted/$_range/$label')
           .set(true);
 
       if (mounted) {
-        TopToast.threshold(context, 'Deleted ${_capitalizeFirst(_range)} history.');
+        TopToast.threshold(
+            context, 'Deleted ${_capitalizeFirst(_range)} history.');
       }
       _listenHistory();
     } catch (e) {
@@ -343,9 +510,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-    // Removed unused total getters (_totalKwh, _totalCost) — totals are
-    // computed via _currentPeriodTotals() or by folding over _historyData
-    // where needed.
+  // Removed unused total getters (_totalKwh, _totalCost) — totals are
+  // computed via _currentPeriodTotals() or by folding over _historyData
+  // where needed.
 
   /// Compute totals for the currently-selected range but limited to the
   /// "current period" (today / this week / this month / this year).
@@ -372,7 +539,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }).toList();
 
     final kwh = filtered.fold<double>(0.0, (s, e) => s + (e['kwh'] as double));
-    final cost = filtered.fold<double>(0.0, (s, e) => s + (e['cost'] as double));
+    final cost =
+        filtered.fold<double>(0.0, (s, e) => s + (e['cost'] as double));
     return {'kwh': kwh, 'cost': cost};
   }
 
@@ -435,7 +603,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   List<double> _forecastValues(List<double> history, int horizon) {
     if (history.isEmpty) return List<double>.filled(horizon, 0.0);
     if (history.length == 1) {
-      return List<double>.filled(horizon, history.first < 0 ? 0.0 : history.first);
+      return List<double>.filled(
+          horizon, history.first < 0 ? 0.0 : history.first);
     }
 
     final n = history.length.toDouble();
@@ -483,12 +652,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final dailyEntries = _dailyHistoryEntries();
     if (dailyEntries.isEmpty) return null;
 
-    final actualValues = dailyEntries
-        .map((entry) => (entry['kwh'] as num).toDouble())
-        .toList();
-    final actualLabels = dailyEntries
-        .map((entry) => entry['label'].toString())
-        .toList();
+    final actualValues =
+        dailyEntries.map((entry) => (entry['kwh'] as num).toDouble()).toList();
+    final actualLabels =
+        dailyEntries.map((entry) => entry['label'].toString()).toList();
 
     final regressionWindow = actualValues.length > 90
         ? actualValues.sublist(actualValues.length - 90)
@@ -504,7 +671,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       }
     }
 
-    final predictedKwh = forecastValues.fold<double>(0.0, (sum, value) => sum + value);
+    final predictedKwh =
+        forecastValues.fold<double>(0.0, (sum, value) => sum + value);
     final averageRate = _averageRateFromEntries(dailyEntries);
     final predictedBill = predictedKwh * _electricityRate;
 
@@ -527,20 +695,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   List<Map<String, dynamic>> _parseRangeEntries(
-      Map<String, dynamic> root, String rangeKey, [Set<String> deleted = const {}]) {
+      Map<String, dynamic> root, String rangeKey,
+      [Set<String>? deleted]) {
+    final deletedEntries = deleted ?? const <String>{};
     final directRangeNode = root[rangeKey];
     final hasDirectRangeNode = directRangeNode is Map &&
-      _matchingKeyCount(Map<String, dynamic>.from(directRangeNode), rangeKey) > 0;
+        _matchingKeyCount(
+                Map<String, dynamic>.from(directRangeNode), rangeKey) >
+            0;
     final data = hasDirectRangeNode
-      ? Map<String, dynamic>.from(directRangeNode)
-      : _pickRangeNode(root, rangeKey);
+        ? Map<String, dynamic>.from(directRangeNode)
+        : _pickRangeNode(root, rangeKey);
     final list = <Map<String, dynamic>>[];
 
     data.forEach((key, val) {
       if (val is! Map) return;
       // Skip deleted entries
-      if (deleted.contains(key)) return;
-      
+      if (deletedEntries.contains(key)) return;
+
       final entry = Map<String, dynamic>.from(val);
       list.add({
         'label': key,
@@ -550,7 +722,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     });
 
     if (list.isNotEmpty || hasDirectRangeNode) {
-      list.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+      list.sort(
+          (a, b) => a['label'].toString().compareTo(b['label'].toString()));
       return list;
     }
 
@@ -570,11 +743,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final kwh = _asDouble(entry['kwh']);
       final cost = _asDouble(entry['cost']);
 
-      final bucket = grouped.putIfAbsent(label, () => {
-            'label': label,
-            'kwh': 0.0,
-            'cost': 0.0,
-          });
+      final bucket = grouped.putIfAbsent(
+          label,
+          () => {
+                'label': label,
+                'kwh': 0.0,
+                'cost': 0.0,
+              });
       bucket['kwh'] = (bucket['kwh'] as double) + kwh;
       bucket['cost'] = (bucket['cost'] as double) + cost;
     });
@@ -717,7 +892,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
       rows.add(['Total energy (kWh)', totalKwh.toStringAsFixed(2)]);
       rows.add(['Total cost (PHP)', totalCost.toStringAsFixed(2)]);
       rows.add(['Average energy per cluster (kWh)', avgKwh.toStringAsFixed(2)]);
-      rows.add(['Peak cluster', peak['label'], (peak['kwh'] as double).toStringAsFixed(2)]);
+      rows.add([
+        'Peak cluster',
+        peak['label'],
+        (peak['kwh'] as double).toStringAsFixed(2)
+      ]);
       rows.add([]);
 
       rows.add([
@@ -800,25 +979,31 @@ class _HistoryScreenState extends State<HistoryScreen> {
       }
 
       final historyRoot = Map<String, dynamic>.from(raw);
-      
+
       // Fetch deleted entries for all ranges
+      const exportRanges = ['daily', 'weekly', 'monthly', 'yearly'];
+      final exportDeletedSnapshots = await Future.wait(exportRanges.map(
+          (range) =>
+              FirebaseDatabase.instance.ref('history/deleted/$range').get()));
       final deletedMap = <String, Set<String>>{};
-      for (final range in ['daily', 'weekly', 'monthly', 'yearly']) {
-        final deletedSnapshot = 
-            await FirebaseDatabase.instance.ref('history/deleted/$range').get();
+      for (var i = 0; i < exportRanges.length; i++) {
         final deleted = <String>{};
-        if (deletedSnapshot.value is Map) {
-          final map = Map<String, dynamic>.from(deletedSnapshot.value as Map);
-          deleted.addAll(map.keys);
+        final value = exportDeletedSnapshots[i].value;
+        if (value is Map) {
+          deleted.addAll(Map<String, dynamic>.from(value).keys);
         }
-        deletedMap[range] = deleted;
+        deletedMap[exportRanges[i]] = deleted;
       }
-      
+
       final clustered = <String, List<Map<String, dynamic>>>{
-        'yearly': _parseRangeEntries(historyRoot, 'yearly', deletedMap['yearly'] ?? {}),
-        'monthly': _parseRangeEntries(historyRoot, 'monthly', deletedMap['monthly'] ?? {}),
-        'weekly': _parseRangeEntries(historyRoot, 'weekly', deletedMap['weekly'] ?? {}),
-        'daily': _parseRangeEntries(historyRoot, 'daily', deletedMap['daily'] ?? {}),
+        'yearly': _parseRangeEntries(
+            historyRoot, 'yearly', deletedMap['yearly'] ?? {}),
+        'monthly': _parseRangeEntries(
+            historyRoot, 'monthly', deletedMap['monthly'] ?? {}),
+        'weekly': _parseRangeEntries(
+            historyRoot, 'weekly', deletedMap['weekly'] ?? {}),
+        'daily':
+            _parseRangeEntries(historyRoot, 'daily', deletedMap['daily'] ?? {}),
       };
 
       final hasData = clustered.values.any((list) => list.isNotEmpty);
@@ -913,15 +1098,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
           style: titleStyle);
       writeRow(overview, r++, ['Generated', generatedAt]);
       writeRow(overview, r++, ['']);
-      writeRow(overview, r++, [
-        'Range',
-        'Clusters',
-        'Total kWh',
-        'Total Cost (PHP)',
-        'Avg kWh/Cluster',
-        'Peak Cluster',
-        'Peak kWh'
-      ], style: headerStyle);
+      writeRow(
+          overview,
+          r++,
+          [
+            'Range',
+            'Clusters',
+            'Total kWh',
+            'Total Cost (PHP)',
+            'Avg kWh/Cluster',
+            'Peak Cluster',
+            'Peak kWh'
+          ],
+          style: headerStyle);
 
       for (final key in ['yearly', 'monthly', 'weekly', 'daily']) {
         final entries = clustered[key] ?? const <Map<String, dynamic>>[];
@@ -958,16 +1147,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
       }
 
       writeRow(overview, r++, ['']);
-        writeRow(overview, r++, ['Indicator Legend'], style: headerStyle);
+      writeRow(overview, r++, ['Indicator Legend'], style: headerStyle);
       final redLegendRow = r;
-        writeRow(overview, r++, ['High', 'High consumption']);
+      writeRow(overview, r++, ['High', 'High consumption']);
       final amberLegendRow = r;
-        writeRow(overview, r++, ['Normal', 'Moderate consumption']);
+      writeRow(overview, r++, ['Normal', 'Moderate consumption']);
       final greenLegendRow = r;
-        writeRow(overview, r++, ['Low', 'Lower consumption']);
+      writeRow(overview, r++, ['Low', 'Lower consumption']);
       final blueLegendRow = r;
-      writeRow(
-          overview, r++, ['Increasing/Decreasing/Stable', 'Trend versus previous cluster']);
+      writeRow(overview, r++,
+          ['Increasing/Decreasing/Stable', 'Trend versus previous cluster']);
       overview.getRangeByIndex(redLegendRow, 1).cellStyle = redStyle;
       overview.getRangeByIndex(amberLegendRow, 1).cellStyle = amberStyle;
       overview.getRangeByIndex(greenLegendRow, 1).cellStyle = greenStyle;
@@ -1003,20 +1192,27 @@ class _HistoryScreenState extends State<HistoryScreen> {
             (a, b) => (a['kwh'] as double) >= (b['kwh'] as double) ? a : b);
 
         writeRow(sheet, row++, ['Cluster count', '${entries.length}']);
-        writeRow(sheet, row++, ['Total energy (kWh)', totalKwh.toStringAsFixed(2)]);
-        writeRow(sheet, row++, ['Total cost (PHP)', totalCost.toStringAsFixed(2)]);
-        writeRow(sheet, row++, ['Average energy per cluster (kWh)', avgKwh.toStringAsFixed(2)]);
+        writeRow(
+            sheet, row++, ['Total energy (kWh)', totalKwh.toStringAsFixed(2)]);
+        writeRow(
+            sheet, row++, ['Total cost (PHP)', totalCost.toStringAsFixed(2)]);
+        writeRow(sheet, row++,
+            ['Average energy per cluster (kWh)', avgKwh.toStringAsFixed(2)]);
         writeRow(sheet, row++, ['Peak cluster', peak['label'].toString()]);
         writeRow(sheet, row++, ['']);
-        writeRow(sheet, row++, [
-          'Cluster',
-          'Energy (kWh)',
-          'Cost (PHP)',
-          'Share (%)',
-          'Level Indicator',
-          'Trend Indicator',
-          'Cluster Analysis'
-        ], style: headerStyle);
+        writeRow(
+            sheet,
+            row++,
+            [
+              'Cluster',
+              'Energy (kWh)',
+              'Cost (PHP)',
+              'Share (%)',
+              'Level Indicator',
+              'Trend Indicator',
+              'Cluster Analysis'
+            ],
+            style: headerStyle);
 
         double? previousKwh;
         for (final entry in entries) {
@@ -1111,6 +1307,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
     return weekNumber < 1 ? 1 : weekNumber;
   }
+
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
 
@@ -1118,7 +1315,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme.resolve(_role, _institute)],
+      ),
+      child: Scaffold(
       backgroundColor: AppColors.surface,
       body: SafeArea(
         child: Column(children: [
@@ -1131,23 +1332,73 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   children: [
                     _buildRangeSelector(),
                     const SizedBox(height: 20),
-                    _buildSummaryRow(),
+                    _errorText != null
+                        ? _buildError()
+                        : ScreenSkeleton(
+                            isLoading: _isLoading,
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildSummaryRow(),
+                                  const SizedBox(height: 20),
+                                  _buildLineChart(),
+                                  const SizedBox(height: 20),
+                                  _buildPredictionCard(),
+                                  const SizedBox(height: 20),
+                                  _buildDeviceStatusCard(),
+                                  const SizedBox(height: 20),
+                                  _buildTopUtilityCard(),
+                                  const SizedBox(height: 20),
+                                  _buildTopBuildingCard(),
+                                  const SizedBox(height: 20),
+                                  _buildHistoryList(),
+                                ]),
+                          ),
                     const SizedBox(height: 20),
-                    _buildLineChart(),
-                    const SizedBox(height: 20),
-                    _buildPredictionCard(),
-                    const SizedBox(height: 20),
-                    _buildDeviceStatusCard(),
-                    const SizedBox(height: 20),
-                    _buildTopUtilityCard(),
-                    const SizedBox(height: 20),
-                    _buildTopBuildingCard(),
-                    const SizedBox(height: 20),
-                    _buildHistoryList(),
-                    const SizedBox(height: 20),
-                    _buildExportButton(),
+                    if (_errorText == null) _buildExportButton(),
                   ]),
             ),
+          ),
+        ]),
+      ),
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                  color: _palette.pale,
+                  borderRadius: BorderRadius.circular(20)),
+              child: Icon(Icons.wifi_off_rounded,
+                  size: 34, color: _palette.mid)),
+          const SizedBox(height: 16),
+          const Text('Cannot load history',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
+          const SizedBox(height: 8),
+          Text(_errorText ?? 'Something went wrong.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _retryLoad,
+            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+            label:
+                const Text('Retry', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: _palette.dark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
           ),
         ]),
       ),
@@ -1157,9 +1408,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: const BoxDecoration(
-        color: AppColors.greenDark,
-        borderRadius: BorderRadius.only(
+      decoration: BoxDecoration(
+        color: _palette.dark,
+        borderRadius: const BorderRadius.only(
           bottomLeft: Radius.circular(28),
           bottomRight: Radius.circular(28),
         ),
@@ -1197,8 +1448,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
             Container(
                 width: 7,
                 height: 7,
-                decoration: const BoxDecoration(
-                    color: AppColors.greenLight, shape: BoxShape.circle)),
+                decoration: BoxDecoration(
+                    color: _palette.light, shape: BoxShape.circle)),
             const SizedBox(width: 5),
             const Text('Live',
                 style: TextStyle(
@@ -1218,7 +1469,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         Container(
           height: 52,
           decoration: BoxDecoration(
-              color: AppColors.greenPale,
+              color: _palette.pale,
               borderRadius: BorderRadius.circular(12)),
           child: Row(
             children: _ranges.asMap().entries.map((entry) {
@@ -1237,9 +1488,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     behavior: HitTestBehavior.opaque,
                     onTap: () => _setRange(r['key']!),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 8),
                       decoration: BoxDecoration(
-                        color: isSelected ? AppColors.greenDark : AppColors.greenPale,
+                        color: isSelected
+                            ? _palette.dark
+                            : _palette.pale,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
@@ -1253,7 +1507,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
-                                  color: isSelected ? Colors.white : AppColors.greenDark,
+                                color: isSelected
+                                    ? Colors.white
+                                    : _palette.dark,
                               ),
                             ),
                           ),
@@ -1273,7 +1529,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                   child: Icon(
                                     Icons.arrow_drop_down,
                                     size: 20,
-                                    color: isSelected ? Colors.white : AppColors.greenDark,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : _palette.dark,
                                   ),
                                 ),
                               ),
@@ -1294,7 +1552,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  Future<void> _showRangeDropdown(BuildContext btnContext, String rangeKey, Offset globalTap) async {
+  Future<void> _showRangeDropdown(
+      BuildContext btnContext, String rangeKey, Offset globalTap) async {
     final entries = _parseRangeEntries(
       _historyRoot,
       rangeKey,
@@ -1302,7 +1561,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
     if (entries.isEmpty) return;
 
-    final overlay = Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
     final btnBox = btnContext.findRenderObject() as RenderBox?;
     if (overlay == null || btnBox == null) return;
 
@@ -1320,31 +1580,58 @@ class _HistoryScreenState extends State<HistoryScreen> {
       desiredLeft = btnTopLeft.dx + btnBox.size.width - menuWidth;
     }
     // Clamp into visible area with a small margin.
-    desiredLeft = desiredLeft.clamp(12.0, overlay.size.width - menuWidth - 12.0);
+    desiredLeft =
+        desiredLeft.clamp(12.0, overlay.size.width - menuWidth - 12.0);
 
     final adjustedRight = overlay.size.width - desiredLeft - menuWidth;
-    final adjustedPosition = RelativeRect.fromLTRB(desiredLeft, top, adjustedRight, bottom);
+    final adjustedPosition =
+        RelativeRect.fromLTRB(desiredLeft, top, adjustedRight, bottom);
+
+    // Cap how many menu items get built. A long-running system can
+    // accumulate hundreds/thousands of periods, and building one
+    // PopupMenuItem per entry with no limit froze the UI. Entries are
+    // already sorted ascending, so the tail is the most recent ones.
+    const maxMenuItems = 60;
+    final showTruncated = entries.length > maxMenuItems;
+    final offset = showTruncated ? entries.length - maxMenuItems : 0;
+    final visibleEntries = showTruncated ? entries.sublist(offset) : entries;
 
     final selected = await showMenu<int>(
       context: btnContext,
       position: adjustedPosition,
-      items: List.generate(entries.length, (i) {
-        final label = entries[i]['label'].toString();
-        return PopupMenuItem<int>(
-          value: i,
-          child: SizedBox(
-            width: menuWidth,
-            child: Center(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13),
+      items: [
+        if (showTruncated)
+          PopupMenuItem<int>(
+            enabled: false,
+            child: SizedBox(
+              width: menuWidth,
+              child: Center(
+                child: Text(
+                  'Showing latest $maxMenuItems of ${entries.length}',
+                  style:
+                      const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                ),
               ),
             ),
           ),
-        );
-      }),
+        ...List.generate(visibleEntries.length, (i) {
+          final label = visibleEntries[i]['label'].toString();
+          return PopupMenuItem<int>(
+            value: offset + i,
+            child: SizedBox(
+              width: menuWidth,
+              child: Center(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
     );
 
     if (selected == null) return;
@@ -1362,34 +1649,39 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final periodLabel = _currentPeriodLabel();
     return Row(children: [
       Expanded(
-        child: _summaryCard('', '${totals['kwh']!.toStringAsFixed(1)} kWh', Icons.bolt, subtitle: periodLabel)),
+          child: _summaryCard(
+              '', '${totals['kwh']!.toStringAsFixed(1)} kWh', Icons.bolt,
+              subtitle: periodLabel)),
       const SizedBox(width: 12),
       Expanded(
-        child: _summaryCard('', '₱ ${totals['cost']!.toStringAsFixed(0)}', Icons.payments_outlined, subtitle: periodLabel)),
+          child: _summaryCard('', '₱ ${totals['cost']!.toStringAsFixed(0)}',
+              Icons.payments_outlined,
+              subtitle: periodLabel)),
     ]);
   }
 
-  Widget _summaryCard(String label, String value, IconData icon, {String? subtitle}) {
+  Widget _summaryCard(String label, String value, IconData icon,
+      {String? subtitle}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: 20, color: AppColors.greenMid),
+        Icon(icon, size: 20, color: _palette.mid),
         const SizedBox(height: 10),
         Text(value,
-          style: const TextStyle(
-            fontFamily: 'Outfit',
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textDark)),
+            style: const TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textDark)),
         if (label.isNotEmpty) ...[
           const SizedBox(height: 6),
           Text(label,
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
         ],
         if (subtitle != null) ...[
           const SizedBox(height: 4),
@@ -1401,7 +1693,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildLineChart() {
-    final canSwitchChart = _historyData.length > 1;
+    final historyDisplay = _historyDisplay;
+    final canSwitchChart = historyDisplay.length > 1;
     final yAxisLabels = _chartYAxisLabels();
     final chartMaxKwh = _chartMaxForRange(_range);
     return Container(
@@ -1409,7 +1702,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1433,7 +1726,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     SizedBox(height: 4),
                     Text(
                       'kWh over time (realtime)',
-                      style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                      style:
+                          TextStyle(fontSize: 11, color: AppColors.textMuted),
                     ),
                   ],
                 ),
@@ -1446,23 +1740,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          _historyData.isEmpty
+          historyDisplay.isEmpty
               ? const Center(
                   child: Padding(
                     padding: EdgeInsets.symmetric(vertical: 30),
                     child: Text(
                       'No data yet',
-                      style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+                      style:
+                          TextStyle(fontSize: 13, color: AppColors.textMuted),
                     ),
                   ),
                 )
               : LayoutBuilder(
                   builder: (context, constraints) {
-                    final chartWidth = (_historyData.length * 54.0)
+                    final chartWidth = (historyDisplay.length * 54.0)
                         .clamp(constraints.maxWidth, constraints.maxWidth * 2.8)
                         .toDouble();
                     final chartSize = Size(chartWidth, 160);
-                    final values = _historyData
+                    final values = historyDisplay
                         .map((d) => (d['kwh'] as num).toDouble())
                         .toList();
                     return Column(
@@ -1474,7 +1769,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               width: 38,
                               height: 160,
                               child: Column(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: yAxisLabels
                                     .map(
@@ -1509,12 +1805,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                             ? _BarChartPainter(
                                                 data: values,
                                                 maxKwh: chartMaxKwh,
-                                                selectedIndex: _chartSelectedIndex,
+                                                selectedIndex:
+                                                    _chartSelectedIndex,
                                               )
                                             : _LineChartPainter(
                                                 data: values,
                                                 maxKwh: chartMaxKwh,
-                                                selectedIndex: _chartSelectedIndex,
+                                                selectedIndex:
+                                                    _chartSelectedIndex,
                                               ),
                                         child: Container(),
                                       ),
@@ -1537,13 +1835,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             ),
                             decoration: BoxDecoration(
                               color: _chartSelectedIndex == null
-                                  ? AppColors.greenPale.withAlpha(90)
-                                  : AppColors.greenDark.withAlpha(18),
+                                  ? _palette.pale.withAlpha(90)
+                                  : _palette.dark.withAlpha(18),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
                                 color: _chartSelectedIndex == null
-                                    ? AppColors.greenMid.withAlpha(36)
-                                    : AppColors.greenDark.withAlpha(60),
+                                    ? _palette.mid.withAlpha(36)
+                                    : _palette.dark.withAlpha(60),
                               ),
                             ),
                             child: Column(
@@ -1557,7 +1855,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     fontWeight: FontWeight.w600,
                                     color: _chartSelectedIndex == null
                                         ? AppColors.textMuted
-                                        : AppColors.greenDark,
+                                        : _palette.dark,
                                   ),
                                 ),
                                 const SizedBox(height: 2),
@@ -1578,22 +1876,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   },
                 ),
           const SizedBox(height: 8),
-          if (_historyData.isNotEmpty)
+          if (historyDisplay.isNotEmpty)
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  _historyData.first['label'],
-                  style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                  historyDisplay.first['label'],
+                  style:
+                      const TextStyle(fontSize: 9, color: AppColors.textMuted),
                 ),
-                if (_historyData.length > 2)
+                if (historyDisplay.length > 2)
                   Text(
-                    _historyData[_historyData.length ~/ 2]['label'],
-                    style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                    historyDisplay[historyDisplay.length ~/ 2]['label'],
+                    style: const TextStyle(
+                        fontSize: 9, color: AppColors.textMuted),
                   ),
                 Text(
-                  _historyData.last['label'],
-                  style: const TextStyle(fontSize: 9, color: AppColors.textMuted),
+                  historyDisplay.last['label'],
+                  style:
+                      const TextStyle(fontSize: 9, color: AppColors.textMuted),
                 ),
               ],
             ),
@@ -1610,7 +1911,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1637,9 +1938,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
               height: 160,
               width: double.infinity,
               decoration: BoxDecoration(
-                color: AppColors.greenPale.withAlpha(70),
+                color: _palette.pale.withAlpha(70),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.greenMid.withAlpha(28)),
+                border: Border.all(color: _palette.mid.withAlpha(28)),
               ),
               child: const Center(
                 child: Text(
@@ -1656,7 +1957,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
             LayoutBuilder(
               builder: (context, constraints) {
                 final actualWindow = series.actualValues.length > 90
-                    ? series.actualValues.sublist(series.actualValues.length - 90)
+                    ? series.actualValues
+                        .sublist(series.actualValues.length - 90)
                     : series.actualValues;
                 final chartWidth = constraints.maxWidth;
                 const chartHeight = 180.0;
@@ -1669,7 +1971,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     SizedBox(
                       width: chartWidth,
                       height: chartHeight,
-                          child: ClipRRect(
+                      child: ClipRRect(
                         borderRadius: BorderRadius.circular(14),
                         child: CustomPaint(
                           painter: _ForecastChartPainter(
@@ -1708,7 +2010,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         _forecastLegendDot('Forecast', const Color(0xFFF59E0B)),
                         Text(
                           'Rate: ₱ ${_electricityRate.toStringAsFixed(2)}/kWh',
-                          style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+                          style: const TextStyle(
+                              fontSize: 10, color: AppColors.textMuted),
                         ),
                       ],
                     ),
@@ -1726,14 +2029,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.greenPale.withAlpha(65),
+        color: _palette.pale.withAlpha(65),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.greenMid.withAlpha(28)),
+        border: Border.all(color: _palette.mid.withAlpha(28)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: AppColors.greenDark),
+          Icon(icon, size: 18, color: _palette.dark),
           const SizedBox(height: 8),
           Text(
             value,
@@ -1764,7 +2067,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 5),
-        Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
       ],
     );
   }
@@ -1780,17 +2084,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.greenDark : AppColors.greenPale,
+          color: isSelected ? _palette.dark : _palette.pale,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
               color: isSelected
-                  ? AppColors.greenDark
-                  : AppColors.greenMid.withAlpha(80)),
+                  ? _palette.dark
+                  : _palette.mid.withAlpha(80)),
         ),
         child: Icon(
           icon,
           size: 14,
-          color: isSelected ? Colors.white : AppColors.greenDark,
+          color: isSelected ? Colors.white : _palette.dark,
         ),
       ),
     );
@@ -1804,7 +2108,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Device Status',
@@ -1816,6 +2120,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
         const SizedBox(height: 16),
         Row(children: [
           Expanded(
+              // Semantic: paired against AppColors.warning for the
+              // "Offline" badge below -- communicates online/offline device
+              // state, not brand chrome. Deliberately NOT retheme'd.
               child: _statusBadge(
                   'Online', _onlineCount, AppColors.greenMid, Icons.wifi)),
           const SizedBox(width: 12),
@@ -1830,6 +2137,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             value: onlinePct,
             minHeight: 8,
             backgroundColor: AppColors.warning.withAlpha(50),
+            // Semantic: same online/offline pairing as the badges above.
             valueColor: const AlwaysStoppedAnimation<Color>(AppColors.greenMid),
           ),
         ),
@@ -1870,6 +2178,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final sorted = _utilityTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final maxVal = sorted.first.value;
+    // Semantic: fixed categorical color-coding to visually distinguish
+    // utility types from each other on this chart, not institute brand
+    // chrome -- deliberately NOT retheme'd (default-to-institute here would
+    // make different utility categories harder to tell apart, not easier).
     final Map<String, Color> utilityColors = {
       'Lights': AppColors.greenMid,
       'Outlets': AppColors.greenLight,
@@ -1880,7 +2192,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Utilities',
@@ -1904,10 +2216,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         fontWeight: FontWeight.w500,
                         color: AppColors.textDark)),
                 Text('${e.value.toStringAsFixed(1)} kWh',
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.greenDark)),
+                        color: _palette.dark)),
               ]),
               const SizedBox(height: 6),
               ClipRRect(
@@ -1931,6 +2243,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final sorted = _buildingTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final maxVal = sorted.first.value;
+    // Semantic: this card ranks *other* institutes/buildings by energy use
+    // (not the viewer's own institute), so a rank-position gradient is used
+    // instead of the viewer's resolved brand palette -- tinting institute B's
+    // bar with institute A's viewer color would be actively misleading.
+    // Deliberately NOT retheme'd.
     final List<Color> barColors = [
       AppColors.greenDark,
       AppColors.greenMid,
@@ -1943,7 +2260,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Institutes',
@@ -1965,16 +2282,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 width: 24,
                 height: 24,
                 decoration: BoxDecoration(
+                  // Semantic: rank-position color, same reasoning as
+                  // barColors above -- NOT retheme'd.
                   color: i == 0 ? AppColors.greenDark : AppColors.greenPale,
                   shape: BoxShape.circle,
                 ),
                 child: Center(
+                    // Semantic: rank-position color, same reasoning as
+                    // barColors above -- NOT retheme'd.
                     child: Text('${i + 1}',
                         style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w700,
-                            color:
-                                i == 0 ? Colors.white : AppColors.greenDark))),
+                            color: i == 0
+                                ? Colors.white
+                                : AppColors.greenDark))),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1990,10 +2312,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                   fontWeight: FontWeight.w500,
                                   color: AppColors.textDark)),
                           Text('${e.value.toStringAsFixed(1)} kWh',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
-                                  color: AppColors.greenDark)),
+                                  color: _palette.dark)),
                         ]),
                     const SizedBox(height: 5),
                     ClipRRect(
@@ -2014,8 +2336,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildHistoryList() {
-    if (_historyData.isEmpty) return const SizedBox();
-    final latestFirst = [..._historyData]
+    final historyDisplay = _historyDisplay;
+    if (historyDisplay.isEmpty) return const SizedBox();
+    final latestFirst = [...historyDisplay]
       ..sort((a, b) => b['label'].toString().compareTo(a['label'].toString()));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2033,17 +2356,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
               decoration: BoxDecoration(
                 color: AppColors.cardBg,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.greenMid.withAlpha(20)),
+                border: Border.all(color: _palette.mid.withAlpha(20)),
               ),
               child: Row(children: [
                 Container(
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                      color: AppColors.greenPale,
+                      color: _palette.pale,
                       borderRadius: BorderRadius.circular(8)),
-                  child: const Icon(Icons.calendar_today,
-                      size: 16, color: AppColors.greenDark),
+                  child: Icon(Icons.calendar_today,
+                      size: 16, color: _palette.dark),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -2054,10 +2377,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             color: AppColors.textDark))),
                 Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                   Text('${(d['kwh'] as num).toStringAsFixed(1)} kWh',
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.greenDark)),
+                          color: _palette.dark)),
                   Text('₱ ${(d['cost'] as num).toStringAsFixed(2)}',
                       style: const TextStyle(
                           fontSize: 11, color: AppColors.textMuted)),
@@ -2091,14 +2414,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: AppColors.greenPale,
+          color: _palette.pale,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.greenMid.withAlpha(51)),
+          border: Border.all(color: _palette.mid.withAlpha(51)),
         ),
-        child: const Row(children: [
-          Icon(Icons.info_outline, size: 14, color: AppColors.greenMid),
-          SizedBox(width: 8),
-          Expanded(
+        child: Row(children: [
+          Icon(Icons.info_outline, size: 14, color: _palette.mid),
+          const SizedBox(width: 8),
+          const Expanded(
             child: Text(
               'Exports an organized workbook clustered by yearly, monthly, weekly, and daily data.',
               style: TextStyle(fontSize: 11, color: AppColors.textMid),
@@ -2126,7 +2449,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 color: Colors.white, fontWeight: FontWeight.w600),
           ),
           style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.greenDark,
+            backgroundColor: _palette.dark,
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           ),
@@ -2220,7 +2543,9 @@ class _LineChartPainter extends CustomPainter {
     }
 
     // Highlight selected point only; keep all other points invisible.
-    if (selectedIndex != null && selectedIndex! >= 0 && selectedIndex! < data.length) {
+    if (selectedIndex != null &&
+        selectedIndex! >= 0 &&
+        selectedIndex! < data.length) {
       final p = off(selectedIndex!);
       canvas.drawCircle(
           p,
@@ -2237,9 +2562,12 @@ class _LineChartPainter extends CustomPainter {
             ..strokeWidth = 1.5);
     }
   }
+
   @override
   bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
+      old.data != data ||
+      old.maxKwh != maxKwh ||
+      old.selectedIndex != selectedIndex;
 }
 
 class _BarChartPainter extends CustomPainter {
@@ -2280,13 +2608,14 @@ class _BarChartPainter extends CustomPainter {
       );
       canvas.drawRRect(
         rect,
-        Paint()
-          ..color = const Color(0xFF2E9E52),
+        Paint()..color = const Color(0xFF2E9E52),
       );
     }
 
     // Highlight selected bar if any
-    if (selectedIndex != null && selectedIndex! >= 0 && selectedIndex! < data.length) {
+    if (selectedIndex != null &&
+        selectedIndex! >= 0 &&
+        selectedIndex! < data.length) {
       final idx = selectedIndex!;
       final slotWidth = size.width / data.length;
       final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
@@ -2304,9 +2633,12 @@ class _BarChartPainter extends CustomPainter {
       );
     }
   }
+
   @override
   bool shouldRepaint(_BarChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh || old.selectedIndex != selectedIndex;
+      old.data != data ||
+      old.maxKwh != maxKwh ||
+      old.selectedIndex != selectedIndex;
 }
 
 class _PredictionSeries {

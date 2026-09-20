@@ -1,10 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import '../theme/app_colors.dart';
-import '../services/history_service.dart';
-import '../services/readings_service.dart';
-import '../services/home_widget_service.dart';
+import 'package:rxdart/rxdart.dart';
+import '../../theme/app_colors.dart';
+import '../../theme/institute_colors.dart';
+import '../../widgets/responsive_center.dart';
+import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
+import '../../services/readings_service.dart';
+import '../../services/home_widget_service.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -38,14 +43,67 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   double _lastValidEnergy = 0.0; // Persists last valid reading
   double _lastReportedMeterKwh = -1.0; // Track PZEM meter kWh to detect deltas
   int? _lastRecordedSeen; // Track last telemetry update to avoid duplicates
-  DateTime? _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
+  DateTime?
+      _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
-  StreamSubscription? _deviceSub;
-  StreamSubscription? _rateSub;
+  // True until the first combined emission (device + rate) has been
+  // received; never reverts to true afterwards. Note this does NOT change
+  // how the device snapshot itself is handled -- a null device snapshot was
+  // already ignored outright (see below), so relay/readings state was
+  // already immune to the "blank on reconnect" bug this flag exists for
+  // elsewhere; it only gates the skeleton and the rate default.
+  bool _isLoading = true;
+
+  // Set only if the combined listener fails (or times out) before the
+  // first successful load ever completes -- gives the skeleton shimmer a
+  // real escape hatch instead of spinning forever. Once a first load has
+  // succeeded, a later error no longer blanks the screen (relay/readings
+  // state was already reconnect-safe); it just surfaces a non-blocking
+  // toast so a real, sustained failure isn't silently swallowed.
+  String? _errorText;
+  Timer? _loadTimeoutTimer;
+  bool _postLoadErrorNotified = false;
+
+  StreamSubscription? _combinedSub;
+
+  bool _isPermissionDenied(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('permission-denied') ||
+        text.contains('permission_denied');
+  }
+
+  // ── Institute theming ──────────────────────────────────────────────────
+  // `widget.role` is already passed in by the caller (see main.dart's
+  // '/device' route), but no institute is threaded through, so it's
+  // hydrated here directly from the signed-in user's own record, mirroring
+  // dashboard_screen.dart's _hydrateSessionFromAuth. This is purely
+  // cosmetic (chrome colors) and never touches relay/readings state.
+  String? _institute;
+
+  InstitutePalette get _palette =>
+      InstituteTheme.resolve(widget.role, _institute).palette;
+
+  Future<void> _hydrateInstitute() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final data = snap.value;
+      if (data is! Map) return;
+      final map = Map<String, dynamic>.from(data);
+      final institute = (map['institute'] as String?)?.trim();
+      if (!mounted) return;
+      setState(() => _institute = institute);
+    } catch (_) {
+      // Keep the green default if institute hydration fails.
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _hydrateInstitute();
     // Save device selection for home screen widget
     HomeWidgetService.saveDeviceSelection(
       deviceId: widget.deviceId,
@@ -53,91 +111,172 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       room: widget.room,
     );
     _loadPersistedReading();
-    _listenToDevice();
-    _fetchRate();
+    _listenAll();
   }
 
   @override
   void dispose() {
-    _deviceSub?.cancel();
-    _rateSub?.cancel();
+    _combinedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
     super.dispose();
   }
 
-  // ── Listen directly to Firebase for real-time relay state ────────────────
-  // Background service continues collecting readings independently
-  void _listenToDevice() {
-    _deviceSub = FirebaseDatabase.instance
-        .ref('devices/${widget.deviceId}')
-        .onValue
-        .listen((event) {
+  /// Clears the error state and re-attaches the combined listener from
+  /// scratch. Used by the Retry button shown when the first load fails.
+  /// Does not touch relay/readings state -- only the loading/error flags.
+  void _retryLoad() {
+    _combinedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
+    setState(() {
+      _errorText = null;
+      _isLoading = true;
+      _postLoadErrorNotified = false;
+    });
+    _listenAll();
+  }
+
+  // ── Listen directly to Firebase for real-time relay state, combined with
+  // the electricity rate into a single stream (see class doc for
+  // _isLoading). Background service continues collecting readings
+  // independently.
+  void _listenAll() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !_isLoading) return;
+      setState(() {
+        _isLoading = false;
+        _errorText =
+            'Taking too long to load this device. Check your connection.';
+      });
+    });
+
+    _combinedSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices/${widget.deviceId}').onValue,
+      FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
+    ]).listen((events) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw == null) return;
-      final data = Map<String, dynamic>.from(raw as Map);
-      final lastSeen = (data['last_seen'] as num?)?.toInt();
+      _loadTimeoutTimer?.cancel();
 
-      if (lastSeen != null && lastSeen == _lastRecordedSeen) {
-        return;
-      }
+      final raw = events[0].snapshot.value;
+      final rateRaw = events[1].snapshot.value;
 
-      // ✅ Use PZEM meter kWh delta (not calculated from power)
-      // The PZEM module reports cumulative energy since last reset.
-      // We track deltas and write only significant changes to history.
-      final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
-      final relay = (data['relay'] as bool?) ?? false;
+      // Precompute the device-side updates exactly as the original
+      // single-path listener did -- a null/duplicate snapshot is ignored
+      // outright rather than clearing anything (this device stream was
+      // already reconnect-safe before this change).
+      Map<String, dynamic>? parsedDevice;
+      bool? computedHasPzem;
+      bool? computedIsOnline;
+      bool? computedRelay;
+      int? newLastSeen;
 
-      // Don't override relay state if we just toggled it (give ESP32 time to respond)
-      final now = DateTime.now();
-      final ignoreRelayUpdate = _lastToggleTime != null &&
-          now.difference(_lastToggleTime!).inMilliseconds < 3000;
+      if (raw != null) {
+        final data = Map<String, dynamic>.from(raw as Map);
+        final lastSeen = (data['last_seen'] as num?)?.toInt();
 
-      // Calculate delta from PZEM meter reading
-      double kwhDelta = 0.0;
-      if (_lastReportedMeterKwh >= 0.0) {
-        kwhDelta = meterKwh - _lastReportedMeterKwh;
-        // If meter reset detected (new reading < old), use new reading as delta
-        if (kwhDelta < 0.0) {
-          kwhDelta = meterKwh;
+        if (lastSeen == null || lastSeen != _lastRecordedSeen) {
+          // ✅ Use PZEM meter kWh delta (not calculated from power)
+          // The PZEM module reports cumulative energy since last reset.
+          // We track deltas and write only significant changes to history.
+          final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+          final relay = (data['relay'] as bool?) ?? false;
+
+          // Don't override relay state if we just toggled it (give ESP32
+          // time to respond).
+          final now = DateTime.now();
+          final ignoreRelayUpdate = _lastToggleTime != null &&
+              now.difference(_lastToggleTime!).inMilliseconds < 3000;
+
+          // Calculate delta from PZEM meter reading
+          double kwhDelta = 0.0;
+          if (_lastReportedMeterKwh >= 0.0) {
+            kwhDelta = meterKwh - _lastReportedMeterKwh;
+            // If meter reset detected (new reading < old), use new reading
+            // as delta.
+            if (kwhDelta < 0.0) {
+              kwhDelta = meterKwh;
+            }
+          }
+
+          // Only record if delta is significant (avoid noise). History
+          // itself is written once, globally, by GlobalReadingsListener --
+          // this screen no longer duplicates that write, which used to
+          // double-count energy/cost for a device whenever its detail
+          // screen happened to be open.
+          if (kwhDelta >= 0.000001) {
+            _lastValidEnergy = meterKwh; // Running total = meter reading
+
+            ReadingsService.recordReading(
+              deviceId: widget.deviceId,
+              building: widget.building,
+              room: widget.room,
+              kwh: _lastValidEnergy,
+              relay: relay,
+            );
+
+            _lastReportedMeterKwh = meterKwh; // Track this meter reading
+          }
+
+          parsedDevice = data;
+          computedHasPzem = _checkHasPzemReadings(data);
+          computedIsOnline = _checkOnline(data);
+          computedRelay = ignoreRelayUpdate ? null : relay;
+          newLastSeen = lastSeen;
         }
-      }
-
-      // Only write history if delta is significant (avoid noise)
-      if (kwhDelta >= 0.000001) {
-        _lastValidEnergy = meterKwh; // Update running total to meter reading
-
-        ReadingsService.recordReading(
-          deviceId: widget.deviceId,
-          building: widget.building,
-          room: widget.room,
-          kwh: _lastValidEnergy,
-          relay: relay,
-        );
-
-        // Write ACTUAL meter delta to history (not calculated from power)
-        HistoryService.writeHistory(
-          deviceId: widget.deviceId,
-          building: widget.building,
-          kwh: kwhDelta,
-        );
-
-        _lastReportedMeterKwh = meterKwh; // Track this meter reading
       }
 
       setState(() {
-        _deviceData = data;
-        _hasPzemReadings = _checkHasPzemReadings(data);
-        _isOnline = _checkOnline(data);
-        if (!ignoreRelayUpdate) {
-          _relay = relay;
+        if (parsedDevice != null) {
+          _deviceData = parsedDevice;
+          _hasPzemReadings = computedHasPzem!;
+          _isOnline = computedIsOnline!;
+          if (computedRelay != null) {
+            _relay = computedRelay;
+          }
         }
+
+        if (rateRaw is num) {
+          _ratePhp = rateRaw.toDouble();
+        } else if (_isLoading) {
+          _ratePhp = 11.5;
+        }
+
+        _isLoading = false;
+        _errorText = null;
+        _postLoadErrorNotified = false;
       });
 
-      // Update home screen widget with latest data
-      unawaited(HomeWidgetService.updateWidget());
-
-      if (lastSeen != null) {
-        _lastRecordedSeen = lastSeen;
+      if (parsedDevice != null) {
+        // Update home screen widget with latest data
+        unawaited(HomeWidgetService.updateWidget());
+        if (newLastSeen != null) {
+          _lastRecordedSeen = newLastSeen;
+        }
+      }
+    }, onError: (Object error) {
+      if (!mounted) return;
+      debugPrint('[DeviceDetail] Combined listen error: $error');
+      _loadTimeoutTimer?.cancel();
+      if (_isLoading) {
+        // Never loaded successfully yet -- surface a real error state
+        // instead of leaving the skeleton shimmer spinning forever. This
+        // does not touch _relay/_deviceData, which were never populated.
+        setState(() {
+          _isLoading = false;
+          _errorText = _isPermissionDenied(error)
+              ? 'You do not have permission to view this device.'
+              : 'Failed to load this device.';
+        });
+      } else if (!_postLoadErrorNotified) {
+        // Already showing real relay/readings data this session -- keep it
+        // on screen (sticky, as before) and just surface a lightweight,
+        // non-blocking notice instead of silently swallowing the error.
+        _postLoadErrorNotified = true;
+        TopToast.show(
+          context,
+          'Lost connection to live device data.',
+          isError: true,
+        );
       }
     });
   }
@@ -164,16 +303,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
-  void _fetchRate() {
-    _rateSub = FirebaseDatabase.instance
-        .ref('settings/electricityRate')
-        .onValue
-        .listen((event) {
-      if (!mounted) return;
-      setState(
-          () => _ratePhp = (event.snapshot.value as num?)?.toDouble() ?? 11.5);
-    });
-  }
 
   // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
   bool _checkOnline(Map<String, dynamic> data) {
@@ -214,9 +343,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (_toggling) return;
     final previousRelay = _relay;
     final newRelay = !previousRelay;
-    
+
     _lastToggleTime = DateTime.now(); // Record when we toggled
-    
+
     setState(() {
       _relay = newRelay;
       _toggling = true;
@@ -272,32 +401,84 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final energy = _lastValidEnergy;
     final cost = energy * _ratePhp;
 
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  children: [
-                    _buildStatusCard(),
-                    const SizedBox(height: 16),
-                    _buildRelayCard(),
-                    const SizedBox(height: 16),
-                    _buildReadingsGrid(),
-                    const SizedBox(height: 16),
-                    _buildCostCard(energy, cost),
-                    const SizedBox(height: 16),
-                    _buildDeviceInfoCard(),
-                  ],
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme.resolve(widget.role, _institute)],
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: ResponsiveCenter(
+                    maxWidth: 720,
+                    child: _errorText != null
+                        ? _buildError()
+                        : ScreenSkeleton(
+                            isLoading: _isLoading,
+                            child: Column(
+                              children: [
+                                _buildStatusCard(),
+                                const SizedBox(height: 16),
+                                _buildRelayCard(),
+                                const SizedBox(height: 16),
+                                _buildReadingsGrid(),
+                                const SizedBox(height: 16),
+                                _buildCostCard(energy, cost),
+                                const SizedBox(height: 16),
+                                _buildDeviceInfoCard(),
+                              ],
+                            ),
+                          ),
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                  color: _palette.pale,
+                  borderRadius: BorderRadius.circular(20)),
+              child: Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid)),
+          const SizedBox(height: 16),
+          const Text('Cannot load device',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
+          const SizedBox(height: 8),
+          Text(_errorText ?? 'Something went wrong.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _retryLoad,
+            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+            label:
+                const Text('Retry', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: _palette.dark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+          ),
+        ]),
       ),
     );
   }
@@ -305,9 +486,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: const BoxDecoration(
-        color: AppColors.greenDark,
-        borderRadius: BorderRadius.only(
+      decoration: BoxDecoration(
+        color: _palette.dark,
+        borderRadius: const BorderRadius.only(
           bottomLeft: Radius.circular(28),
           bottomRight: Radius.circular(28),
         ),
@@ -331,9 +512,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('${widget.building} · Floor ${widget.floor}',
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 11,
-                    color: AppColors.greenLight,
+                    color: _palette.light,
                     fontWeight: FontWeight.w500,
                     letterSpacing: 0.5)),
             Text(_utilityLabel(widget.utility),
@@ -344,6 +525,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     color: Colors.white)),
           ]),
         ),
+        // Semantic: this whole badge (background/dot/text) is a live
+        // online/offline device-status indicator paired against
+        // AppColors.offline for the offline state -- deliberately NOT
+        // retheme'd (see also _buildStatusCard's "Last seen" text and
+        // _buildRelayCard's relay-state coloring below, which follow the
+        // same reasoning).
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
@@ -394,7 +581,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Row(children: [
         Container(
@@ -422,6 +609,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               '${widget.building} · Floor ${widget.floor} · ${_utilityLabel(widget.utility)}',
               style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
           const SizedBox(height: 4),
+          // Semantic: same online/offline pairing as the header badge --
+          // deliberately NOT retheme'd.
           Text('Last seen: $lastSeenText',
               style: TextStyle(
                 fontSize: 11,
@@ -438,6 +627,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     // placed after the relay). Allow toggling regardless of PZEM presence.
     final relayVisible = _relay;
     final warningMessage = _voltageWarningMessage(_deviceData);
+    // Semantic: this entire card's coloring (background, border, text, the
+    // toggle track/knob further down) is driven by `relayVisible`
+    // (live relay ON/OFF hardware state) and `_isOnline` -- this is the
+    // canonical case the institute-theming rollout heuristic calls out
+    // (enabled/disabled state), so none of it is retheme'd below.
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -492,7 +686,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           ],
         ])),
         // Only show toggle if role is admin
-        if (widget.role == 'admin')
+        if (widget.role == 'admin' ||
+            widget.role == 'main_admin' ||
+            widget.role == 'super_admin' ||
+            widget.role == 'institute_admin')
           GestureDetector(
             onTap: (!_toggling) ? _toggleRelay : null,
             child: AnimatedContainer(
@@ -561,7 +758,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             ),
           ),
         // Faculty sees a lock icon instead
-          if (widget.role != 'admin')
+        if (widget.role != 'admin')
           Container(
             width: 64,
             height: 34,
@@ -587,7 +784,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     // formula: kWh = (power_watts / 1000) × time_hours.
     final energyValue = _lastValidEnergy > 0
         ? _lastValidEnergy
-        : ( (_deviceData['kwh'] is num) ? (_deviceData['kwh'] as num).toDouble() : 0.0 );
+        : ((_deviceData['kwh'] is num)
+            ? (_deviceData['kwh'] as num).toDouble()
+            : 0.0);
     final energy = energyValue.toStringAsFixed(2);
 
     return Column(
@@ -600,26 +799,42 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
         const SizedBox(height: 12),
-        GridView.count(
-          crossAxisCount: 3,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 10,
-          mainAxisSpacing: 10,
-          childAspectRatio: 1.05,
-          children: [
-            _readingTile('Voltage', voltage, 'V', Icons.electrical_services,
-                AppColors.greenMid),
-            _readingTile(
-                'Current', current, 'A', Icons.bolt, AppColors.warning),
-            _readingTile('Power', power, 'W', Icons.power, AppColors.greenDark),
-            _readingTile('Energy', energy, 'kWh', Icons.battery_charging_full,
-                const Color(0xFF2196F3)),
-            _readingTile(
-                'Freq.', frequency, 'Hz', Icons.waves, AppColors.greenLight),
-            _readingTile('P.Factor', powerFactor, '', Icons.speed,
-                const Color(0xFF9C27B0)),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final crossAxisCount = responsiveColumnCount(
+              constraints.maxWidth,
+              mobileColumns: 3,
+              idealTileWidth: 150,
+              maxColumns: 6,
+            );
+            return GridView.count(
+              crossAxisCount: crossAxisCount,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 1.05,
+              // Semantic: fixed per-metric color key (voltage/current/power/
+              // energy/frequency/power factor each get their own hue so the
+              // 6 tiles stay visually distinguishable), mixing AppColors.green*
+              // with literal hex colors (blue/purple) -- not institute brand
+              // chrome, so deliberately NOT retheme'd.
+              children: [
+                _readingTile('Voltage', voltage, 'V', Icons.electrical_services,
+                    AppColors.greenMid),
+                _readingTile(
+                    'Current', current, 'A', Icons.bolt, AppColors.warning),
+                _readingTile(
+                    'Power', power, 'W', Icons.power, AppColors.greenDark),
+                _readingTile('Energy', energy, 'kWh',
+                    Icons.battery_charging_full, const Color(0xFF2196F3)),
+                _readingTile('Freq.', frequency, 'Hz', Icons.waves,
+                    AppColors.greenLight),
+                _readingTile('P.Factor', powerFactor, '', Icons.speed,
+                    const Color(0xFF9C27B0)),
+              ],
+            );
+          },
         ),
       ],
     );
@@ -670,9 +885,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: AppColors.greenPale,
+        color: _palette.pale,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.greenMid.withAlpha(51)),
+        border: Border.all(color: _palette.mid.withAlpha(51)),
       ),
       child: Row(children: [
         Expanded(
@@ -682,11 +897,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               style: TextStyle(fontSize: 12, color: AppColors.textMid)),
           const SizedBox(height: 4),
           Text('₱ ${cost.toStringAsFixed(2)}',
-              style: const TextStyle(
+              style: TextStyle(
                   fontFamily: 'Outfit',
                   fontSize: 24,
                   fontWeight: FontWeight.w700,
-                  color: AppColors.greenDark)),
+                  color: _palette.dark)),
           Text('at ₱${_ratePhp.toStringAsFixed(2)} / kWh',
               style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
         ])),
@@ -694,11 +909,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const Text('Total Energy',
               style: TextStyle(fontSize: 11, color: AppColors.textMid)),
           Text('${energy.toStringAsFixed(2)} kWh',
-              style: const TextStyle(
+              style: TextStyle(
                   fontFamily: 'Outfit',
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.greenDark)),
+                  color: _palette.dark)),
         ]),
       ]),
     );
@@ -710,7 +925,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.greenMid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: Column(children: [
         _infoRow('Device ID', widget.deviceId),
@@ -774,6 +989,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
+  // Semantic: fixed per-utility-type color key (lights=amber, outlets=green,
+  // AC=blue), same reasoning as the PZEM reading tiles above -- not
+  // institute brand chrome, so deliberately NOT retheme'd.
   Color _utilityColor(String u) {
     switch (u.toLowerCase()) {
       case 'light':

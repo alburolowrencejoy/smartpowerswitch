@@ -16,67 +16,84 @@ class GlobalReadingsListener {
 
   GlobalReadingsListener._internal();
 
-  final Map<String, StreamSubscription> _listeners = {};
+  StreamSubscription? _devicesSub;
+  StreamSubscription? _masterDevicesSub;
   final Map<String, dynamic> _cachedDeviceData = {};
   final Map<String, double> _lastReportedMeterKwh = {};
   final Map<String, Map<String, dynamic>> _deviceMetadata = {};
+  Set<String> _realIotDeviceIds = {};
 
   /// Initialize and start listening to all real devices
   Future<void> initialize() async {
     try {
       final db = FirebaseDatabase.instance;
-      final ref = db.ref('master_devices');
 
-      // Get list of all real devices
-      final snapshot = await ref.get();
+      // Get the initial list of real devices
+      final snapshot = await db.ref('master_devices').get();
       if (snapshot.exists) {
-        final devices = Map<String, dynamic>.from(snapshot.value as Map);
-
-        for (final entry in devices.entries) {
-          final deviceId = entry.key;
-          final data = Map<String, dynamic>.from(entry.value as Map);
-
-          // Only listen to real IoT devices
-          if (data['source'] == 'real_iot') {
-            // Cache device metadata (building, room, etc.)
-            _deviceMetadata[deviceId] = data;
-            _startListeningToDevice(deviceId);
-          }
-        }
+        _applyMasterDevices(Map<String, dynamic>.from(snapshot.value as Map));
       }
 
-      debugPrint('[GlobalReadingsListener] Initialized for ${_listeners.length} devices');
+      // Keep the real-IoT device set current, so a device registered after
+      // startup is picked up without needing an app restart.
+      _masterDevicesSub = db.ref('master_devices').onValue.listen((event) {
+        final raw = event.snapshot.value;
+        if (raw is! Map) return;
+        _applyMasterDevices(Map<String, dynamic>.from(raw));
+      }, onError: (error) {
+        debugPrint('[GlobalReadingsListener] master_devices error: $error');
+      });
+
+      _startListening();
+
+      debugPrint(
+          '[GlobalReadingsListener] Initialized for ${_realIotDeviceIds.length} devices');
     } catch (e) {
       debugPrint('[GlobalReadingsListener] Initialize error: $e');
     }
   }
 
-  /// Start persistent listener for a specific device
-  void _startListeningToDevice(String deviceId) {
-    if (_listeners.containsKey(deviceId)) {
-      return; // Already listening
+  void _applyMasterDevices(Map<String, dynamic> devices) {
+    final ids = <String>{};
+    for (final entry in devices.entries) {
+      final deviceId = entry.key;
+      if (entry.value is! Map) continue;
+      final data = Map<String, dynamic>.from(entry.value as Map);
+      if (data['source'] == 'real_iot') {
+        _deviceMetadata[deviceId] = data;
+        ids.add(deviceId);
+      }
     }
+    _realIotDeviceIds = ids;
+  }
 
-    final ref = FirebaseDatabase.instance.ref('devices/$deviceId');
+  /// Single persistent listener on the whole `devices` node -- covers every
+  /// real-IoT device with one subscription instead of one listener per
+  /// device (which also never noticed devices registered after startup).
+  void _startListening() {
+    if (_devicesSub != null) return;
 
-    final subscription = ref.onValue.listen((event) {
-      if (event.snapshot.exists) {
-        final data =
-            Map<String, dynamic>.from(event.snapshot.value as Map);
+    _devicesSub =
+        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+      final raw = event.snapshot.value;
+      if (raw is! Map) return;
+      final devices = Map<String, dynamic>.from(raw);
+
+      for (final deviceId in _realIotDeviceIds) {
+        final val = devices[deviceId];
+        if (val is! Map) continue;
+        final data = Map<String, dynamic>.from(val);
         _cachedDeviceData[deviceId] = data;
-        
-        // Process reading: calculate kWh delta, write history, update widget
         _processReading(deviceId, data);
       }
     }, onError: (error) {
-      debugPrint('[GlobalReadingsListener] Error listening to $deviceId: $error');
+      debugPrint('[GlobalReadingsListener] Error listening to devices: $error');
     });
-
-    _listeners[deviceId] = subscription;
   }
 
   /// Process a device reading: calculate kWh delta, write to history, update widget
-  Future<void> _processReading(String deviceId, Map<String, dynamic> data) async {
+  Future<void> _processReading(
+      String deviceId, Map<String, dynamic> data) async {
     try {
       final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
       double kwhDelta = 0.0;
@@ -122,26 +139,27 @@ class GlobalReadingsListener {
     return Map.from(_cachedDeviceData);
   }
 
-  /// Stop listening to a device
+  /// Stop tracking a single device (it stays covered by the shared `devices`
+  /// listener until removed from `master_devices`; this just clears its
+  /// locally cached state).
   void stopListening(String deviceId) {
-    _listeners[deviceId]?.cancel();
-    _listeners.remove(deviceId);
+    _realIotDeviceIds.remove(deviceId);
     _cachedDeviceData.remove(deviceId);
     _lastReportedMeterKwh.remove(deviceId);
     _deviceMetadata.remove(deviceId);
-    debugPrint('[GlobalReadingsListener] Stopped listening to $deviceId');
+    debugPrint('[GlobalReadingsListener] Stopped tracking $deviceId');
   }
 
   /// Stop all listeners
   void stopAllListeners() {
-    for (final subscription in _listeners.values) {
-      subscription.cancel();
-    }
-    _listeners.clear();
+    _devicesSub?.cancel();
+    _devicesSub = null;
+    _masterDevicesSub?.cancel();
+    _masterDevicesSub = null;
+    _realIotDeviceIds.clear();
     _cachedDeviceData.clear();
     _lastReportedMeterKwh.clear();
     _deviceMetadata.clear();
     debugPrint('[GlobalReadingsListener] Stopped all listeners');
   }
 }
-  

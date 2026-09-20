@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../theme/app_colors.dart';
-import '../services/download_open_service.dart';
-import '../widgets/top_toast.dart';
+import '../../theme/app_colors.dart';
+import '../../theme/institute_colors.dart';
+import '../../services/download_open_service.dart';
+import '../../utils/placeholder_data.dart';
+import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -22,9 +26,42 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   String? _errorText;
   StreamSubscription<DatabaseEvent>? _notificationsSub;
 
+  // ── Institute theming ──────────────────────────────────────────────────
+  // This screen is a standalone pushed route (no role/institute constructor
+  // args -- see main.dart's '/notifications' route), so role/institute are
+  // hydrated directly from the signed-in user's own record, mirroring
+  // dashboard_screen.dart's _hydrateSessionFromAuth.
+  String _role = 'faculty';
+  String? _institute;
+
+  InstitutePalette get _palette =>
+      InstituteTheme.resolve(_role, _institute).palette;
+
+  Future<void> _hydrateSessionFromAuth() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final data = snap.value;
+      if (data is! Map) return;
+      final map = Map<String, dynamic>.from(data);
+      final role = (map['role'] as String?) ?? 'faculty';
+      final institute = (map['institute'] as String?)?.trim();
+      if (!mounted) return;
+      setState(() {
+        _role = role;
+        _institute = institute;
+      });
+    } catch (_) {
+      // Keep existing role defaults if role hydration fails.
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _hydrateSessionFromAuth();
     _listenToNotifications();
   }
 
@@ -46,7 +83,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       final data = event.snapshot.value as Map<dynamic, dynamic>?;
       if (data == null) {
         setState(() {
-          _notifications = [];
+          // Only accept "no notifications" before the first successful
+          // load -- once real data has been shown this session, a later
+          // null/empty snapshot (e.g. a reconnect blip) must not blank it
+          // back out. `_loading` never reverts to true after this.
+          if (_loading) _notifications = [];
           _loading = false;
           _errorText = null;
         });
@@ -72,7 +113,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       final denied = text.contains('permission-denied') ||
           text.contains('permission_denied');
       setState(() {
-        _notifications = [];
+        if (_loading) _notifications = [];
         _loading = false;
         _errorText = denied
             ? 'You do not have permission to view notifications.'
@@ -186,7 +227,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     width: 44,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: AppColors.greenMid.withAlpha(90),
+                      color: _palette.mid.withAlpha(90),
                       borderRadius: BorderRadius.circular(99),
                     ),
                   ),
@@ -213,15 +254,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   const SizedBox(height: 10),
                   Row(
                     children: [
-                      const Icon(Icons.system_update_alt_outlined,
-                          size: 16, color: AppColors.greenDark),
+                      Icon(Icons.system_update_alt_outlined,
+                          size: 16, color: _palette.dark),
                       const SizedBox(width: 6),
                       Text(
                         'Version: $versionLine',
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: AppColors.greenDark),
+                            color: _palette.dark),
                       ),
                     ],
                   ),
@@ -250,9 +291,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   constraints: const BoxConstraints(maxHeight: 280),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: AppColors.greenPale,
+                    color: _palette.pale,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.greenMid.withAlpha(40)),
+                    border: Border.all(color: _palette.mid.withAlpha(40)),
                   ),
                   child: SingleChildScrollView(
                     child: Text(
@@ -277,9 +318,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         icon: const Icon(Icons.open_in_new, size: 16),
                         label: const Text('Release Page'),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.greenDark,
-                          side: BorderSide(
-                              color: AppColors.greenDark.withAlpha(80)),
+                          foregroundColor: _palette.dark,
+                          side: BorderSide(color: _palette.dark.withAlpha(80)),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -301,7 +341,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           style: const TextStyle(color: Colors.white),
                         ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.greenDark,
+                          backgroundColor: _palette.dark,
                           disabledBackgroundColor:
                               AppColors.textMuted.withAlpha(70),
                           shape: RoundedRectangleBorder(
@@ -322,24 +362,34 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: _loading
-                  ? const Center(
-                      child:
-                          CircularProgressIndicator(color: AppColors.greenMid))
-                  : _errorText != null
-                      ? _buildError()
-                      : _notifications.isEmpty
-                          ? _buildEmpty()
-                          : _buildList(),
-            ),
-          ],
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme.resolve(_role, _institute)],
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: _errorText != null
+                    ? _buildError()
+                    : ScreenSkeleton(
+                        isLoading: _loading,
+                        child: Builder(builder: (context) {
+                          final displayNotifications =
+                              _notifications.isEmpty && _loading
+                                  ? placeholderNotificationList()
+                                  : _notifications;
+                          return displayNotifications.isEmpty
+                              ? _buildEmpty()
+                              : _buildList(displayNotifications);
+                        }),
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -348,9 +398,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: const BoxDecoration(
-        color: AppColors.greenDark,
-        borderRadius: BorderRadius.only(
+      decoration: BoxDecoration(
+        color: _palette.dark,
+        borderRadius: const BorderRadius.only(
           bottomLeft: Radius.circular(28),
           bottomRight: Radius.circular(28),
         ),
@@ -381,8 +431,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         if (_notifications.isNotEmpty)
           TextButton(
             onPressed: _clearAll,
-            child: const Text('Clear all',
-                style: TextStyle(fontSize: 12, color: AppColors.greenLight)),
+            child: Text('Clear all',
+                style: TextStyle(fontSize: 12, color: _palette.light)),
           ),
       ]),
     );
@@ -397,11 +447,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             width: 72,
             height: 72,
             decoration: BoxDecoration(
-              color: AppColors.greenPale,
+              color: _palette.pale,
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Icon(Icons.notifications_none,
-                size: 36, color: AppColors.greenMid),
+            child: Icon(Icons.notifications_none, size: 36, color: _palette.mid),
           ),
           const SizedBox(height: 16),
           const Text('No notifications',
@@ -431,11 +480,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                color: AppColors.greenPale,
+                color: _palette.pale,
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: const Icon(Icons.lock_outline,
-                  size: 34, color: AppColors.greenMid),
+              child: Icon(Icons.lock_outline, size: 34, color: _palette.mid),
             ),
             const SizedBox(height: 16),
             const Text('Cannot load notifications',
@@ -455,12 +503,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     );
   }
 
-  Widget _buildList() {
+  Widget _buildList(List<Map<String, dynamic>> notifications) {
     return ListView.separated(
       padding: const EdgeInsets.all(20),
-      itemCount: _notifications.length,
+      itemCount: notifications.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (_, i) => _buildNotifCard(_notifications[i]),
+      itemBuilder: (_, i) => _buildNotifCard(notifications[i]),
     );
   }
 
@@ -477,6 +525,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final isUpdate = type == 'app_update';
     final isRateChange = type == 'rate_change' || type == 'rate_change_manual' || type == 'rate_change_manual';
 
+    // Semantic: notification-type severity tier (rate-change/update = green
+    // "info", high-consumption = warning, offline-device = error) -- not
+    // brand chrome, so deliberately NOT retheme'd. Drives this card's icon,
+    // icon background, and border below.
     final color = isRateChange
       ? AppColors.greenMid
       : isUpdate

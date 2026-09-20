@@ -2,12 +2,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../theme/app_colors.dart';
-import '../services/automation_scheduler_service.dart';
-import '../widgets/top_toast.dart';
-import 'campus_map_screen.dart';
+import '../../theme/app_colors.dart';
+import '../../theme/institute_colors.dart';
+import '../../services/automation_scheduler_service.dart';
+import '../../utils/placeholder_data.dart';
+import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
+import '../../widgets/trend_chart_painters.dart';
 import 'automation_screen.dart';
+import 'building_floor_screen.dart';
+import '../shared/campus_map_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -22,9 +28,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   int _selectedIndex = 0;
   String _role = 'faculty';
+  String? _institute;
   String _userName = '';
   bool _roleLoaded = false;
   bool _compactMenuOpen = false;
+
+  bool get _isSuperAdmin =>
+      _role == 'main_admin' || _role == 'admin' || _role == 'super_admin';
+  bool get _isInstituteAdmin => _role == 'institute_admin';
+  bool get _canAccessManagement => _isSuperAdmin || _isInstituteAdmin;
+
+  /// Resolution now lives centrally in `InstituteTheme.resolve` (see
+  /// theme/institute_colors.dart) instead of being recomputed here.
+  ///
+  /// Note: this deliberately calls `InstituteTheme.resolve` directly rather
+  /// than reading `context.institutePalette`. `build()` below wraps its
+  /// *returned* subtree in a local `Theme` carrying the resolved
+  /// `InstituteTheme` extension, but `context` here is this State's own
+  /// BuildContext -- which sits *above* that locally-created Theme in the
+  /// element tree, not below it. `Theme.of(context)` walks up from a
+  /// context's position looking for ancestors, so a lookup from this
+  /// State's context can never see a Theme that this State's own build()
+  /// call introduces further down; it would silently keep resolving to the
+  /// ambient (unthemed) app Theme and always fall back to green. Calling
+  /// the resolver directly avoids that pitfall. The `Theme` wrap is still
+  /// registered below for genuine descendants (e.g. nested screens/shared
+  /// widgets with their own BuildContext) that read `context.institutePalette`.
+  InstitutePalette get _palette =>
+      InstituteTheme.resolve(_role, _institute).palette;
 
   // Buildings loaded from Firebase
   List<Map<String, dynamic>> _buildings = [];
@@ -42,22 +73,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _electricityRate = 11.5;
   int _assignedDevices = 0;
   int _unassignedDevices = 0;
+
+  // ── Institute-scoped summary (institute_admin home tab only) ──────────
+  // Populated by _listenInstituteScoped(), filtered strictly to `_institute`
+  // -- never derived from the system-wide totals above. See
+  // building_floor_screen.dart for the field-filtering pattern this mirrors.
+  double _instituteKwh = 0.0;
+  double _instituteMonthlyKwh = 0.0;
+  int _instituteAssignedDevices = 0;
+  int _instituteOnlineDevices = 0;
+  StreamSubscription? _instituteSub;
   Map<String, int> _buildingDeviceCounts = {};
   Map<String, double> _buildingEnergy = {};
   Map<String, double> _utilityTotals = {};
   String _analyticsRange = 'daily';
   String _trendChartType = 'line';
   List<Map<String, dynamic>> _historyData = [];
+  // Raw `history` node cached so the analytics range can be re-parsed
+  // locally (see _setAnalyticsRange) without re-touching Firebase.
+  Map<String, dynamic> _historyRoot = {};
   int _unreadNotificationCount = 0;
   int _lastSeenNotificationTimestamp = 0;
   int _latestNotificationTimestamp = 0;
   Object? _latestNotificationsRaw;
 
-  StreamSubscription? _masterSub;
-  StreamSubscription? _devicesSub;
-  StreamSubscription? _rateSub;
-  StreamSubscription? _historySub;
-  StreamSubscription? _buildingsSub;
+  // True until the very first combined emission of all of this screen's
+  // Firebase streams has been received; never reverts to true afterwards
+  // for the life of this State, so a later transient null snapshot cannot
+  // blank out already-loaded data (see _listenAll).
+  bool _isLoading = true;
+
+  // Set only if the combined listener fails (or times out) before the
+  // first successful load ever completes -- gives the skeleton shimmer a
+  // real escape hatch instead of spinning forever. Once a first load has
+  // succeeded, a later error no longer blanks the screen (see onError in
+  // _listenAll); it just surfaces a non-blocking toast.
+  String? _errorText;
+  Timer? _loadTimeoutTimer;
+  bool _postLoadErrorNotified = false;
+
+  // Sticky guard for the notification badge, which listens on its own path
+  // separately from _combinedSub: once a real notifications snapshot has
+  // been parsed, a later null/empty snapshot (reconnect blip) must not
+  // reset the unread count back to 0.
+  bool _notificationsLoadedOnce = false;
+
+  StreamSubscription? _combinedSub;
   StreamSubscription? _notificationsSub;
 
   bool _isPermissionDenied(Object error) {
@@ -67,20 +128,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _cancelRealtimeSubs() async {
-    await _masterSub?.cancel();
-    await _devicesSub?.cancel();
-    await _rateSub?.cancel();
-    await _historySub?.cancel();
-    await _buildingsSub?.cancel();
+    await _combinedSub?.cancel();
     await _notificationsSub?.cancel();
-    _masterSub = _devicesSub = _rateSub = _historySub = _buildingsSub = null;
+    await _instituteSub?.cancel();
+    _combinedSub = null;
     _notificationsSub = null;
+    _instituteSub = null;
   }
 
   @override
   void dispose() {
+    _loadTimeoutTimer?.cancel();
     _cancelRealtimeSubs();
     super.dispose();
+  }
+
+  /// Clears the error state and re-attaches the combined listener from
+  /// scratch. Used by the Retry button shown when the first load fails.
+  void _retryLoad() {
+    _combinedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
+    setState(() {
+      _errorText = null;
+      _isLoading = true;
+      _postLoadErrorNotified = false;
+    });
+    _listenAll();
   }
 
   Future<void> _hydrateSessionFromAuth() async {
@@ -97,12 +170,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final role = (map['role'] as String?) ?? 'faculty';
       final name =
           (map['name'] as String?) ?? user.email?.split('@').first ?? '';
+      final institute = (map['institute'] as String?)?.trim();
 
       if (!mounted) return;
       setState(() {
         _role = role;
         _userName = name;
+        _institute = institute;
       });
+      if (_isInstituteAdmin) {
+        _listenInstituteScoped();
+      }
     } catch (_) {
       // Keep existing role defaults if role hydration fails.
     }
@@ -119,11 +197,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
       _roleLoaded = true;
       _hydrateSessionFromAuth();
-      _listenToBuildings();
-      _listenToMasterDevices();
-      _listenToEnergyData();
-      _listenToRate();
-      _listenToHistory();
+      _listenAll();
       _loadNotificationReadState();
       _listenToNotifications();
     }
@@ -160,6 +234,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _recalculateUnreadNotificationCount() {
     final raw = _latestNotificationsRaw;
     if (raw == null || raw is! Map) {
+      if (_notificationsLoadedOnce) return;
       if (!mounted) return;
       setState(() {
         _latestNotificationTimestamp = 0;
@@ -187,6 +262,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _latestNotificationTimestamp = latest;
       _unreadNotificationCount = unread;
+      _notificationsLoadedOnce = true;
     });
   }
 
@@ -210,199 +286,243 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Navigator.pushNamed(context, '/notifications');
   }
 
-  Widget _buildNotificationBadgeIcon({double size = 22}) {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Icon(Icons.notifications_outlined, color: Colors.white, size: size),
-        if (_unreadNotificationCount > 0)
-          Positioned(
-            right: -6,
-            top: -6,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-              constraints: const BoxConstraints(minWidth: 18),
-              decoration: BoxDecoration(
-                color: AppColors.warning,
-                borderRadius: BorderRadius.circular(99),
-                border: Border.all(color: AppColors.greenDark, width: 1.5),
-              ),
-              child: Text(
-                _unreadNotificationCount > 99
-                    ? '99+'
-                    : _unreadNotificationCount.toString(),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  // ── Listen to buildings from Firebase ─────────────────────────────────────
-  void _listenToBuildings() {
-    _buildingsSub =
-        FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
-      if (!mounted) return;
-      final raw = event.snapshot.value;
-
-      if (raw == null || raw is! Map) {
-        debugPrint('[Buildings] Expected Map, got ${raw.runtimeType}: $raw');
-        setState(() => _buildings = []);
-        return;
-      }
-
-      try {
-        final data = Map<String, dynamic>.from(raw);
-        debugPrint('[Buildings] Got ${data.length} buildings');
-        final List<Map<String, dynamic>> list = [];
-
-        data.forEach((code, val) {
-          if (val is! Map) {
-            return;
-          }
-          final b = Map<String, dynamic>.from(val);
-          list.add({
-            'code': code,
-            'name': (b['name'] ?? code).toString(),
-            'floors': (b['floors'] ?? 1) as int,
-          });
-        });
-
-        list.sort(
-            (a, b) => (a['code'] as String).compareTo(b['code'] as String));
-        setState(() => _buildings = list);
-      } catch (e, st) {
-        debugPrint('[Buildings] Exception: $e\n$st');
-        setState(() => _buildings = []);
-      }
-    }, onError: (Object error) {
-      debugPrint('[Buildings] Listen error: $error');
+  // ── Listen to every Firebase path this screen needs in one combined
+  // stream so a transient null on any single path can never blank out
+  // data this screen has already loaded (see class-level `_isLoading`).
+  void _listenAll() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !_isLoading) return;
+      setState(() {
+        _isLoading = false;
+        _errorText =
+            'Taking too long to load dashboard data. Check your connection.';
+      });
     });
-  }
 
-  void _listenToMasterDevices() {
-    _masterSub =
-        FirebaseDatabase.instance.ref('master_devices').onValue.listen((event) {
+    _combinedSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('buildings').onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
+      FirebaseDatabase.instance.ref('history').onValue,
+    ]).listen((events) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw == null) {
-        setState(() {
+      _loadTimeoutTimer?.cancel();
+      setState(() {
+        // ── buildings ──────────────────────────────────────────────
+        final buildingsRaw = events[0].snapshot.value;
+        if (buildingsRaw is Map) {
+          try {
+            final data = Map<String, dynamic>.from(buildingsRaw);
+            final List<Map<String, dynamic>> list = [];
+            data.forEach((code, val) {
+              if (val is! Map) return;
+              final b = Map<String, dynamic>.from(val);
+              list.add({
+                'code': code,
+                'name': (b['name'] ?? code).toString(),
+                'floors': (b['floors'] ?? 1) as int,
+              });
+            });
+            list.sort((a, b) =>
+                (a['code'] as String).compareTo(b['code'] as String));
+            _buildings = list;
+          } catch (e, st) {
+            debugPrint('[Buildings] Exception: $e\n$st');
+            if (_isLoading) _buildings = [];
+          }
+        } else if (_isLoading) {
+          _buildings = [];
+        }
+
+        // ── master_devices (assigned/unassigned counts) ───────────
+        final masterRaw = events[1].snapshot.value;
+        if (masterRaw is Map) {
+          final data = Map<String, dynamic>.from(masterRaw);
+          int assigned = 0, unassigned = 0;
+          Map<String, int> bCounts = {};
+          data.forEach((id, val) {
+            if (val is! Map) return;
+            final device = Map<String, dynamic>.from(val);
+            final assignedTo = (device['assignedTo'] ?? '').toString();
+            if (assignedTo.isNotEmpty) {
+              assigned++;
+              final parts = assignedTo.split('/');
+              if (parts.isNotEmpty) {
+                bCounts[parts[0]] = (bCounts[parts[0]] ?? 0) + 1;
+              }
+            } else {
+              unassigned++;
+            }
+          });
+          _assignedDevices = assigned;
+          _unassignedDevices = unassigned;
+          _buildingDeviceCounts = bCounts;
+        } else if (_isLoading) {
           _assignedDevices = 0;
           _unassignedDevices = 0;
           _buildingDeviceCounts = {};
-        });
-        return;
-      }
-      final data = Map<String, dynamic>.from(raw as Map);
-      int assigned = 0, unassigned = 0;
-      Map<String, int> bCounts = {};
-      data.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        final assignedTo = (device['assignedTo'] ?? '').toString();
-        if (assignedTo.isNotEmpty) {
-          assigned++;
-          final parts = assignedTo.split('/');
-          if (parts.isNotEmpty) {
-            bCounts[parts[0]] = (bCounts[parts[0]] ?? 0) + 1;
-          }
-        } else {
-          unassigned++;
         }
-      });
-      setState(() {
-        _assignedDevices = assigned;
-        _unassignedDevices = unassigned;
-        _buildingDeviceCounts = bCounts;
-      });
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
 
-  void _listenToEnergyData() {
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw == null) {
-        setState(() {
+        // ── devices (today's energy totals) ───────────────────────
+        final devicesRaw = events[2].snapshot.value;
+        if (devicesRaw is Map) {
+          final data = Map<String, dynamic>.from(devicesRaw);
+          double totalKwh = 0;
+          Map<String, double> uTotals = {};
+          data.forEach((id, val) {
+            if (val is! Map) return;
+            final device = Map<String, dynamic>.from(val);
+            final utility = (device['utility'] ?? '').toString();
+            final kwhValue = device['kwh'];
+            final kwh = kwhValue is num
+                ? kwhValue.toDouble()
+                : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
+
+            totalKwh += kwh;
+            final n = _capitalizeFirst(utility);
+            if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh;
+          });
+          _totalKwh = totalKwh;
+          _utilityTotals = uTotals;
+        } else if (_isLoading) {
           _totalKwh = 0;
           _utilityTotals = {};
-        });
-        return;
-      }
-      final data = Map<String, dynamic>.from(raw as Map);
-      double totalKwh = 0;
-      Map<String, double> uTotals = {};
-      data.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        final utility = (device['utility'] ?? '').toString();
-        final kwhValue = device['kwh'];
-        final kwh = kwhValue is num
-            ? kwhValue.toDouble()
-            : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
+        }
 
-        totalKwh += kwh;
-        final n = _capitalizeFirst(utility);
-        if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh;
-      });
-      setState(() {
-        _totalKwh = totalKwh;
-        _monthlyCostPhp = _monthlyKwh * _electricityRate;
-        _utilityTotals = uTotals;
-      });
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
+        // ── electricity rate ───────────────────────────────────────
+        final rateRaw = events[3].snapshot.value;
+        if (rateRaw is num) {
+          _electricityRate = rateRaw.toDouble();
+        } else if (_isLoading) {
+          _electricityRate = 11.5;
+        }
 
-  void _listenToRate() {
-    _rateSub = FirebaseDatabase.instance
-        .ref('settings/electricityRate')
-        .onValue
-        .listen((event) {
-      if (!mounted) return;
-      final rate = (event.snapshot.value as num?)?.toDouble() ?? 11.5;
-      setState(() {
-        _electricityRate = rate;
-        _monthlyCostPhp = _monthlyKwh * rate;
-      });
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
-
-  void _listenToHistory() {
-    _historySub?.cancel();
-    _historySub =
-        FirebaseDatabase.instance.ref('history').onValue.listen((event) {
-      if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw == null) {
-        setState(() {
+        // ── history (monthly totals + per-building energy) ───────
+        final historyRaw = events[4].snapshot.value;
+        if (historyRaw is Map) {
+          _historyRoot = Map<String, dynamic>.from(historyRaw);
+          _historyData = _parseAnalyticsEntries(_historyRoot, _analyticsRange);
+          _buildingEnergy = _currentMonthBuildingEnergy(_historyRoot);
+          _updateMonthlyTotals(_historyRoot);
+        } else if (_isLoading) {
+          _historyRoot = {};
           _historyData = [];
           _buildingEnergy = {};
-        });
-        return;
-      }
+          _monthlyKwh = 0;
+          _monthlyCostPhp = 0;
+        }
 
-      final root = Map<String, dynamic>.from(raw as Map);
-      final list = _parseAnalyticsEntries(root, _analyticsRange);
-      setState(() {
-        _historyData = list;
-        _buildingEnergy = _currentMonthBuildingEnergy(root);
-        _updateMonthlyTotals(root);
+        // Cost is always shown live against the current rate.
+        _monthlyCostPhp = _monthlyKwh * _electricityRate;
+
+        _isLoading = false;
+        _errorText = null;
+        _postLoadErrorNotified = false;
       });
     }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
+      if (!mounted) return;
+      debugPrint('[Dashboard] Combined listen error: $error');
+      _loadTimeoutTimer?.cancel();
+      if (_isLoading) {
+        // Never loaded successfully yet -- surface a real error state
+        // instead of leaving the skeleton shimmer spinning forever.
+        setState(() {
+          _isLoading = false;
+          _errorText = _isPermissionDenied(error)
+              ? 'You do not have permission to view dashboard data.'
+              : 'Failed to load dashboard data.';
+        });
+      } else if (!_postLoadErrorNotified) {
+        // Already showing real data this session -- keep the sticky data
+        // on screen and just surface a lightweight, non-blocking notice.
+        _postLoadErrorNotified = true;
+        TopToast.show(
+          context,
+          'Lost connection to live dashboard data.',
+          isError: true,
+        );
+      }
+    });
+  }
+
+  // ── Institute-scoped combined listener (institute_admin only) ─────────
+  // Mirrors the exact field-filtering pattern already proven in
+  // building_floor_screen.dart (`_listenAll` there): `devices` filtered by
+  // `building == _institute` for today's kWh + online count, `master_devices`
+  // filtered by `assignedTo` starting with `"$code/"` for the assigned
+  // count, and `history/monthly/{monthKey}/buildings/{code}/kwh` for this
+  // month's institute energy. Every number here is scoped to `_institute`
+  // only -- never falls back to the system-wide totals used elsewhere on
+  // this screen.
+  void _listenInstituteScoped() {
+    final code = _institute;
+    if (code == null || code.isEmpty) return;
+
+    _instituteSub?.cancel();
+    final monthKey = _monthKey(DateTime.now());
+    _instituteSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance
+          .ref('history/monthly/$monthKey/buildings/$code/kwh')
+          .onValue,
+    ]).listen((events) {
+      if (!mounted) return;
+      setState(() {
+        // ── devices: today's institute kWh + online count ──────────
+        final devicesRaw = events[0].snapshot.value;
+        if (devicesRaw is Map) {
+          final data = Map<String, dynamic>.from(devicesRaw);
+          double kwh = 0;
+          int online = 0;
+          data.forEach((id, val) {
+            if (val is! Map) return;
+            final device = Map<String, dynamic>.from(val);
+            final building = (device['building'] ?? '').toString();
+            if (building != code) return;
+            kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
+
+            final lastSeen = device['last_seen'];
+            if (lastSeen != null && lastSeen != 0) {
+              final dt =
+                  DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
+              if (DateTime.now().difference(dt).inMinutes < 2) online++;
+            }
+          });
+          _instituteKwh = kwh;
+          _instituteOnlineDevices = online;
+        } else {
+          _instituteKwh = 0;
+          _instituteOnlineDevices = 0;
+        }
+
+        // ── master_devices: assigned count for this institute only ─
+        final masterRaw = events[1].snapshot.value;
+        if (masterRaw is Map) {
+          final data = Map<String, dynamic>.from(masterRaw);
+          int assigned = 0;
+          data.forEach((id, val) {
+            if (val is! Map) return;
+            final assignedTo = (val['assignedTo'] ?? '').toString();
+            if (assignedTo.startsWith('$code/')) assigned++;
+          });
+          _instituteAssignedDevices = assigned;
+        } else {
+          _instituteAssignedDevices = 0;
+        }
+
+        // ── this month's institute energy from history ──────────────
+        final historyRaw = events[2].snapshot.value;
+        if (historyRaw is num) {
+          _instituteMonthlyKwh = historyRaw.toDouble();
+        } else {
+          _instituteMonthlyKwh = 0;
+        }
+      });
+    }, onError: (Object error) {
+      debugPrint('[Dashboard] Institute-scoped listen error: $error');
     });
   }
 
@@ -467,8 +587,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _setAnalyticsRange(String range) {
-    setState(() => _analyticsRange = range);
-    _listenToHistory();
+    // Re-parse from the already-cached `history` root instead of touching
+    // Firebase again -- avoids a spurious re-subscription for a value we
+    // already have.
+    setState(() {
+      _analyticsRange = range;
+      _historyData = _parseAnalyticsEntries(_historyRoot, range);
+    });
   }
 
   Map<String, dynamic> _pickRangeNode(
@@ -626,9 +751,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  double get _maxKwh => _historyData.isEmpty
+  /// History data for the chart, backfilled with realistic-looking
+  /// placeholder rows while the first load is still in flight so the
+  /// skeleton shimmer has something to draw bones over.
+  List<Map<String, dynamic>> get _historyDisplay =>
+      _historyData.isEmpty && _isLoading
+          ? placeholderHistoryList()
+          : _historyData;
+
+  double get _maxKwh => _historyDisplay.isEmpty
       ? 1
-      : _historyData.fold(
+      : _historyDisplay.fold(
           0.0,
           (m, d) => (d['kwh'] as num).toDouble() > m
               ? (d['kwh'] as num).toDouble()
@@ -674,6 +807,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       case 'MID':
         return const Color(0xFFE8922A);
       default:
+        // Semantic: 3-tier severity indicator (HIGH=red/MID=orange/
+        // LOW=green), not brand chrome -- deliberately NOT retheme'd per
+        // the institute-theming rollout heuristic.
         return AppColors.greenMid;
     }
   }
@@ -734,7 +870,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.greenDark,
+                backgroundColor: _palette.dark,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10)),
               ),
@@ -820,7 +956,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: TextStyle(color: AppColors.textMuted))),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.greenDark,
+                  backgroundColor: _palette.dark,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10))),
               onPressed: () async {
@@ -994,7 +1130,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   label: const Text('Add',
                       style: TextStyle(color: Colors.white, fontSize: 12)),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.greenDark,
+                    backgroundColor: _palette.dark,
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     shape: RoundedRectangleBorder(
@@ -1025,22 +1161,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             color: AppColors.cardBg,
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: AppColors.greenMid.withAlpha(31)),
+                                color: _palette.mid.withAlpha(31)),
                           ),
                           child: Row(children: [
                             Container(
                               width: 40,
                               height: 40,
                               decoration: BoxDecoration(
-                                  color: AppColors.greenPale,
+                                  color: _palette.pale,
                                   borderRadius: BorderRadius.circular(10)),
                               child: Center(
                                   child: Text(code,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           fontFamily: 'Outfit',
                                           fontSize: 9,
                                           fontWeight: FontWeight.w700,
-                                          color: AppColors.greenDark))),
+                                          color: _palette.dark))),
                             ),
                             const SizedBox(width: 12),
                             Expanded(
@@ -1068,11 +1204,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 child: Container(
                                   padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
-                                    color: AppColors.greenPale,
+                                    color: _palette.pale,
                                     borderRadius: BorderRadius.circular(8),
                                   ),
-                                  child: const Icon(Icons.edit_outlined,
-                                      size: 18, color: AppColors.greenDark),
+                                  child: Icon(Icons.edit_outlined,
+                                      size: 18, color: _palette.dark),
                                 ),
                               ),
                               const SizedBox(width: 6),
@@ -1113,50 +1249,257 @@ class _DashboardScreenState extends State<DashboardScreen> {
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51))),
+          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
       enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: AppColors.greenMid.withAlpha(51))),
+          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.greenMid)),
+          borderSide: BorderSide(color: _palette.mid)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      body: SafeArea(
-        child: Column(children: [
-          _buildTopBar(),
-          Expanded(
-            child: IndexedStack(
-              index: _selectedIndex,
-              children: [
-                _buildHomeTab(),
-                CampusMapScreen(role: _role, showAppBar: false),
-                _buildAnalyticsTab(),
-                AutomationScreen(role: _role),
-              ],
+    final showAnalytics = !_isInstituteAdmin;
+    final safeIndex =
+        (!showAnalytics && _selectedIndex == 2) ? 0 : _selectedIndex;
+
+    // Local theme override carrying the resolved InstituteTheme extension,
+    // so any genuine descendant widget (its own BuildContext, below this
+    // point in the tree) can read `context.institutePalette`. This State's
+    // own `_palette` getter does not rely on this -- see its doc comment.
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme.resolve(_role, _institute)],
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        body: SafeArea(
+          child: Column(children: [
+            _buildTopBar(),
+            Expanded(
+              child: IndexedStack(
+                index: safeIndex,
+                children: [
+                  _isInstituteAdmin
+                      ? _buildInstituteHomeTab()
+                      : (_errorText != null
+                          ? _buildError()
+                          : ScreenSkeleton(
+                              isLoading: _isLoading, child: _buildHomeTab())),
+                  CampusMapScreen(role: _role, showAppBar: false),
+                  _errorText != null
+                      ? _buildError()
+                      : ScreenSkeleton(
+                          isLoading: _isLoading, child: _buildAnalyticsTab()),
+                  AutomationScreen(role: _role),
+                ],
+              ),
             ),
+          ]),
+        ),
+        bottomNavigationBar: _buildBottomNav(showAnalytics: showAnalytics),
+      ),
+    );
+  }
+
+  /// An institute admin's "Dashboard" tab: their institute's rooms directly,
+  /// themed to their institute's color — no campus-wide buildings list.
+  Widget _buildInstituteHomeTab() {
+    final code = _institute ?? '';
+    if (code.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40.0),
+          child: Text(
+            'Your account has no institute assigned yet.\nAsk your main admin to assign one.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textMuted),
+          ),
+        ),
+      );
+    }
+    final match = _buildings.firstWhere(
+      (b) => (b['code'] ?? '').toString() == code,
+      orElse: () => <String, dynamic>{},
+    );
+    final floors = (match['floors'] as int?) ?? 1;
+    final name = (match['name'] as String?) ?? code;
+    return Column(children: [
+      _buildInstituteEnergyCard(),
+      Expanded(
+        child: BuildingFloorScreen(
+          key: ValueKey('dash-institute-$code'),
+          buildingCode: code,
+          buildingName: name,
+          floors: floors,
+          role: _role,
+          showBackButton: false,
+        ),
+      ),
+    ]);
+  }
+
+  /// Institute-scoped summary card shown above the floor/room picker on an
+  /// institute_admin's home tab. Visually mirrors `_buildEnergyCards()` (the
+  /// main-admin equivalent) but every number is filtered to `_institute`
+  /// only -- see `_listenInstituteScoped()`. Branded with `_palette` instead
+  /// of the hardcoded main-admin green.
+  Widget _buildInstituteEnergyCard() {
+    final monthlyCost = _instituteMonthlyKwh * _electricityRate;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+            colors: [_palette.dark, _palette.mid],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+              color: _palette.dark.withAlpha(77),
+              blurRadius: 20,
+              offset: const Offset(0, 8))
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Energy consumed today',
+            style: TextStyle(fontSize: 12, color: Colors.white)),
+        const SizedBox(height: 6),
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(_safeFormatDouble(_instituteKwh, 2),
+              style: const TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 40,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
+          const Padding(
+              padding: EdgeInsets.only(bottom: 6, left: 6),
+              child: Text('kWh',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500))),
+        ]),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+              color: Colors.white.withAlpha(15),
+              borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            _miniStat(
+                'Month Cost', '₱ ${_safeFormatDouble(monthlyCost, 0)}'),
+            _vertDivider(),
+            _miniStat('Assigned', '$_instituteAssignedDevices devices'),
+            _vertDivider(),
+            _miniStat('Online', '$_instituteOnlineDevices devices'),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                  color: _palette.pale,
+                  borderRadius: BorderRadius.circular(20)),
+              child: Icon(Icons.wifi_off_rounded,
+                  size: 34, color: _palette.mid)),
+          const SizedBox(height: 16),
+          const Text('Cannot load dashboard',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
+          const SizedBox(height: 8),
+          Text(_errorText ?? 'Something went wrong.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _retryLoad,
+            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+            label:
+                const Text('Retry', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: _palette.dark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
           ),
         ]),
       ),
-      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  /// The top-bar role badge, 3-way branched on `_isSuperAdmin` /
+  /// `_isInstituteAdmin` (not the raw `_role` string -- that only matched
+  /// the literal `'admin'`, mislabeling `main_admin`/`super_admin` and
+  /// `institute_admin` accounts as "Faculty"). Institute admins get their
+  /// own label/icon, styled off `_palette` to stay institute-branded.
+  Widget _roleBadge() {
+    final IconData icon;
+    final String label;
+    final Color color;
+    final bool highlighted;
+    if (_isSuperAdmin) {
+      icon = Icons.star;
+      label = 'Admin';
+      // _palette always resolves to the green admin ramp for this role
+      // (see InstituteTheme.resolve), so this is equivalent to the old
+      // hardcoded AppColors.greenLight but routes through the single
+      // resolver instead of duplicating the literal.
+      color = _palette.light;
+      highlighted = true;
+    } else if (_isInstituteAdmin) {
+      icon = Icons.school;
+      label = 'Institute Admin';
+      color = _palette.light;
+      highlighted = true;
+    } else {
+      icon = Icons.person;
+      label = 'Faculty';
+      color = Colors.white;
+      highlighted = false;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: highlighted ? color.withAlpha(51) : Colors.white.withAlpha(26),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+            color: highlighted
+                ? color.withAlpha(102)
+                : Colors.white.withAlpha(51)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 11, color: color),
+        const SizedBox(width: 4),
+        Text(label,
+            style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+      ]),
     );
   }
 
   Widget _buildTopBar() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-      decoration: const BoxDecoration(
-        color: AppColors.greenDark,
+      decoration: BoxDecoration(
+        color: _palette.dark,
       ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final isCompact = constraints.maxWidth < 430;
-          return Row(children: [
+      child: Row(children: [
             Container(
               width: 34,
               height: 34,
@@ -1177,56 +1520,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       fontWeight: FontWeight.w600,
                       color: Colors.white)),
             ),
-            if (!isCompact) ...[
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _role == 'admin'
-                      ? AppColors.greenLight.withAlpha(51)
-                      : Colors.white.withAlpha(26),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                      color: _role == 'admin'
-                          ? AppColors.greenLight.withAlpha(102)
-                          : Colors.white.withAlpha(51)),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(_role == 'admin' ? Icons.star : Icons.person,
-                      size: 11,
-                      color: _role == 'admin'
-                          ? AppColors.greenLight
-                          : Colors.white),
-                  const SizedBox(width: 4),
-                  Text(_role == 'admin' ? 'Admin' : 'Faculty',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: _role == 'admin'
-                              ? AppColors.greenLight
-                              : Colors.white)),
-                ]),
-              ),
-              IconButton(
-                  icon: _buildNotificationBadgeIcon(),
-                  onPressed: _openNotifications),
-              if (_role == 'admin')
-                IconButton(
-                    icon: const Icon(Icons.settings_outlined,
-                        color: Colors.white, size: 22),
-                    onPressed: () => Navigator.pushNamed(context, '/settings')),
-              IconButton(
-                  icon: const Icon(Icons.logout, color: Colors.white, size: 20),
-                  onPressed: _logout),
-            ] else
-              PopupMenuButton<String>(
-                color: const Color(0xFF0F5C31),
+            // Always the compact burger menu (not just under the old 430px
+            // breakpoint) -- one menu button reading Notifications/Manage
+            // Users/Settings/Logout is cleaner than 4 separate icons, and
+            // the unread-notification badge still shows as an overlay dot
+            // on the menu icon itself (see below).
+            _roleBadge(),
+            PopupMenuButton<String>(
+                // Bug fix: this hardcoded the main-admin green (both the
+                // menu surface and its border) instead of following
+                // `_palette`, so an institute_admin viewing e.g. IC
+                // (violet) got a top bar that went violet everywhere
+                // except this popup, which silently stayed green.
+                color: _palette.dark,
                 surfaceTintColor: Colors.transparent,
                 elevation: 12,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
-                    side:
-                        BorderSide(color: AppColors.greenLight.withAlpha(140))),
+                    side: BorderSide(color: _palette.light.withAlpha(140))),
                 onOpened: () {
                   if (mounted) setState(() => _compactMenuOpen = true);
                 },
@@ -1240,7 +1551,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       height: 36,
                       decoration: BoxDecoration(
                         color: _compactMenuOpen
-                            ? AppColors.greenLight.withAlpha(46)
+                            ? _palette.light.withAlpha(46)
                             : Colors.white.withAlpha(20),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.white.withAlpha(60)),
@@ -1268,8 +1579,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.warning,
                             borderRadius: BorderRadius.circular(99),
-                            border: Border.all(
-                                color: AppColors.greenDark, width: 1.2),
+                            // This border exists only to mask the badge's
+                            // corner against the top bar behind it, so it
+                            // must match the top bar's own background
+                            // (_palette.dark, set in _buildTopBar) rather
+                            // than a hardcoded green -- else a visible
+                            // green ring shows through on non-green
+                            // institutes.
+                            border:
+                                Border.all(color: _palette.dark, width: 1.2),
                           ),
                           child: Text(
                             _unreadNotificationCount > 99
@@ -1293,6 +1611,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (mounted) setState(() => _compactMenuOpen = false);
                   if (value == 'notifications') {
                     unawaited(_openNotifications());
+                  } else if (value == 'manage-users') {
+                    Navigator.pushNamed(context, '/manage-users', arguments: {
+                      'role': _role,
+                      'institute': _institute,
+                    });
                   } else if (value == 'settings') {
                     Navigator.pushNamed(context, '/settings');
                   } else if (value == 'logout') {
@@ -1309,7 +1632,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Text('Notifications',
                             style: TextStyle(color: Colors.white))
                       ])),
-                  if (_role == 'admin')
+                  if (_canAccessManagement)
+                    const PopupMenuItem<String>(
+                        value: 'manage-users',
+                        child: Row(children: [
+                          Icon(Icons.admin_panel_settings_outlined,
+                              size: 18, color: Colors.white),
+                          SizedBox(width: 10),
+                          Text('Manage Users',
+                              style: TextStyle(color: Colors.white))
+                        ])),
+                  if (_canAccessManagement)
                     const PopupMenuItem<String>(
                         value: 'settings',
                         child: Row(children: [
@@ -1328,14 +1661,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ])),
                 ],
               ),
-          ]);
-        },
-      ),
+          ]),
     );
   }
 
   Widget _buildHomeTab() {
-    final sortedBuildings = [..._buildings]..sort((a, b) {
+    final buildingsSource =
+        _buildings.isEmpty && _isLoading ? placeholderBuildingList() : _buildings;
+    final sortedBuildings = [...buildingsSource]..sort((a, b) {
         final aCode = (a['code'] as String?) ?? '';
         final bCode = (b['code'] as String?) ?? '';
         final aKwh = _buildingEnergy[aCode] ?? 0;
@@ -1380,21 +1713,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                     decoration: BoxDecoration(
-                      color: AppColors.greenPale,
+                      color: _palette.pale,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.edit_outlined,
-                            size: 14, color: AppColors.greenDark),
-                        SizedBox(width: 4),
+                            size: 14, color: _palette.dark),
+                        const SizedBox(width: 4),
                         Text(
                           'Edit',
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
-                            color: AppColors.greenDark,
+                            color: _palette.dark,
                           ),
                         ),
                       ],
@@ -1402,18 +1735,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               const SizedBox(width: 8),
-              Text('${_buildings.length} buildings',
+              Text('${buildingsSource.length} buildings',
                   style: const TextStyle(
                       fontSize: 12, color: AppColors.textMuted)),
             ]),
             SizedBox(height: isCompact ? 10 : 12),
-            if (_buildings.isEmpty)
+            if (buildingsSource.isEmpty)
               Container(
                 padding: EdgeInsets.all(isCompact ? 16 : 20),
                 decoration: BoxDecoration(
                   color: AppColors.cardBg,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.greenMid.withAlpha(31)),
+                  border: Border.all(color: _palette.mid.withAlpha(31)),
                 ),
                 child: Center(
                   child: Column(children: [
@@ -1430,7 +1763,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         icon: const Icon(Icons.add, size: 16),
                         label: const Text('Add Building'),
                         style: TextButton.styleFrom(
-                            foregroundColor: AppColors.greenDark),
+                            foregroundColor: _palette.dark),
                       ),
                     ],
                   ]),
@@ -1455,19 +1788,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ? 'Good afternoon'
             : 'Good evening';
     return Row(children: [
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Expanded(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(greeting,
-          style: TextStyle(fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
+            style: TextStyle(
+                fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
         Row(children: [
           Text(_userName.isNotEmpty ? _userName : 'User',
-            style: TextStyle(
-              fontFamily: 'Outfit',
-              fontSize: compact ? 19 : 22,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textDark)),
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: compact ? 19 : 22,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textDark)),
           if (_role == 'admin') ...[
             const SizedBox(width: 8),
-            Icon(Icons.star, size: compact ? 18 : 22, color: AppColors.greenLight),
+            Icon(Icons.star,
+                size: compact ? 18 : 22, color: _palette.light),
           ],
         ]),
       ])),
@@ -1475,21 +1812,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         padding: EdgeInsets.symmetric(
             horizontal: compact ? 8 : 10, vertical: compact ? 5 : 6),
         decoration: BoxDecoration(
-            color: AppColors.greenPale,
+            color: _palette.pale,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.greenMid.withAlpha(60))),
+            border: Border.all(color: _palette.mid.withAlpha(60))),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(
               width: 7,
               height: 7,
-              decoration: const BoxDecoration(
-                  color: AppColors.greenMid, shape: BoxShape.circle)),
+              decoration:
+                  BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
           const SizedBox(width: 5),
-          const Text('Live',
+          Text('Live',
               style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.greenDark)),
+                  color: _palette.dark)),
         ]),
       ),
     ]);
@@ -1501,21 +1838,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         width: double.infinity,
         padding: EdgeInsets.all(compact ? 16 : 20),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-              colors: [AppColors.greenDark, Color(0xFF1E7A42)],
+          gradient: LinearGradient(
+              colors: [_palette.dark, _palette.mid],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight),
           borderRadius: BorderRadius.circular(22),
           boxShadow: [
             BoxShadow(
-                color: AppColors.greenDark.withAlpha(77),
+                color: _palette.dark.withAlpha(77),
                 blurRadius: 20,
                 offset: const Offset(0, 8))
           ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Energy consumed today',
-              style: TextStyle(fontSize: compact ? 11 : 12, color: Colors.white)),
+              style: TextStyle(
+                  fontSize: compact ? 11 : 12, color: Colors.white)),
           SizedBox(height: compact ? 4 : 6),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text(_safeFormatDouble(_totalKwh, 2),
@@ -1565,8 +1903,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Expanded(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label,
-          style: TextStyle(
-              fontSize: compact ? 9 : 10, color: Colors.white)),
+          style: TextStyle(fontSize: compact ? 9 : 10, color: Colors.white)),
       const SizedBox(height: 2),
       Text(value,
           maxLines: 1,
@@ -1576,29 +1913,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               fontWeight: FontWeight.w600,
               color: Colors.white)),
     ]));
-  }
-
-  Widget _statCard(String label, String value, IconData icon, Color bg,
-      {Color textColor = Colors.white, bool compact = false}) {
-    return Container(
-      padding: EdgeInsets.symmetric(
-          horizontal: compact ? 10 : 12, vertical: compact ? 12 : 14),
-      decoration:
-          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: compact ? 16 : 18, color: textColor.withAlpha(204)),
-        SizedBox(height: compact ? 6 : 8),
-        Text(value,
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: compact ? 13 : 15,
-                fontWeight: FontWeight.w700,
-                color: textColor)),
-        Text(label,
-            style: TextStyle(
-                fontSize: compact ? 9 : 10, color: textColor.withAlpha(179))),
-      ]),
-    );
   }
 
   Widget _buildBuildingCard(Map<String, dynamic> building,
@@ -1620,13 +1934,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         decoration: BoxDecoration(
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.greenMid.withAlpha(31))),
+            border: Border.all(color: _palette.mid.withAlpha(31))),
         child: Row(children: [
           Container(
               width: compact ? 40 : 44,
               height: compact ? 40 : 44,
               decoration: BoxDecoration(
-                  color: AppColors.greenPale,
+                  color: _palette.pale,
                   borderRadius: BorderRadius.circular(12)),
               child: Center(
                   child: Text(code,
@@ -1634,7 +1948,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fontFamily: 'Outfit',
                           fontSize: compact ? 9 : 10,
                           fontWeight: FontWeight.w700,
-                          color: AppColors.greenDark)))),
+                          color: _palette.dark)))),
           SizedBox(width: compact ? 10 : 12),
           Expanded(
               child: Column(
@@ -1657,13 +1971,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: AppColors.textMuted)),
               ])),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text(
+            Text(
                 '${_safeFormatDouble(_buildingEnergy[code] ?? 0, 1)} kWh this month',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: compact ? 9 : 10, color: Colors.black)),
-              const SizedBox(height: 3),
+                style:
+                    TextStyle(fontSize: compact ? 9 : 10, color: Colors.black)),
+            const SizedBox(height: 3),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -1716,8 +2030,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: const Icon(Icons.history, size: 18),
             label: const Text('View Full History'),
             style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.greenDark,
-                side: const BorderSide(color: AppColors.greenMid, width: 1.5),
+                foregroundColor: _palette.dark,
+                side: BorderSide(color: _palette.mid, width: 1.5),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14))),
           ),
@@ -1736,7 +2050,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Container(
       height: 42,
       decoration: BoxDecoration(
-          color: AppColors.greenPale, borderRadius: BorderRadius.circular(12)),
+          color: _palette.pale, borderRadius: BorderRadius.circular(12)),
       child: Row(
           children: ranges.map((r) {
         final isSelected = _analyticsRange == r['key'];
@@ -1747,15 +2061,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             duration: const Duration(milliseconds: 200),
             margin: const EdgeInsets.all(4),
             decoration: BoxDecoration(
-                color: isSelected ? AppColors.greenDark : Colors.transparent,
+                color: isSelected ? _palette.dark : Colors.transparent,
                 borderRadius: BorderRadius.circular(8)),
             child: Center(
                 child: Text(r['label']!,
                     style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
-                        color:
-                            isSelected ? Colors.white : AppColors.greenDark))),
+                        color: isSelected ? Colors.white : _palette.dark))),
           ),
         ));
       }).toList()),
@@ -1763,13 +2076,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildLineChart() {
-    final canSwitchChart = _historyData.length > 1;
+    final historyDisplay = _historyDisplay;
+    final canSwitchChart = historyDisplay.length > 1;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.greenMid.withAlpha(26))),
+          border: Border.all(color: _palette.mid.withAlpha(26))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           const Expanded(
@@ -1795,17 +2109,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Container(
               width: 8,
               height: 8,
-              decoration: const BoxDecoration(
-                  color: AppColors.greenMid, shape: BoxShape.circle)),
+              decoration:
+                  BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
           const SizedBox(width: 5),
-          const Text('Live',
+          Text('Live',
               style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.greenMid)),
+                  color: _palette.mid)),
         ]),
         const SizedBox(height: 20),
-        _historyData.isEmpty
+        historyDisplay.isEmpty
             ? const Center(
                 child: Padding(
                     padding: EdgeInsets.symmetric(vertical: 40),
@@ -1816,28 +2130,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 height: 160,
                 child: CustomPaint(
                     painter: _trendChartType == 'bar'
-                        ? _BarChartPainter(
-                            data: _historyData
+                        ? BarChartPainter(
+                            data: historyDisplay
                                 .map((d) => (d['kwh'] as num).toDouble())
                                 .toList(),
                             maxKwh: _maxKwh)
-                        : _LineChartPainter(
-                            data: _historyData
+                        : LineChartPainter(
+                            data: historyDisplay
                                 .map((d) => (d['kwh'] as num).toDouble())
                                 .toList(),
                             maxKwh: _maxKwh),
                     child: Container())),
-        if (_historyData.isNotEmpty) ...[
+        if (historyDisplay.isNotEmpty) ...[
           const SizedBox(height: 8),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(_historyData.first['label'],
+            Text(historyDisplay.first['label'],
                 style:
                     const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            if (_historyData.length > 2)
-              Text(_historyData[_historyData.length ~/ 2]['label'],
+            if (historyDisplay.length > 2)
+              Text(historyDisplay[historyDisplay.length ~/ 2]['label'],
                   style:
                       const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            Text(_historyData.last['label'],
+            Text(historyDisplay.last['label'],
                 style:
                     const TextStyle(fontSize: 9, color: AppColors.textMuted)),
           ]),
@@ -1857,17 +2171,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.greenDark : AppColors.greenPale,
+          color: isSelected ? _palette.dark : _palette.pale,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-              color: isSelected
-                  ? AppColors.greenDark
-                  : AppColors.greenMid.withAlpha(80)),
+              color: isSelected ? _palette.dark : _palette.mid.withAlpha(80)),
         ),
         child: Icon(
           icon,
           size: 14,
-          color: isSelected ? Colors.white : AppColors.greenDark,
+          color: isSelected ? Colors.white : _palette.dark,
         ),
       ),
     );
@@ -1881,7 +2193,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.greenMid.withAlpha(26))),
+          border: Border.all(color: _palette.mid.withAlpha(26))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Device Status',
             style: TextStyle(
@@ -1890,6 +2202,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
         const SizedBox(height: 16),
+        // Semantic: Assigned (green) vs Unassigned (AppColors.warning) is a
+        // 2-state status pairing in the same widget -- deliberately NOT
+        // retheme'd (assignment status, not brand chrome).
         Row(children: [
           Expanded(
               child: _statusBadge('Assigned', _assignedDevices,
@@ -1900,6 +2215,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   AppColors.warning, Icons.device_unknown_outlined)),
         ]),
         const SizedBox(height: 14),
+        // Same semantic pairing as above (assigned-fill on a warning-color
+        // track) -- NOT retheme'd for the same reason.
         ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: LinearProgressIndicator(
@@ -1944,8 +2261,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final sorted = _utilityTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final maxVal = sorted.first.value;
+    // Categorical legend colors for utility types -- 'Lights' used the
+    // brand green as its arbitrary default series color (no semantic
+    // meaning vs Outlets/AC), so it's rethemed along with the rest of this
+    // screen's brand chrome; Outlets/AC keep their own fixed hues.
     final Map<String, Color> colors = {
-      'Lights': AppColors.greenMid,
+      'Lights': _palette.mid,
       'Outlets': const Color(0xFFE8922A),
       'AC': const Color(0xFF2196F3)
     };
@@ -1954,7 +2275,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.greenMid.withAlpha(26))),
+          border: Border.all(color: _palette.mid.withAlpha(26))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Utilities',
             style: TextStyle(
@@ -1965,7 +2286,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SizedBox(height: 16),
         ...sorted.map((e) {
           final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
-          final color = colors[e.key] ?? AppColors.greenMid;
+          final color = colors[e.key] ?? _palette.mid;
           return Padding(
               padding: const EdgeInsets.only(bottom: 14),
               child: Column(
@@ -1997,10 +2318,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                           const SizedBox(width: 8),
                           Text('${_safeFormatDouble(e.value, 1)} kWh',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
-                                  color: AppColors.greenDark)),
+                                  color: _palette.dark)),
                         ]),
                     const SizedBox(height: 6),
                     ClipRRect(
@@ -2021,10 +2342,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final sorted = _buildingEnergy.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final maxVal = sorted.first.value;
+    // Ordinal rank-cycling colors for the bars (rank 1/2/3 reuse the brand
+    // ramp's dark/mid/light tiers purely for visual variety, not tied to
+    // any specific real institute's identity) -- rethemed like the rest of
+    // this screen's chrome; the blue/orange entries keep their fixed hues.
     final List<Color> barColors = [
-      AppColors.greenDark,
-      AppColors.greenMid,
-      AppColors.greenLight,
+      _palette.dark,
+      _palette.mid,
+      _palette.light,
       const Color(0xFF2196F3),
       const Color(0xFFE8922A)
     ];
@@ -2033,7 +2358,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.greenMid.withAlpha(26))),
+          border: Border.all(color: _palette.mid.withAlpha(26))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Institutes This Month',
             style: TextStyle(
@@ -2054,17 +2379,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     width: 24,
                     height: 24,
                     decoration: BoxDecoration(
-                        color:
-                            i == 0 ? AppColors.greenDark : AppColors.greenPale,
+                        color: i == 0 ? _palette.dark : _palette.pale,
                         shape: BoxShape.circle),
                     child: Center(
                         child: Text('${i + 1}',
                             style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w700,
-                                color: i == 0
-                                    ? Colors.white
-                                    : AppColors.greenDark)))),
+                                color: i == 0 ? Colors.white : _palette.dark)))),
                 const SizedBox(width: 10),
                 Expanded(
                     child: Column(
@@ -2079,10 +2401,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     fontWeight: FontWeight.w500,
                                     color: AppColors.textDark)),
                             Text('${_safeFormatDouble(e.value, 1)} kWh',
-                                style: const TextStyle(
+                                style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
-                                    color: AppColors.greenDark)),
+                                    color: _palette.dark)),
                           ]),
                       const SizedBox(height: 5),
                       ClipRRect(
@@ -2100,7 +2422,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildBottomNav() {
+  Widget _buildBottomNav({required bool showAnalytics}) {
+    // The IndexedStack keeps fixed conceptual slots (0 Dashboard, 1 Map,
+    // 2 Analytics, 3 Automation); this just hides the Analytics slot from
+    // the nav bar and remaps taps to the slot they actually mean.
+    final tabIndices = <int>[0, 1, if (showAnalytics) 2, 3];
+    final navSlot = tabIndices.indexOf(_selectedIndex);
+    final currentNavSlot = navSlot < 0 ? 0 : navSlot;
+
     return Container(
       decoration: BoxDecoration(color: Colors.white, boxShadow: [
         BoxShadow(
@@ -2109,30 +2438,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
             offset: const Offset(0, -4))
       ]),
       child: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (i) => setState(() => _selectedIndex = i),
+        currentIndex: currentNavSlot,
+        onTap: (slot) => setState(() => _selectedIndex = tabIndices[slot]),
         backgroundColor: Colors.white,
-        selectedItemColor: AppColors.greenDark,
+        selectedItemColor: _palette.dark,
         unselectedItemColor: AppColors.textMuted,
         selectedLabelStyle:
             const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
         unselectedLabelStyle: const TextStyle(fontSize: 11),
         elevation: 0,
         type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
               icon: Icon(Icons.dashboard_outlined),
               activeIcon: Icon(Icons.dashboard),
               label: 'Dashboard'),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
               icon: Icon(Icons.map_outlined),
               activeIcon: Icon(Icons.map),
               label: 'Map'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.bar_chart_outlined),
-              activeIcon: Icon(Icons.bar_chart),
-              label: 'Analytics'),
-          BottomNavigationBarItem(
+          if (showAnalytics)
+            const BottomNavigationBarItem(
+                icon: Icon(Icons.bar_chart_outlined),
+                activeIcon: Icon(Icons.bar_chart),
+                label: 'Analytics'),
+          const BottomNavigationBarItem(
               icon: Icon(Icons.schedule_outlined),
               activeIcon: Icon(Icons.schedule),
               label: 'Automation'),
@@ -2142,106 +2472,3 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-class _LineChartPainter extends CustomPainter {
-  final List<double> data;
-  final double maxKwh;
-  _LineChartPainter({required this.data, required this.maxKwh});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (data.length < 2) return;
-    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
-    final linePaint = Paint()
-      ..color = AppColors.greenMid
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    final fillPaint = Paint()
-      ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            AppColors.greenMid.withAlpha(80),
-            AppColors.greenMid.withAlpha(0)
-          ]).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..style = PaintingStyle.fill;
-    final stepX = size.width / (data.length - 1);
-    Offset off(int i) => Offset(
-        i * stepX,
-        (size.height - (data[i] / safeMaxKwh) * size.height)
-            .clamp(0.0, size.height));
-    final gridPaint = Paint()
-      ..color = AppColors.greenMid.withAlpha(20)
-      ..strokeWidth = 1;
-    for (int i = 1; i < 4; i++) {
-      canvas.drawLine(Offset(0, size.height * i / 4),
-          Offset(size.width, size.height * i / 4), gridPaint);
-    }
-    final fillPath = Path()
-      ..moveTo(0, size.height)
-      ..lineTo(off(0).dx, off(0).dy);
-    for (int i = 1; i < data.length; i++) {
-      final p = off(i - 1);
-      final c = off(i);
-      fillPath.cubicTo(
-          (p.dx + c.dx) / 2, p.dy, (p.dx + c.dx) / 2, c.dy, c.dx, c.dy);
-    }
-    fillPath
-      ..lineTo(size.width, size.height)
-      ..close();
-    canvas.drawPath(fillPath, fillPaint);
-    final linePath = Path()..moveTo(off(0).dx, off(0).dy);
-    for (int i = 1; i < data.length; i++) {
-      final p = off(i - 1);
-      final c = off(i);
-      linePath.cubicTo(
-          (p.dx + c.dx) / 2, p.dy, (p.dx + c.dx) / 2, c.dy, c.dx, c.dy);
-    }
-    canvas.drawPath(linePath, linePaint);
-  }
-
-  @override
-  bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh;
-}
-
-class _BarChartPainter extends CustomPainter {
-  final List<double> data;
-  final double maxKwh;
-  _BarChartPainter({required this.data, required this.maxKwh});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (data.isEmpty) return;
-    final safeMaxKwh = maxKwh <= 0 ? 1.0 : maxKwh;
-    final gridPaint = Paint()
-      ..color = AppColors.greenMid.withAlpha(20)
-      ..strokeWidth = 1;
-
-    for (int i = 1; i < 4; i++) {
-      canvas.drawLine(Offset(0, size.height * i / 4),
-          Offset(size.width, size.height * i / 4), gridPaint);
-    }
-
-    final slotWidth = size.width / data.length;
-    final barWidth = (slotWidth * 0.62).clamp(2.0, 18.0);
-    final barPaint = Paint()..color = AppColors.greenMid;
-
-    for (int i = 0; i < data.length; i++) {
-      final normalized = (data[i] / safeMaxKwh).clamp(0.0, 1.0);
-      final barHeight = normalized * size.height;
-      final left = i * slotWidth + (slotWidth - barWidth) / 2;
-      final top = size.height - barHeight;
-      final rect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(left, top, barWidth, barHeight),
-        const Radius.circular(4),
-      );
-      canvas.drawRRect(rect, barPaint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_BarChartPainter old) =>
-      old.data != data || old.maxKwh != maxKwh;
-}

@@ -35,6 +35,9 @@ dependencies:
   open_filex: ^4.5.0
   shared_preferences: ^2.2.3
   flutter_home_widget: ^0.1.1
+  skeletonizer: ^2.1.3
+  rxdart: ^0.28.0
+  cupertino_icons: ^1.0.9
 
 dev_dependencies:
   flutter_test:

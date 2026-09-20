@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
-import '../theme/app_colors.dart';
-import '../widgets/top_toast.dart';
+import 'package:rxdart/rxdart.dart';
+import '../../theme/app_colors.dart';
+import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
 
 // ─── Energy Level ─────────────────────────────────────────────────────────────
 
@@ -81,8 +83,20 @@ class _HotspotData {
 class CampusMapScreen extends StatefulWidget {
   final String role;
   final bool showAppBar;
+
+  /// When non-null, called instead of `Navigator.pushNamed(context,
+  /// '/building', ...)` on "view details" -- lets an embedding shell (the
+  /// desktop dashboard) show the building in-place instead of pushing a
+  /// full-screen route that would hide its side nav. Mobile never passes
+  /// this, so its behavior (pushNamed) is unchanged.
+  final void Function(String buildingCode, String buildingName, int floors)?
+      onBuildingTap;
+
   const CampusMapScreen(
-      {super.key, this.role = 'faculty', this.showAppBar = false});
+      {super.key,
+      this.role = 'faculty',
+      this.showAppBar = false,
+      this.onBuildingTap});
 
   @override
   State<CampusMapScreen> createState() => _CampusMapScreenState();
@@ -96,14 +110,27 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   Map<String, Map<String, dynamic>> _buildingData = {}; // energy data
   Map<String, Map<String, dynamic>> _buildingsInfo = {}; // name, floors
   Map<String, _HotspotData> _hotspots = {}; // hotspot positions
-  Map<String, double> _monthlyBuildingKwh = {};
 
-  StreamSubscription? _devicesSub;
-  StreamSubscription? _buildingsSub;
-  StreamSubscription? _hotspotsSub;
-  StreamSubscription? _historySub;
+  StreamSubscription? _combinedSub;
 
-  bool get isAdmin => widget.role == 'admin';
+  // True until the first combined emission of this screen's 4 Firebase
+  // streams (devices, this month's building history, buildings, hotspots)
+  // has been received; never reverts to true afterwards, so a transient
+  // null on any one path can't blank out data already shown this session.
+  bool _isLoading = true;
+
+  // Set only if the combined listener fails (or times out) before the
+  // first successful load ever completes -- gives the skeleton shimmer a
+  // real escape hatch instead of spinning forever.
+  String? _errorText;
+  Timer? _loadTimeoutTimer;
+  bool _postLoadErrorNotified = false;
+
+  bool get isAdmin =>
+      widget.role == 'admin' ||
+      widget.role == 'main_admin' ||
+      widget.role == 'super_admin' ||
+      widget.role == 'institute_admin';
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -114,190 +141,212 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   @override
   void initState() {
     super.initState();
-    _listenDevices();
-    _listenBuildings();
-    _listenHotspots();
-    _listenMonthlyBuildingTotals();
+    _listenAll();
   }
 
   @override
   void dispose() {
-    _devicesSub?.cancel();
-    _buildingsSub?.cancel();
-    _hotspotsSub?.cancel();
-    _historySub?.cancel();
+    _combinedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
     super.dispose();
   }
 
-  void _listenDevices() {
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+  /// Clears the error state and re-attaches the combined listener from
+  /// scratch. Used by the Retry button shown when the first load fails.
+  void _retryLoad() {
+    _combinedSub?.cancel();
+    _loadTimeoutTimer?.cancel();
+    setState(() {
+      _errorText = null;
+      _isLoading = true;
+      _postLoadErrorNotified = false;
+    });
+    _listenAll();
+  }
+
+  // ── Listen to all 4 Firebase paths this screen needs (devices, this
+  // month's building history, buildings, hotspots) in one combined stream
+  // so a transient null on any single path can't blank out data already
+  // shown this session.
+  void _listenAll() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !_isLoading) return;
+      setState(() {
+        _isLoading = false;
+        _errorText =
+            'Taking too long to load the campus map. Check your connection.';
+      });
+    });
+
+    final monthKey = _monthKey(DateTime.now());
+    _combinedSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance
+          .ref('history/monthly/$monthKey/buildings')
+          .onValue,
+      FirebaseDatabase.instance.ref('buildings').onValue,
+      FirebaseDatabase.instance.ref('hotspots').onValue,
+    ]).listen((events) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
-      final Map<String, Map<String, dynamic>> bData = {};
-      for (final id in _buildingsInfo.keys) {
-        bData[id] = {
-          'kwh': 0.0,
-          'deviceCount': 0,
-          'rooms': <String, Map<String, dynamic>>{}
-        };
-      }
-      if (raw != null) {
-        final devices = Map<String, dynamic>.from(raw as Map);
-        devices.forEach((deviceId, val) {
-          if (val is! Map) return;
-          final device = Map<String, dynamic>.from(val);
-          final building = (device['building'] ?? '').toString();
-          final room = (device['room'] ?? '').toString();
-          final utility = (device['utility'] ?? '').toString();
-          final kwh = (device['kwh'] ?? 0.0) as num;
-          final status = (device['status'] ?? 'offline').toString();
-          final relay = (device['relay'] ?? false) as bool;
-          if (!bData.containsKey(building)) {
-            bData[building] = {
+      _loadTimeoutTimer?.cancel();
+      setState(() {
+        // ── buildings (processed first: devices' baseline needs the
+        // current set of known building codes) ─────────────────────
+        final buildingsRaw = events[2].snapshot.value;
+        if (buildingsRaw is Map) {
+          final data = Map<String, dynamic>.from(buildingsRaw);
+          final Map<String, Map<String, dynamic>> info = {};
+          data.forEach((code, val) {
+            if (val is! Map) return;
+            final b = Map<String, dynamic>.from(val);
+            info[code] = {
+              'name': (b['name'] ?? code).toString(),
+              'floors': (b['floors'] ?? 1) as int
+            };
+          });
+          _buildingsInfo = info;
+        } else if (_isLoading) {
+          _buildingsInfo = {};
+        }
+
+        // ── devices (per-building energy/device/room aggregates) ──
+        final devicesRaw = events[0].snapshot.value;
+        if (devicesRaw is Map) {
+          final Map<String, Map<String, dynamic>> bData = {};
+          for (final id in _buildingsInfo.keys) {
+            bData[id] = {
               'kwh': 0.0,
               'deviceCount': 0,
               'rooms': <String, Map<String, dynamic>>{}
             };
           }
-          bData[building]!['kwh'] =
-              (bData[building]!['kwh'] as double) + kwh.toDouble();
-          bData[building]!['deviceCount'] =
-              (bData[building]!['deviceCount'] as int) + 1;
-          if (room.isNotEmpty) {
-            final rooms =
-                bData[building]!['rooms'] as Map<String, Map<String, dynamic>>;
-            if (!rooms.containsKey(room)) {
-              rooms[room] = {'utilities': <Map<String, dynamic>>[]};
+          final devices = Map<String, dynamic>.from(devicesRaw);
+          devices.forEach((deviceId, val) {
+            if (val is! Map) return;
+            final device = Map<String, dynamic>.from(val);
+            final building = (device['building'] ?? '').toString();
+            final room = (device['room'] ?? '').toString();
+            final utility = (device['utility'] ?? '').toString();
+            final kwh = (device['kwh'] ?? 0.0) as num;
+            final status = (device['status'] ?? 'offline').toString();
+            final relay = (device['relay'] ?? false) as bool;
+            if (!bData.containsKey(building)) {
+              bData[building] = {
+                'kwh': 0.0,
+                'deviceCount': 0,
+                'rooms': <String, Map<String, dynamic>>{}
+              };
             }
-            (rooms[room]!['utilities'] as List<Map<String, dynamic>>).add({
-              'id': deviceId,
-              'utility': utility,
-              'kwh': (device['kwh'] ?? 0.0) as num,
-              'status': status,
-              'relay': relay,
-            });
-          }
-        });
-      }
-
-      // If monthly totals are available, force hotspot/building kWh to monthly values.
-      _monthlyBuildingKwh.forEach((building, monthlyKwh) {
-        final existing = bData[building] ??
-            {
-              'kwh': 0.0,
-              'deviceCount': 0,
-              'rooms': <String, Map<String, dynamic>>{},
-            };
-        existing['kwh'] = monthlyKwh;
-        bData[building] = existing;
-      });
-
-      setState(() => _buildingData = bData);
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
-
-  void _listenMonthlyBuildingTotals() {
-    _historySub?.cancel();
-    final monthKey = _monthKey(DateTime.now());
-    _historySub = FirebaseDatabase.instance
-        .ref('history/monthly/$monthKey/buildings')
-        .onValue
-        .listen((event) {
-      if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw is! Map) {
-        setState(() => _monthlyBuildingKwh = {});
-        return;
-      }
-
-      final totals = Map<String, dynamic>.from(raw);
-      final monthlyKwh = <String, double>{};
-      final updated = Map<String, Map<String, dynamic>>.from(_buildingData);
-
-      totals.forEach((building, value) {
-        final existing =
-            Map<String, dynamic>.from(updated[building.toString()] ??
-                {
-                  'deviceCount': 0,
-                  'rooms': <String, Map<String, dynamic>>{},
-                  'kwh': 0.0,
-                });
-
-        if (value is Map) {
-          final data = Map<String, dynamic>.from(value);
-          final kwh = ((data['kwh'] ?? 0.0) as num).toDouble();
-          existing['kwh'] = kwh;
-          monthlyKwh[building.toString()] = kwh;
-        } else if (value is num) {
-          final kwh = value.toDouble();
-          existing['kwh'] = kwh;
-          monthlyKwh[building.toString()] = kwh;
+            bData[building]!['kwh'] =
+                (bData[building]!['kwh'] as double) + kwh.toDouble();
+            bData[building]!['deviceCount'] =
+                (bData[building]!['deviceCount'] as int) + 1;
+            if (room.isNotEmpty) {
+              final rooms = bData[building]!['rooms']
+                  as Map<String, Map<String, dynamic>>;
+              if (!rooms.containsKey(room)) {
+                rooms[room] = {'utilities': <Map<String, dynamic>>[]};
+              }
+              (rooms[room]!['utilities'] as List<Map<String, dynamic>>).add({
+                'id': deviceId,
+                'utility': utility,
+                'kwh': (device['kwh'] ?? 0.0) as num,
+                'status': status,
+                'relay': relay,
+              });
+            }
+          });
+          _buildingData = bData;
+        } else if (_isLoading) {
+          _buildingData = {
+            for (final id in _buildingsInfo.keys)
+              id: {
+                'kwh': 0.0,
+                'deviceCount': 0,
+                'rooms': <String, Map<String, dynamic>>{}
+              }
+          };
         }
 
-        updated[building.toString()] = existing;
-      });
+        // ── this month's building history (overrides device-derived kWh
+        // with the more accurate monthly total, same as before). Unlike
+        // the old per-path listener, this doesn't need to persist the
+        // monthly totals in a field -- combineLatestList redelivers this
+        // path's latest snapshot every time, so it's simply reapplied on
+        // top of `_buildingData` each round.
+        final historyRaw = events[1].snapshot.value;
+        if (historyRaw is Map) {
+          final totals = Map<String, dynamic>.from(historyRaw);
+          final updated = Map<String, Map<String, dynamic>>.from(_buildingData);
 
-      setState(() {
-        _monthlyBuildingKwh = monthlyKwh;
-        _buildingData = updated;
+          totals.forEach((building, value) {
+            final existing =
+                Map<String, dynamic>.from(updated[building.toString()] ??
+                    {
+                      'deviceCount': 0,
+                      'rooms': <String, Map<String, dynamic>>{},
+                      'kwh': 0.0,
+                    });
+
+            if (value is Map) {
+              final data = Map<String, dynamic>.from(value);
+              existing['kwh'] = ((data['kwh'] ?? 0.0) as num).toDouble();
+            } else if (value is num) {
+              existing['kwh'] = value.toDouble();
+            }
+
+            updated[building.toString()] = existing;
+          });
+
+          _buildingData = updated;
+        }
+
+        // ── hotspots ───────────────────────────────────────────────
+        final hotspotsRaw = events[3].snapshot.value;
+        if (hotspotsRaw is Map) {
+          final Map<String, _HotspotData> spots = {};
+          hotspotsRaw.forEach((id, val) {
+            if (val is Map) {
+              final data = Map<String, dynamic>.from(val);
+              // Parse safely as double
+              spots[id.toString()] = _HotspotData(
+                buildingId: id.toString(),
+                x: ((data['x'] ?? 0.1) as num).toDouble(),
+                y: ((data['y'] ?? 0.1) as num).toDouble(),
+                w: ((data['w'] ?? 0.2) as num).toDouble(),
+                h: ((data['h'] ?? 0.1) as num).toDouble(),
+              );
+            }
+          });
+          _hotspots = spots;
+        } else if (_isLoading) {
+          _hotspots = {};
+        }
+
+        _isLoading = false;
+        _errorText = null;
+        _postLoadErrorNotified = false;
       });
     }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
-
-  void _listenBuildings() {
-    _buildingsSub =
-        FirebaseDatabase.instance.ref('buildings').onValue.listen((event) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw == null) {
-        setState(() => _buildingsInfo = {});
-        return;
-      }
-      final data = Map<String, dynamic>.from(raw as Map);
-      final Map<String, Map<String, dynamic>> info = {};
-      data.forEach((code, val) {
-        if (val is! Map) return;
-        final b = Map<String, dynamic>.from(val);
-        info[code] = {
-          'name': (b['name'] ?? code).toString(),
-          'floors': (b['floors'] ?? 1) as int
-        };
-      });
-      setState(() => _buildingsInfo = info);
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
-    });
-  }
-
-  void _listenHotspots() {
-    _hotspotsSub =
-        FirebaseDatabase.instance.ref('hotspots').onValue.listen((event) {
-      if (!mounted) return;
-      final raw = event.snapshot.value;
-      final Map<String, _HotspotData> spots = {};
-      if (raw is Map) {
-        raw.forEach((id, val) {
-          if (val is Map) {
-            final data = Map<String, dynamic>.from(val);
-            // Parse safely as double
-            spots[id.toString()] = _HotspotData(
-              buildingId: id.toString(),
-              x: ((data['x'] ?? 0.1) as num).toDouble(),
-              y: ((data['y'] ?? 0.1) as num).toDouble(),
-              w: ((data['w'] ?? 0.2) as num).toDouble(),
-              h: ((data['h'] ?? 0.1) as num).toDouble(),
-            );
-          }
+      debugPrint('[CampusMap] Combined listen error: $error');
+      _loadTimeoutTimer?.cancel();
+      if (_isLoading) {
+        setState(() {
+          _isLoading = false;
+          _errorText = _isPermissionDenied(error)
+              ? 'You do not have permission to view the campus map.'
+              : 'Failed to load the campus map.';
         });
+      } else if (!_postLoadErrorNotified) {
+        _postLoadErrorNotified = true;
+        TopToast.show(
+          context,
+          'Lost connection to live map data.',
+          isError: true,
+        );
       }
-      setState(() => _hotspots = spots);
-    }, onError: (Object error) {
-      if (!mounted || _isPermissionDenied(error)) return;
     });
   }
 
@@ -346,6 +395,13 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     final floors = info['floors'] as int? ?? 1;
     final role = widget.role;
     setState(() => _selectedBuildingId = null);
+    if (widget.onBuildingTap != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        widget.onBuildingTap!(code, name, floors);
+      });
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       Navigator.pushNamed(context, '/building', arguments: {
@@ -683,39 +739,84 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     );
   }
 
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                  color: AppColors.greenPale,
+                  borderRadius: BorderRadius.circular(20)),
+              child: const Icon(Icons.map_outlined,
+                  size: 34, color: AppColors.greenMid)),
+          const SizedBox(height: 16),
+          const Text('Cannot load campus map',
+              style: TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDark)),
+          const SizedBox(height: 8),
+          Text(_errorText ?? 'Something went wrong.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _retryLoad,
+            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+            label:
+                const Text('Retry', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.greenDark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+          ),
+        ]),
+      ),
+    );
+  }
+
   Widget _buildMap() {
-    return Stack(
-      children: [
-        // ── Map tap zone ─────────────────────────────────────
-        Positioned.fill(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _editMode ? null : _dismissPopup,
-            child: InteractiveViewer(
-              // Disable pan/zoom in edit mode so drags work correctly
-              panEnabled: !_editMode,
-              scaleEnabled: !_editMode,
-              minScale: 0.8,
-              maxScale: 4.0,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final rect = _computeContainRect(constraints);
-                  return Stack(
-                    children: [
-                      Positioned.fill(
-                          child: Image.asset('assets/images/campus_map.png',
-                              fit: BoxFit.contain)),
-                      // Render hotspots
-                      ..._hotspots.values.map((spot) => _editMode
-                          ? _buildEditHotspot(spot, rect)
-                          : _buildViewHotspot(spot, rect)),
-                    ],
-                  );
-                },
+    if (_errorText != null) {
+      return _buildError();
+    }
+    return ScreenSkeleton(
+      isLoading: _isLoading,
+      child: Stack(
+        children: [
+          // ── Map tap zone ─────────────────────────────────────
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _editMode ? null : _dismissPopup,
+              child: InteractiveViewer(
+                // Disable pan/zoom in edit mode so drags work correctly
+                panEnabled: !_editMode,
+                scaleEnabled: !_editMode,
+                minScale: 0.8,
+                maxScale: 4.0,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final rect = _computeContainRect(constraints);
+                    return Stack(
+                      children: [
+                        Positioned.fill(
+                            child: Image.asset('assets/images/campus_map.png',
+                                fit: BoxFit.contain)),
+                        // Render hotspots
+                        ..._hotspots.values.map((spot) => _editMode
+                            ? _buildEditHotspot(spot, rect)
+                            : _buildViewHotspot(spot, rect)),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
           ),
-        ),
 
           // ── Legend (top left) ─────────────────────────────────
           if (!_editMode)
@@ -879,7 +980,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                 ),
               ),
             ),
-      ],
+        ],
+      ),
     );
   }
 

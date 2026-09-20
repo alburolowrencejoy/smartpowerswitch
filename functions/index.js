@@ -259,7 +259,38 @@ async function runAutomationSchedules() {
   }
 }
 
-// ── Change password of any user (admin only) ─────────────────
+// ── Shared authorization check for admin-only user-management actions ──
+// - admin / main_admin / super_admin: unrestricted.
+// - institute_admin: only for target users in their own institute.
+async function assertCanManageUser(callerUid, targetUid) {
+  const [callerSnap, targetSnap] = await Promise.all([
+    admin.database().ref(`users/${callerUid}`).get(),
+    admin.database().ref(`users/${targetUid}`).get(),
+  ]);
+  const caller = callerSnap.val() || {};
+  const callerRole = caller.role;
+
+  if (
+    callerRole === 'admin' ||
+    callerRole === 'main_admin' ||
+    callerRole === 'super_admin' ||
+    caller.isMainAdmin === true
+  ) {
+    return;
+  }
+
+  if (callerRole === 'institute_admin' && caller.institute) {
+    const target = targetSnap.val() || {};
+    if (target.institute === caller.institute) {
+      return;
+    }
+  }
+
+  throw new functions.https.HttpsError(
+    'permission-denied', 'You do not have permission to manage this user.');
+}
+
+// ── Change password of a user (admin tiers only) ─────────────────
 exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   // 1. Must be authenticated
   if (!context.auth) {
@@ -267,17 +298,8 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
       'unauthenticated', 'You must be logged in.');
   }
 
-  // 2. Must be admin role
+  // 2. Validate inputs
   const callerUid = context.auth.uid;
-  const callerSnap = await admin.database().ref(`users/${callerUid}/role`).get();
-  const callerRole = callerSnap.val();
-
-  if (callerRole !== 'admin') {
-    throw new functions.https.HttpsError(
-      'permission-denied', 'Only admins can change passwords.');
-  }
-
-  // 3. Validate inputs
   const { uid, newPassword } = data;
 
   if (!uid || !newPassword) {
@@ -289,6 +311,9 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError(
       'invalid-argument', 'Password must be at least 6 characters.');
   }
+
+  // 3. Must be an admin tier authorized to manage this target user
+  await assertCanManageUser(callerUid, uid);
 
   // 4. Update password using Admin SDK
   await admin.auth().updateUser(uid, { password: newPassword });
@@ -353,7 +378,7 @@ exports.onDeviceKwhChange = functions.database
 // ── Run automation scheduler every minute ─────────────────────────
 exports.runAutomationScheduler = onSchedule('* * * * *', runAutomationSchedules);
 
-// ── Delete user from Firebase Auth (admin only) ──────────────
+// ── Delete user from Firebase Auth (admin tiers only) ──────────────
 exports.deleteUser = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError(
@@ -361,14 +386,6 @@ exports.deleteUser = functions.https.onCall(async (data, context) => {
   }
 
   const callerUid = context.auth.uid;
-  const callerSnap = await admin.database().ref(`users/${callerUid}/role`).get();
-  const callerRole = callerSnap.val();
-
-  if (callerRole !== 'admin') {
-    throw new functions.https.HttpsError(
-      'permission-denied', 'Only admins can delete users.');
-  }
-
   const { uid } = data;
 
   if (!uid) {
@@ -381,6 +398,8 @@ exports.deleteUser = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError(
       'invalid-argument', 'You cannot delete your own account.');
   }
+
+  await assertCanManageUser(callerUid, uid);
 
   // Delete from Firebase Auth
   await admin.auth().deleteUser(uid);

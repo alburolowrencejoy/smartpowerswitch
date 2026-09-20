@@ -143,7 +143,8 @@ class AutomationSchedulerService {
 
     final now = DateTime.now();
     // Debounce: skip if last tick was less than 2 seconds ago
-    if (_lastTickTime != null && now.difference(_lastTickTime!).inMilliseconds < 2000) {
+    if (_lastTickTime != null &&
+        now.difference(_lastTickTime!).inMilliseconds < 2000) {
       return;
     }
     _lastTickTime = now;
@@ -204,7 +205,8 @@ class AutomationSchedulerService {
       if (building.isNotEmpty && floor.isNotEmpty) {
         unawaited(
           _root
-              .child('buildings/$building/floorData/$floor/devices/$deviceId/relay')
+              .child(
+                  'buildings/$building/floorData/$floor/devices/$deviceId/relay')
               .set(desiredRelay),
         );
       }
@@ -230,9 +232,8 @@ class AutomationSchedulerService {
   }
 
   static String _canonicalUtility(String? raw) {
-    final value = (raw ?? '')
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+    final value =
+        (raw ?? '').toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
 
     switch (value) {
       case 'light':
@@ -265,6 +266,21 @@ class AutomationSchedulerService {
   }
 }
 
+DateTime? _parseIsoDate(String? iso) {
+  if (iso == null || iso.isEmpty) return null;
+  final parts = iso.split('-');
+  if (parts.length != 3) return null;
+  final y = int.tryParse(parts[0]);
+  final m = int.tryParse(parts[1]);
+  final d = int.tryParse(parts[2]);
+  if (y == null || m == null || d == null) return null;
+  return DateTime(y, m, d);
+}
+
+bool _isSameOrBetween(DateTime day, DateTime start, DateTime end) {
+  return !day.isBefore(start) && !day.isAfter(end);
+}
+
 class _AutomationRecord {
   final String id;
   final String scope;
@@ -275,6 +291,14 @@ class _AutomationRecord {
   final List<String> days;
   final bool enabled;
 
+  /// 'weekly' (default, day-of-week [days]) or 'calendar' (fires every day
+  /// within [startDate]..[endDate] inclusive -- a single selected day is
+  /// just a 1-day range, so it naturally stops firing once that date is
+  /// in the past, no extra "one-time" bookkeeping needed).
+  final String scheduleMode;
+  final DateTime? startDate;
+  final DateTime? endDate;
+
   _AutomationRecord({
     required this.id,
     required this.scope,
@@ -284,6 +308,9 @@ class _AutomationRecord {
     required this.offTime,
     required this.days,
     required this.enabled,
+    required this.scheduleMode,
+    required this.startDate,
+    required this.endDate,
   });
 
   factory _AutomationRecord.fromMap(String id, Map<String, dynamic> data) {
@@ -310,6 +337,10 @@ class _AutomationRecord {
     if (onTime.isEmpty) onTime = '08:00';
     if (offTime.isEmpty) offTime = '18:00';
 
+    final scheduleMode = (data['scheduleMode'] ?? '').toString() == 'calendar'
+        ? 'calendar'
+        : 'weekly';
+
     return _AutomationRecord(
       id: id,
       scope: (data['scope'] ?? 'global').toString(),
@@ -319,14 +350,27 @@ class _AutomationRecord {
       offTime: offTime,
       days: days,
       enabled: _parseBool(data['enabled'] ?? true),
+      scheduleMode: scheduleMode,
+      startDate: _parseIsoDate(data['startDate'] as String?),
+      endDate: _parseIsoDate(data['endDate'] as String?),
     );
   }
 
-  bool _matchesDay(DateTime now) {
+  bool _matchesDate(DateTime day) {
+    final start = startDate;
+    final end = endDate;
+    if (start == null || end == null) return false;
+    return _isSameOrBetween(DateTime(day.year, day.month, day.day), start, end);
+  }
+
+  bool _matchesToday(DateTime now) {
+    if (scheduleMode == 'calendar') return _matchesDate(now);
     return days.contains(_dayLabel(now));
   }
 
-  bool _matchesPreviousDay(DateTime now) {
+  bool _matchesYesterday(DateTime now) {
+    final yesterday = now.subtract(const Duration(days: 1));
+    if (scheduleMode == 'calendar') return _matchesDate(yesterday);
     return days.contains(_previousDayLabel(now));
   }
 
@@ -346,7 +390,7 @@ class _AutomationRecord {
     final offMinutes = _parseMinutes(offTime);
     if (onMinutes == null || offMinutes == null) return null;
 
-    if (_matchesDay(now) && current == onMinutes) {
+    if (_matchesToday(now) && current == onMinutes) {
       return 'on';
     }
 
@@ -354,9 +398,9 @@ class _AutomationRecord {
     if (current != offMinutes) return null;
 
     if (!overnight) {
-      return _matchesDay(now) ? 'off' : null;
+      return _matchesToday(now) ? 'off' : null;
     }
 
-    return _matchesPreviousDay(now) ? 'off' : null;
+    return _matchesYesterday(now) ? 'off' : null;
   }
 }

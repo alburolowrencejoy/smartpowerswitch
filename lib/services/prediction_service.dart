@@ -4,10 +4,12 @@ import 'package:firebase_database/firebase_database.dart';
 
 class PredictionService {
   PredictionService._privateConstructor();
-  static final PredictionService _instance = PredictionService._privateConstructor();
+  static final PredictionService _instance =
+      PredictionService._privateConstructor();
   factory PredictionService() => _instance;
 
   Timer? _timer;
+  StreamSubscription? _forecastSub;
   Map<String, dynamic>? latestForecast;
 
   /// Start periodic forecasting. Default runs every 6 hours.
@@ -22,7 +24,8 @@ class PredictionService {
     });
 
     // Listen for externally-provided forecasts (e.g., produced by Python training)
-    FirebaseDatabase.instance
+    _forecastSub?.cancel();
+    _forecastSub = FirebaseDatabase.instance
         .ref('history/predictions/daily')
         .onValue
         .listen((event) {
@@ -35,6 +38,8 @@ class PredictionService {
   Future<void> dispose() async {
     _timer?.cancel();
     _timer = null;
+    await _forecastSub?.cancel();
+    _forecastSub = null;
   }
 
   /// Fetch daily history (or raw) and compute a short linear forecast, then
@@ -43,7 +48,8 @@ class PredictionService {
   /// LSTM model is not available in-app.
   Future<void> _computeAndPushForecast({int horizon = 30}) async {
     try {
-      final snapshot = await FirebaseDatabase.instance.ref('history/daily').get();
+      final snapshot =
+          await FirebaseDatabase.instance.ref('history/daily').get();
       List<double> values = [];
       List<String> labels = [];
 
@@ -55,10 +61,13 @@ class PredictionService {
             entries.add({'label': k, 'kwh': (v['kwh'] ?? v['total_kwh'])});
           }
         });
-        entries.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+        entries.sort(
+            (a, b) => a['label'].toString().compareTo(b['label'].toString()));
         for (final e in entries) {
           final k = e['kwh'];
-          final v = k is num ? k.toDouble() : double.tryParse(k?.toString() ?? '') ?? 0.0;
+          final v = k is num
+              ? k.toDouble()
+              : double.tryParse(k?.toString() ?? '') ?? 0.0;
           values.add(v);
           labels.add(e['label'].toString());
         }
@@ -66,7 +75,8 @@ class PredictionService {
 
       // Fallback to raw history grouping if no daily bucket available
       if (values.isEmpty) {
-        final rawSnap = await FirebaseDatabase.instance.ref('history/raw').get();
+        final rawSnap =
+            await FirebaseDatabase.instance.ref('history/raw').get();
         if (rawSnap.value is Map) {
           final raw = Map<String, dynamic>.from(rawSnap.value as Map);
           final grouped = <String, double>{};
@@ -74,17 +84,23 @@ class PredictionService {
             if (v is Map) {
               final ts = v['ts'] ?? v['timestamp'] ?? v['last_update'];
               DateTime? dt;
-              if (ts is num) dt = DateTime.fromMillisecondsSinceEpoch(ts.toInt());
+              if (ts is num) {
+                dt = DateTime.fromMillisecondsSinceEpoch(ts.toInt());
+              }
               if (ts is String) dt = DateTime.tryParse(ts);
               if (dt != null) {
-                final label = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+                final label =
+                    '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
                 final kwh = v['kwh'];
-                final val = kwh is num ? kwh.toDouble() : double.tryParse(kwh?.toString() ?? '') ?? 0.0;
+                final val = kwh is num
+                    ? kwh.toDouble()
+                    : double.tryParse(kwh?.toString() ?? '') ?? 0.0;
                 grouped[label] = (grouped[label] ?? 0.0) + val;
               }
             }
           });
-          final ordered = grouped.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+          final ordered = grouped.entries.toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
           for (final e in ordered) {
             labels.add(e.key);
             values.add(e.value);
@@ -104,7 +120,9 @@ class PredictionService {
         'predicted_kwh_total': forecast['predicted_kwh_total'],
       };
 
-      await FirebaseDatabase.instance.ref('history/predictions/daily').set(payload);
+      await FirebaseDatabase.instance
+          .ref('history/predictions/daily')
+          .set(payload);
       latestForecast = payload;
     } catch (e) {
       // ignore errors silently for now
