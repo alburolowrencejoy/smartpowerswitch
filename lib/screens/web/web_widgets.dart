@@ -413,3 +413,226 @@ Future<bool> showWebConfirmDialog({
     },
   );
 }
+
+// ── Preview-style primitives (building + device pages) ───────────────────
+
+/// "‹ Back" text link used at the top of drill-down pages.
+class WebBackLink extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const WebBackLink({super.key, this.label = 'Back', required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.institutePalette;
+    return TextButton.icon(
+      onPressed: onTap,
+      icon: const Icon(Icons.chevron_left_rounded, size: 20),
+      label: Text(label),
+      style: TextButton.styleFrom(
+        foregroundColor: p.dark,
+        padding: const EdgeInsets.fromLTRB(2, 4, 10, 4),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+/// HIGH / MID / LOW energy-level pill (≥100 / ≥50 / below, kWh this month).
+class WebLevelPill extends StatelessWidget {
+  final String level;
+
+  const WebLevelPill(this.level, {super.key});
+
+  static String forMonthKwh(double kwh) =>
+      kwh >= 100 ? 'HIGH' : (kwh >= 50 ? 'MID' : 'LOW');
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color fg, Color c) = switch (level) {
+      'HIGH' => (const Color(0xFFA83434), const Color(0xFFD64A4A)),
+      'MID' => (const Color(0xFF9A5A0E), const Color(0xFFE8922A)),
+      _ => (const Color(0xFF1A5C35), const Color(0xFF2E9E52)),
+    };
+    return Container(
+      constraints: const BoxConstraints(minWidth: 46),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: c.withAlpha(26),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: c.withAlpha(77)),
+      ),
+      child: Text(level,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+    );
+  }
+}
+
+/// Rounded status pill with a leading dot, e.g. "Online" / "Turned OFF".
+class WebStatusPill extends StatelessWidget {
+  final String text;
+  final bool on;
+
+  const WebStatusPill({super.key, required this.text, required this.on});
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = on ? const Color(0xFF1A5C35) : const Color(0xFF5D5D5D);
+    final bg = on ? const Color(0xFF2E9E52).withAlpha(31) : const Color(0xFFEEEEEE);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: fg, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(text,
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: fg)),
+      ]),
+    );
+  }
+}
+
+/// The preview's compact on/off switch. Null [onChanged] disables it.
+class WebSwitch extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final String semanticLabel;
+
+  const WebSwitch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    required this.semanticLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onChanged != null;
+    return Semantics(
+      toggled: value,
+      enabled: enabled,
+      label: semanticLabel,
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.forbidden,
+        child: GestureDetector(
+          onTap: enabled ? () => onChanged!(!value) : null,
+          child: Opacity(
+            opacity: enabled ? 1 : 0.45,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: 42,
+              height: 24,
+              padding: const EdgeInsets.all(3),
+              alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+              decoration: BoxDecoration(
+                color: value ? const Color(0xFF2E9E52) : const Color(0xFFCFD8D2),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(color: Color(0x40000000), blurRadius: 3),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Segmented tabs with a white thumb on the selected one ("Floor 1", ...).
+class WebTabs<T> extends StatelessWidget {
+  final Map<T, String> options;
+  final T selected;
+  final ValueChanged<T> onSelected;
+
+  const WebTabs({
+    super.key,
+    required this.options,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.institutePalette;
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+          color: p.pale.withAlpha(102), borderRadius: BorderRadius.circular(12)),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          for (final e in options.entries) ...[
+            if (e.key != options.keys.first) const SizedBox(width: 6),
+            Material(
+              color: e.key == selected ? Colors.white : Colors.transparent,
+              elevation: e.key == selected ? 1.5 : 0,
+              shadowColor: Colors.black26,
+              borderRadius: BorderRadius.circular(9),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(9),
+                onTap: () => onSelected(e.key),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  child: Text(e.value,
+                      style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: e.key == selected ? p.dark : WebColors.mid)),
+                ),
+              ),
+            ),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
+/// White rounded card with the preview's hairline border and soft shadow.
+class WebCard extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  const WebCard({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.fromLTRB(22, 20, 22, 22),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF2E9E52).withAlpha(33)),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x0A000000), blurRadius: 20, offset: Offset(0, 6)),
+        ],
+      ),
+      child: child,
+    );
+  }
+}

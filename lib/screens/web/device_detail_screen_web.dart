@@ -10,12 +10,12 @@ import '../../widgets/screen_skeleton.dart';
 import '../../services/readings_service.dart';
 import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
+import 'web_trend_chart.dart';
+import 'web_widgets.dart';
 
-/// The desktop "Device Detail" page: the same live PZEM readings, relay
-/// control, cost, and device info as [DeviceDetailScreen], laid out as a
-/// two-column desktop page instead of one stretched mobile column.
-/// Independent Firebase listeners from the mobile screen, so
-/// [DeviceDetailScreen] itself is never touched.
+/// The desktop device page: live PZEM readings (voltage, current, power,
+/// energy today), a 7-day energy trend, and the relay Control panel.
+/// Independent Firebase listeners from the mobile [DeviceDetailScreen].
 class DeviceDetailScreenWeb extends StatefulWidget {
   final String deviceId;
   final String utility;
@@ -108,12 +108,15 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     );
     _loadPersistedReading();
     _listenAll();
+    _listenHistory();
   }
 
   @override
   void dispose() {
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
+    _weekSub?.cancel();
+    _monthSub?.cancel();
     super.dispose();
   }
 
@@ -341,560 +344,408 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     }
   }
 
-  // ── Build (desktop two-column layout) ─────────────────────────────────────
+  // ── Build (preview layout) ────────────────────────────────────────────
+
+  /// The device's recorded kWh for each of the last 7 days (oldest first),
+  /// from `history/daily/{date}/devices/{id}/kwh`; 0 when a day has none.
+  List<({DateTime date, double kwh})> _week = const [];
+
+  /// This month's recorded kWh, from `history/monthly/{month}/devices/{id}`.
+  double? _monthKwh;
+
+  StreamSubscription<DatabaseEvent>? _weekSub;
+  StreamSubscription<DatabaseEvent>? _monthSub;
+
+  void _listenHistory() {
+    final now = DateTime.now();
+    final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    _weekSub = FirebaseDatabase.instance
+        .ref('history/daily')
+        .orderByKey()
+        .limitToLast(10)
+        .onValue
+        .listen((e) {
+      if (!mounted) return;
+      final raw = e.snapshot.value;
+      final byDay = <String, double>{};
+      if (raw is Map) {
+        raw.forEach((day, v) {
+          final d = v is Map ? v['devices'] : null;
+          final dev = d is Map ? d[widget.deviceId] : null;
+          final k = dev is Map ? dev['kwh'] : null;
+          if (k is num) byDay[day.toString()] = k.toDouble();
+        });
+      }
+      final today = DateTime(now.year, now.month, now.day);
+      setState(() {
+        _week = [
+          for (var i = 6; i >= 0; i--)
+            (() {
+              final d = DateTime(today.year, today.month, today.day - i);
+              final key = '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+                  '${d.day.toString().padLeft(2, '0')}';
+              return (date: d, kwh: byDay[key] ?? 0.0);
+            })(),
+        ];
+      });
+    }, onError: (_) {});
+    _monthSub = FirebaseDatabase.instance
+        .ref('history/monthly/$month/devices/${widget.deviceId}/kwh')
+        .onValue
+        .listen((e) {
+      if (!mounted) return;
+      final v = e.snapshot.value;
+      setState(() => _monthKwh = v is num ? v.toDouble() : null);
+    }, onError: (_) {});
+  }
+
+  static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  static const _monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  bool get _canToggle => const {
+        'admin',
+        'main_admin',
+        'super_admin',
+        'institute_admin'
+      }.contains(widget.role);
+
+  double get _todayKwh {
+    final k = _deviceData['kwh'];
+    return k is num ? k.toDouble() : 0.0;
+  }
+
+  String _lastSeenText() {
+    final seen = _deviceData['last_seen'];
+    if (seen is! num || seen == 0) return 'Never';
+    final t = DateTime.fromMillisecondsSinceEpoch(seen.toInt());
+    final ago = DateTime.now().difference(t);
+    if (ago.inMinutes < 1) return 'Just now';
+    if (ago.inMinutes < 60) return '${ago.inMinutes} min ago';
+    final hm = '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+    final today = DateTime.now();
+    if (t.year == today.year && t.month == today.month && t.day == today.day) {
+      return 'Today $hm';
+    }
+    final y = today.subtract(const Duration(days: 1));
+    if (t.year == y.year && t.month == y.month && t.day == y.day) {
+      return 'Yesterday $hm';
+    }
+    return '${_monthNames[t.month - 1]} ${t.day}, $hm';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final energy = _lastValidEnergy;
-    final cost = energy * _ratePhp;
-
     return Theme(
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(widget.role, _institute)],
       ),
       child: ScreenSkeleton(
-      isLoading: _isLoading,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-        child: ResponsiveCenter(
-          maxWidth: 1200,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeader(),
-              const SizedBox(height: 24),
-              if (_errorText != null)
-                _buildLoadError()
-              else
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildRelayCard(),
-                          const SizedBox(height: 16),
-                          _buildReadingsGrid(energy),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 20),
-                    Expanded(
-                      flex: 1,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildStatusCard(),
-                          const SizedBox(height: 16),
-                          _buildCostCard(energy, cost),
-                          const SizedBox(height: 16),
-                          _buildDeviceInfoCard(),
-                        ],
-                      ),
-                    ),
-                  ],
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(28, 18, 28, 32),
+          child: ResponsiveCenter(
+            maxWidth: 1320,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: WebBackLink(
+                    label: 'Back to ${widget.building}',
+                    onTap: widget.onBack ?? () => Navigator.pop(context),
+                  ),
                 ),
-            ],
+                const SizedBox(height: 6),
+                _buildHeader(),
+                const SizedBox(height: 22),
+                if (_errorText != null)
+                  _buildLoadError()
+                else ...[
+                  _buildReadings(),
+                  const SizedBox(height: 22),
+                  LayoutBuilder(builder: (context, c) {
+                    final trend = _buildTrendCard();
+                    final control = _buildControlCard();
+                    if (c.maxWidth < 900) {
+                      return Column(children: [
+                        trend,
+                        const SizedBox(height: 22),
+                        control,
+                      ]);
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 6, child: trend),
+                        const SizedBox(width: 22),
+                        Expanded(flex: 4, child: control),
+                      ],
+                    );
+                  }),
+                ],
+              ],
+            ),
           ),
         ),
-      ),
-      ),
-    );
-  }
-
-  Widget _buildLoadError() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 60),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.cloud_off_outlined,
-              size: 48, color: WebColors.muted),
-          const SizedBox(height: 12),
-          const Text('Cannot load this device',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-          const SizedBox(height: 6),
-          Text(_errorText ?? 'Something went wrong.',
-              style: const TextStyle(fontSize: 13, color: WebColors.muted)),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: _retry,
-            icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
-            label: const Text('Retry', style: TextStyle(color: Colors.white)),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-          ),
-        ]),
       ),
     );
   }
 
   Widget _buildHeader() {
-    // Right padding reserves space for the fixed notification bell the
-    // dashboard shell floats over the top-right corner, so the
-    // Online/Offline chip never sits underneath it.
+    final isAc = widget.utility.toLowerCase() == 'ac';
     return Padding(
-      padding: const EdgeInsets.only(right: 64),
-      child: Row(
-      children: [
-        Material(
-          color: AppColors.cardBg,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: widget.onBack ?? () => Navigator.pop(context),
-            child: const Padding(
-              padding: EdgeInsets.all(10.0),
-              child:
-                  Icon(Icons.arrow_back, size: 18, color: AppColors.textDark),
-            ),
-          ),
+      // Clear of the shell's floating role badge and bell.
+      padding: const EdgeInsets.only(right: 180),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 6,
+          children: [
+            Text('${_utilityLabel(widget.utility)} · ${widget.room}',
+                style: const TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.ink)),
+            WebStatusPill(text: _isOnline ? 'Online' : 'Offline', on: _isOnline),
+          ],
         ),
-        const SizedBox(width: 16),
-        Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            color: _utilityColor(widget.utility).withAlpha(31),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(_utilityIcon(widget.utility),
-              size: 28, color: _utilityColor(widget.utility)),
+        const SizedBox(height: 4),
+        Text(
+          '${widget.deviceId} · ${widget.building} · Floor ${widget.floor} · '
+          '${isAc ? 'Contactor' : 'Relay'}',
+          style: const TextStyle(fontSize: 14, color: WebColors.muted),
         ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(_utilityLabel(widget.utility),
-                  style: const TextStyle(
-                      fontFamily: 'Outfit',
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textDark)),
-              const SizedBox(height: 2),
-              Text(
-                  '${widget.deviceId} · ${widget.building} · Floor ${widget.floor} · ${widget.room}',
-                  style: const TextStyle(
-                      fontSize: 13, color: WebColors.muted)),
-            ],
-          ),
-        ),
-        // Semantic: this whole badge (background/dot/text) is a live
-        // online/offline device-status indicator paired against
-        // AppColors.offline for the offline state -- deliberately NOT
-        // retheme'd (see also _buildRelayCard's relay-state coloring below,
-        // which follows the same reasoning; matches mobile
-        // device_detail_screen.dart's header badge).
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: _isOnline
-                ? AppColors.greenMid.withAlpha(31)
-                : AppColors.offline.withAlpha(31),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _isOnline ? AppColors.greenMid : AppColors.offline,
-              ),
-            ),
-            const SizedBox(width: 5),
-            Text(_isOnline ? 'Online' : 'Offline',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _isOnline ? AppColors.greenDark : AppColors.offline,
-                )),
-          ]),
-        ),
-      ],
-      ),
-    );
-  }
-
-  Widget _buildStatusCard() {
-    final lastSeen = _deviceData['last_seen'];
-    String lastSeenText = 'Never';
-    if (lastSeen != null && lastSeen != 0) {
-      final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-      final diff = DateTime.now().difference(dt);
-      if (diff.inSeconds < 60) {
-        lastSeenText = '${diff.inSeconds}s ago';
-      } else if (diff.inMinutes < 60) {
-        lastSeenText = '${diff.inMinutes}m ago';
-      } else {
-        lastSeenText = '${diff.inHours}h ago';
-      }
-    }
-
-    return _card(
-      title: 'Status',
-      icon: Icons.info_outline,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _infoRow('Last seen', lastSeenText),
-          _infoRow(
-              'PZEM reading', _hasPzemReadings ? 'Detected' : 'Not detected'),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRelayCard() {
-    final isAc = widget.utility == 'ac';
-    final relayVisible = _relay;
-    final warningMessage = _voltageWarningMessage(_deviceData);
-    final canToggle = widget.role == 'admin' ||
-        widget.role == 'main_admin' ||
-        widget.role == 'super_admin' ||
-        widget.role == 'institute_admin';
-
-    // Semantic: this entire card's coloring (background, border, text, the
-    // toggle track/knob further down) is driven by `relayVisible` (live
-    // relay ON/OFF hardware state) and `_isOnline` -- this is the canonical
-    // case the institute-theming rollout heuristic calls out (enabled/
-    // disabled state), so none of it is retheme'd below. Matches mobile
-    // device_detail_screen.dart's _buildRelayCard.
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: relayVisible ? AppColors.greenDark : AppColors.cardBg,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: relayVisible
-              ? AppColors.greenMid
-              : AppColors.greenMid.withAlpha(26),
-        ),
-      ),
-      child: Row(children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(isAc ? 'Contactor' : 'Relay',
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: relayVisible
-                          ? AppColors.greenPale
-                          : WebColors.muted)),
-              const SizedBox(height: 4),
-              Text(relayVisible ? 'Turned ON' : 'Turned OFF',
-                  style: TextStyle(
-                      fontFamily: 'Outfit',
-                      fontSize: 26,
-                      fontWeight: FontWeight.w700,
-                      color: relayVisible ? Colors.white : AppColors.textDark)),
-              const SizedBox(height: 4),
-              Text(
-                !canToggle
-                    ? 'You do not have permission to control this device'
-                    : (!_hasPzemReadings
-                        ? 'No PZEM reading'
-                        : (!_isOnline
-                            ? 'Device is offline'
-                            : (relayVisible
-                                ? 'Click to turn off'
-                                : 'Click to turn on'))),
-                style: TextStyle(
-                    fontSize: 13,
-                    color: relayVisible
-                        ? AppColors.greenPale.withAlpha(179)
-                        : WebColors.muted),
-              ),
-              if (warningMessage != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  warningMessage,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFFFFC107),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        const SizedBox(width: 16),
-        if (canToggle)
-          GestureDetector(
-            onTap: !_toggling ? _toggleRelay : null,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
-              width: 72,
-              height: 38,
-              decoration: BoxDecoration(
-                color: !_isOnline
-                    ? Colors.grey.withAlpha(80)
-                    : (relayVisible
-                        ? AppColors.greenLight
-                        : const Color(0xFFE0E0E0)),
-                borderRadius: BorderRadius.circular(19),
-              ),
-              child: Stack(children: [
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 250),
-                  left: relayVisible ? 36 : 2,
-                  top: 2,
-                  bottom: 2,
-                  child: Container(
-                    width: 34,
-                    decoration: const BoxDecoration(
-                        color: Colors.white, shape: BoxShape.circle),
-                    child: Center(
-                      child: _toggling
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: AppColors.greenMid),
-                            )
-                          : Icon(
-                              relayVisible
-                                  ? Icons.power_rounded
-                                  : Icons.power_off_rounded,
-                              size: 17,
-                              color: relayVisible
-                                  ? AppColors.greenMid
-                                  : WebColors.muted,
-                            ),
-                    ),
-                  ),
-                ),
-              ]),
-            ),
-          )
-        else
-          Container(
-            width: 72,
-            height: 38,
-            decoration: BoxDecoration(
-              color: Colors.grey.withAlpha(40),
-              borderRadius: BorderRadius.circular(19),
-            ),
-            child: const Icon(Icons.lock_outline,
-                size: 18, color: WebColors.muted),
-          ),
       ]),
     );
   }
 
-  Widget _buildReadingsGrid(double energyFromMeter) {
-    final voltage = _safeFormatPzem(_deviceData['voltage'], 1);
-    final current = _safeFormatPzem(_deviceData['current'], 2);
-    final power = _safeFormatPzem(_deviceData['power'], 1);
-    final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
-    final frequency = _safeFormatPzem(_deviceData['frequency'], 1);
-    final energyValue = energyFromMeter > 0
-        ? energyFromMeter
-        : ((_deviceData['kwh'] is num)
-            ? (_deviceData['kwh'] as num).toDouble()
-            : 0.0);
-    final energy = energyValue.toStringAsFixed(2);
-
-    return _card(
-      title: 'PZEM-004T Readings',
-      icon: Icons.speed_outlined,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final crossAxisCount = responsiveColumnCount(
-            constraints.maxWidth,
-            mobileColumns: 3,
-            idealTileWidth: 150,
-            maxColumns: 6,
-          );
-          return GridView.count(
-            crossAxisCount: crossAxisCount,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 1.15,
-            // Semantic: fixed per-metric color key (voltage/current/power/
-            // energy/frequency/power factor each get their own hue so the
-            // 6 tiles stay visually distinguishable), mixing AppColors.green*
-            // with literal hex colors (blue/purple) -- not institute brand
-            // chrome, so deliberately NOT retheme'd (matches mobile
-            // device_detail_screen.dart).
-            children: [
-              _readingTile('Voltage', voltage, 'V', Icons.electrical_services,
-                  AppColors.greenMid),
-              _readingTile(
-                  'Current', current, 'A', Icons.bolt, AppColors.warning),
-              _readingTile(
-                  'Power', power, 'W', Icons.power, AppColors.greenDark),
-              _readingTile('Energy', energy, 'kWh', Icons.battery_charging_full,
-                  const Color(0xFF2196F3)),
-              _readingTile(
-                  'Freq.', frequency, 'Hz', Icons.waves, AppColors.greenLight),
-              _readingTile('P.Factor', powerFactor, '', Icons.speed,
-                  const Color(0xFF9C27B0)),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _readingTile(
-      String label, String value, String unit, IconData icon, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withAlpha(38)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Icon(icon, size: 18, color: color),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text(value,
-                  style: const TextStyle(
-                      fontFamily: 'Outfit',
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textDark)),
-              if (unit.isNotEmpty) ...[
-                const SizedBox(width: 3),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(unit,
-                      style: const TextStyle(
-                          fontSize: 11, color: WebColors.muted)),
-                ),
-              ],
-            ]),
-            Text(label,
-                style:
-                    const TextStyle(fontSize: 12, color: WebColors.muted)),
-          ]),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCostCard(double energy, double cost) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: _palette.pale,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(51)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Estimated Cost',
-              style: TextStyle(fontSize: 13, color: AppColors.textMid)),
-          const SizedBox(height: 4),
-          Text('₱ ${cost.toStringAsFixed(2)}',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 26,
-                  fontWeight: FontWeight.w700,
-                  color: _palette.dark)),
-          Text('at ₱${_ratePhp.toStringAsFixed(2)} / kWh',
-              style: const TextStyle(fontSize: 12, color: WebColors.muted)),
-          const SizedBox(height: 14),
-          Container(height: 1, color: _palette.mid.withAlpha(40)),
-          const SizedBox(height: 14),
-          const Text('Total Energy',
-              style: TextStyle(fontSize: 12, color: AppColors.textMid)),
-          Text('${energy.toStringAsFixed(2)} kWh',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.dark)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDeviceInfoCard() {
-    return _card(
-      title: 'Device Info',
-      icon: Icons.description_outlined,
+  Widget _buildLoadError() {
+    return WebCard(
       child: Column(children: [
-        _infoRow('Device ID', widget.deviceId),
-        _infoRow('Building', widget.building),
-        _infoRow('Floor', 'Floor ${widget.floor}'),
-        _infoRow('Room', widget.room),
-        _infoRow('Utility', _utilityLabel(widget.utility)),
-        _infoRow('Control',
-            widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
-        _infoRow('Sensor', 'PZEM-004T + CT Clamp'),
+        const SizedBox(height: 24),
+        const Icon(Icons.cloud_off_outlined, size: 44, color: WebColors.muted),
+        const SizedBox(height: 12),
+        const Text('Cannot load this device',
+            style: TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: WebColors.ink)),
+        const SizedBox(height: 6),
+        Text(_errorText ?? 'Something went wrong.',
+            style: const TextStyle(fontSize: 14, color: WebColors.muted)),
+        const SizedBox(height: 16),
+        TextButton.icon(
+          onPressed: _retry,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Retry'),
+          style: TextButton.styleFrom(foregroundColor: _palette.dark),
+        ),
+        const SizedBox(height: 12),
       ]),
     );
   }
 
-  Widget _card(
-      {required String title, required IconData icon, required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Icon(icon, size: 16, color: _palette.mid),
-            const SizedBox(width: 8),
+  Widget _buildReadings() {
+    final power = _relay ? _safeFormatPzem(_deviceData['power'], 0) : '0';
+    final boxes = [
+      _readingBox('Voltage', _safeFormatPzem(_deviceData['voltage'], 1), 'V'),
+      _readingBox('Current',
+          _relay ? _safeFormatPzem(_deviceData['current'], 2) : '0.00', 'A'),
+      _readingBox('Power', power, 'W'),
+      _readingBox('Energy today', _todayKwh.toStringAsFixed(2), 'kWh'),
+    ];
+    return LayoutBuilder(builder: (context, c) {
+      const gap = 14.0;
+      final cols = c.maxWidth >= 700 ? 4 : 2;
+      final w = (c.maxWidth - gap * (cols - 1)) / cols;
+      return Wrap(
+        spacing: gap,
+        runSpacing: gap,
+        children: [for (final b in boxes) SizedBox(width: w, child: b)],
+      );
+    });
+  }
+
+  Widget _readingBox(String label, String value, String unit) {
+    return WebCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label,
+            style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+        const SizedBox(height: 4),
+        Text.rich(TextSpan(children: [
+          TextSpan(
+              text: value,
+              style: const TextStyle(
+                  fontFamily: 'Outfit',
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  color: WebColors.ink)),
+          TextSpan(
+              text: ' $unit',
+              style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+        ])),
+      ]),
+    );
+  }
+
+  Widget _panelTitle(String title, String subtitle, {Widget? trailing}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(title,
                 style: const TextStyle(
                     fontFamily: 'Outfit',
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textDark)),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.ink)),
+            const SizedBox(height: 3),
+            Text(subtitle,
+                style: const TextStyle(fontSize: 13, color: WebColors.muted)),
           ]),
-          const SizedBox(height: 14),
-          child,
-        ],
-      ),
+        ),
+        if (trailing != null) trailing,
+      ]),
     );
   }
 
-  Widget _infoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+  Widget _buildTrendCard() {
+    return WebCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        _panelTitle('Energy trend', 'kWh per day, last 7 days'),
+        if (_week.isEmpty)
+          const SizedBox(
+            height: 240,
+            child: Center(
+              child: Text('No history yet',
+                  style: TextStyle(fontSize: 14, color: WebColors.muted)),
+            ),
+          )
+        else
+          WebTrendChart(
+            height: 240,
+            bars: false,
+            color: AppColors.greenMid,
+            points: [
+              for (final p in _week)
+                TrendPoint(
+                  _dayNames[p.date.weekday - 1],
+                  '${_monthNames[p.date.month - 1]} ${p.date.day} · '
+                      '${_dayNames[p.date.weekday - 1]} · '
+                      '${p.kwh.toStringAsFixed(2)} kWh',
+                  p.kwh,
+                ),
+            ],
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildControlCard() {
+    final warning = _voltageWarningMessage(_deviceData);
+    final String subtitle;
+    if (!_canToggle) {
+      subtitle = 'Only admins can switch this device';
+    } else if (!_isOnline) {
+      subtitle = 'Device is offline';
+    } else {
+      subtitle = 'Switch this device on or off';
+    }
+    final month = _monthKwh;
+    return WebCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        _panelTitle('Control', subtitle,
+            trailing: WebStatusPill(
+                text: _relay ? 'Turned ON' : 'Turned OFF', on: _relay)),
+        Row(children: [
+          WebSwitch(
+            value: _relay,
+            semanticLabel: 'Device switch',
+            onChanged: _canToggle && _isOnline && !_toggling
+                ? (_) => _toggleRelay()
+                : null,
+          ),
+          const SizedBox(width: 14),
+          Text(_relay ? 'ON' : 'OFF',
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: WebColors.ink)),
+          if (_toggling) ...[
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: _palette.mid),
+            ),
+          ],
+        ]),
+        if (warning != null) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8922A).withAlpha(30),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFE8922A).withAlpha(100)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.warning_amber_rounded,
+                  size: 18, color: Color(0xFF9A5A0E)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(warning,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF9A5A0E))),
+              ),
+            ]),
+          ),
+        ],
+        const SizedBox(height: 18),
+        _kvRow('Estimated Cost',
+            '₱${(_todayKwh * _ratePhp).toStringAsFixed(2)} today'),
+        _kvRow('Total Energy',
+            month == null ? '—' : '${month.toStringAsFixed(1)} kWh this month'),
+        _kvRow('PZEM reading', _hasPzemReadings ? 'Detected' : 'Not detected'),
+        _kvRow('Last seen', _lastSeenText(), last: true),
+      ]),
+    );
+  }
+
+  Widget _kvRow(String label, String value, {bool last = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      decoration: BoxDecoration(
+        border: last
+            ? null
+            : Border(
+                bottom:
+                    BorderSide(color: const Color(0xFF2E9E52).withAlpha(33))),
+      ),
       child: Row(children: [
         Text(label,
-            style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+            style: const TextStyle(fontSize: 14, color: WebColors.muted)),
         const Spacer(),
         Flexible(
           child: Text(value,
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: WebColors.ink)),
         ),
       ]),
     );
@@ -914,44 +765,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         return 'AC Unit';
       default:
         return 'Device';
-    }
-  }
-
-  IconData _utilityIcon(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return Icons.lightbulb_outline;
-      case 'outlet':
-      case 'outlets':
-        return Icons.electrical_services;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return Icons.ac_unit;
-      default:
-        return Icons.device_unknown_outlined;
-    }
-  }
-
-  // Semantic: fixed per-utility-type color key (lights=amber, outlets=green,
-  // AC=blue), same reasoning as the PZEM reading tiles above -- not
-  // institute brand chrome, so deliberately NOT retheme'd (matches mobile
-  // device_detail_screen.dart).
-  Color _utilityColor(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return const Color(0xFFE8922A);
-      case 'outlet':
-      case 'outlets':
-        return AppColors.greenMid;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return const Color(0xFF2196F3);
-      default:
-        return WebColors.muted;
     }
   }
 }
