@@ -5,27 +5,43 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart';
 
+import '../../services/automation_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
+import '../../widgets/top_toast.dart';
 import 'automation_screen_web.dart';
 import 'building_floor_screen_web.dart';
-import '../shared/campus_map_screen.dart';
+import 'campus_map_screen_web.dart';
 import 'device_detail_screen_web.dart';
 import 'history_screen_web.dart';
-import '../shared/manage_users_screen.dart';
+import 'manage_users_screen_web.dart';
 import 'notifications_screen_web.dart';
 import 'settings_screen_web.dart';
+import 'web_overview_tab.dart';
+import 'web_theme.dart';
+import 'web_widgets.dart';
 
-/// The desktop/wide-window dashboard shell: a fixed side nav plus a
+/// The desktop/wide-window dashboard shell: a floating side nav plus a
 /// content area, chosen over [DashboardScreen] by `DashboardPage` once the
 /// window is wide enough. Shares [DashboardViewModel], the same Firebase
 /// data, and the same routes/roles as the mobile dashboard -- only the
-/// layout is desktop-native (grid of capped-width cards instead of a
-/// stacked full-bleed column).
+/// layout is desktop-native.
+///
+/// Tabs (IndexedStack index -> screen):
+///   0 Dashboard  -> [WebOverviewTab] (stat cards + charts)
+///   1 Map
+///   2 Analytics  (hidden for institute admins)
+///   3 Automation
+///   4 Settings   (admins only)
+///   5 Manage Users (admins only)
+///   6 Devices    -> the previous home tab (hero card, building grid,
+///                   recent entries; institute admins get their rooms)
+/// Devices is 6 rather than 1 so every existing index (e.g. "View full
+/// analytics" jumping to 2) keeps working unchanged.
 class DesktopDashboardScreen extends StatefulWidget {
   final String? role;
   final String? name;
@@ -36,16 +52,29 @@ class DesktopDashboardScreen extends StatefulWidget {
   State<DesktopDashboardScreen> createState() => _DesktopDashboardScreenState();
 }
 
+const int _tabDashboard = 0;
+const int _tabMap = 1;
+const int _tabAnalytics = 2;
+const int _tabAutomation = 3;
+const int _tabSettings = 4;
+const int _tabUsers = 5;
+const int _tabDevices = 6;
+
+/// A side-nav item. Active = solid white pill with the palette's dark
+/// color for icon/text (like the reference's highlighted "Dashboard"),
+/// hover = faint white wash.
 class _SideNavButton extends StatefulWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
   final bool isActive;
+  final Color activeColor;
 
   const _SideNavButton({
     required this.icon,
     required this.label,
     required this.onTap,
+    required this.activeColor,
     this.isActive = false,
   });
 
@@ -58,50 +87,64 @@ class _SideNavButtonState extends State<_SideNavButton> {
 
   @override
   Widget build(BuildContext context) {
-    final backgroundColor = widget.isActive
-        ? Colors.white12
-        : _isHovered
-            ? Colors.white10
-            : null;
-    final borderColor = widget.isActive
-        ? Colors.white24
-        : _isHovered
-            ? Colors.white24
-            : Colors.transparent;
+    final active = widget.isActive;
+    final hovered = _isHovered && !active;
+    final fg = active
+        ? widget.activeColor
+        : Colors.white.withAlpha(hovered ? 255 : 210);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      padding: const EdgeInsets.symmetric(vertical: 3.0),
       child: MouseRegion(
+        cursor: SystemMouseCursors.click,
         onEnter: (_) => setState(() => _isHovered = true),
         onExit: (_) => setState(() => _isHovered = false),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOut,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: backgroundColor,
-              border: Border.all(color: borderColor),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  widget.icon,
-                  color: _isHovered || widget.isActive
-                      ? Colors.white
-                      : Colors.white70,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    widget.label,
-                    style: const TextStyle(color: Colors.white),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: active
+                    ? Colors.white
+                    : hovered
+                        ? Colors.white.withAlpha(22)
+                        : Colors.transparent,
+                boxShadow: active
+                    ? [
+                        BoxShadow(
+                          color: Colors.black.withAlpha(30),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  Icon(widget.icon, size: 20, color: fg),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      style: TextStyle(
+                        color: fg,
+                        fontSize: 14,
+                        fontWeight:
+                            active ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                  if (active)
+                    Icon(Icons.chevron_right_rounded, size: 18, color: fg),
+                ],
+              ),
             ),
           ),
         ),
@@ -112,25 +155,20 @@ class _SideNavButtonState extends State<_SideNavButton> {
 
 class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   late final DashboardViewModel vm;
-  int _selectedIndex = 0;
+  int _selectedIndex = _tabDashboard;
   String _role = 'faculty';
   String? _institute;
 
   // In-place "drill down" view state: when set, these are rendered instead
   // of the tab IndexedStack in the content area to the right of the side
   // nav -- so navigating into a building/device never pops out of the
-  // desktop shell (unlike the old Navigator.pushNamed('/building' | '/device')
-  // full-screen routes, which have no side nav at all).
+  // desktop shell.
   Map<String, dynamic>? _viewingBuilding;
   Map<String, dynamic>? _viewingDevice;
 
-  // ── Institute-scoped summary (institute_admin home tab only) ──────────
+  // ── Institute-scoped summary (institute_admin Devices tab only) ───────
   // Populated by _listenInstituteScoped(), filtered strictly to `_institute`
-  // -- never derived from `vm`'s system-wide totals, which are also shared
-  // by main-admin's `_buildHomeTab()`. Mirrors mobile dashboard_screen.dart's
-  // `_listenInstituteScoped()`/`_buildInstituteEnergyCard()` field-filtering
-  // pattern exactly; this is a standalone listener, not an extension of the
-  // shared `DashboardViewModel` (which has zero institute-awareness).
+  // -- never derived from `vm`'s system-wide totals.
   double _instituteKwh = 0.0;
   double _instituteMonthlyKwh = 0.0;
   int _instituteAssignedDevices = 0;
@@ -141,14 +179,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
   /// Institute-scoped combined listener (institute_admin only), mirroring
-  /// mobile dashboard_screen.dart's `_listenInstituteScoped()`: `devices`
-  /// filtered by `building == _institute` for today's kWh + online count
-  /// (same <2min last_seen online window mobile uses), `master_devices`
-  /// filtered by `assignedTo` starting with `"$code/"` for the assigned
-  /// count, and `history/monthly/{monthKey}/buildings/{code}/kwh` for this
-  /// month's institute energy (paired with `vm.electricityRate`, already
-  /// tracked by the shared view model, for Month Cost). Every number here is
-  /// scoped to `_institute` only -- never system-wide.
+  /// mobile dashboard_screen.dart's `_listenInstituteScoped()`. Every number
+  /// here is scoped to `_institute` only -- never system-wide.
   void _listenInstituteScoped() {
     final code = _institute;
     if (code == null || code.isEmpty) return;
@@ -230,6 +262,145 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     });
   }
 
+  // ── Building management (super admins) ───────────────────────────────
+  // Same Firebase writes as mobile dashboard_screen.dart. `ctx` must sit
+  // below the shell's local Theme so dialogs pick up the web styling.
+
+  static final _buildingCodePattern = RegExp(r'^[A-Z0-9]{2,8}$');
+
+  String? _floorsError(String raw) {
+    final f = int.tryParse(raw);
+    if (f == null || f < 1 || f > 20) return 'Enter a whole number from 1 to 20.';
+    return null;
+  }
+
+  Future<void> _addBuilding(BuildContext ctx) async {
+    final existing = {
+      for (final b in vm.buildings) (b['code'] ?? '').toString().toUpperCase()
+    };
+    String? added;
+    await showWebFormDialog(
+      context: ctx,
+      title: 'Add building',
+      okLabel: 'Add',
+      fields: const [
+        WebField(
+            id: 'code', label: 'Building code', hint: 'e.g. CLINIC', uppercase: true),
+        WebField(id: 'name', label: 'Building name', hint: 'e.g. Clinic Building'),
+        WebField(
+            id: 'floors',
+            label: 'Floors',
+            initial: '1',
+            keyboardType: TextInputType.number),
+      ],
+      onSubmit: (v) async {
+        final code = v['code']!.toUpperCase();
+        final e = <String, String>{};
+        if (code.isEmpty) {
+          e['code'] = 'Building code is required.';
+        } else if (!_buildingCodePattern.hasMatch(code)) {
+          e['code'] = 'Use 2–8 letters or numbers, no spaces.';
+        } else if (existing.contains(code)) {
+          e['code'] = 'That code already exists.';
+        }
+        if (v['name']!.isEmpty) e['name'] = 'Building name is required.';
+        final fe = _floorsError(v['floors']!);
+        if (fe != null) e['floors'] = fe;
+        if (e.isNotEmpty) return e;
+        await FirebaseDatabase.instance.ref('buildings/$code').set({
+          'name': v['name'],
+          'floors': int.parse(v['floors']!),
+        });
+        added = code;
+        return null;
+      },
+    );
+    if (added != null && ctx.mounted) TopToast.show(ctx, '$added added.');
+  }
+
+  Future<void> _editBuilding(
+      BuildContext ctx, String code, String name, int floors) async {
+    final ok = await showWebFormDialog(
+      context: ctx,
+      title: 'Edit building',
+      subtitle: code,
+      fields: [
+        WebField(id: 'name', label: 'Building name', initial: name),
+        WebField(
+            id: 'floors',
+            label: 'Floors',
+            initial: '$floors',
+            keyboardType: TextInputType.number),
+      ],
+      onSubmit: (v) async {
+        final e = <String, String>{};
+        if (v['name']!.isEmpty) e['name'] = 'Building name is required.';
+        final fe = _floorsError(v['floors']!);
+        if (fe != null) e['floors'] = fe;
+        if (e.isNotEmpty) return e;
+        await FirebaseDatabase.instance.ref('buildings/$code').update({
+          'name': v['name'],
+          'floors': int.parse(v['floors']!),
+        });
+        return null;
+      },
+    );
+    if (ok && ctx.mounted) TopToast.show(ctx, '$code updated.');
+  }
+
+  Future<void> _deleteBuilding(BuildContext ctx, String code, String name) async {
+    final db = FirebaseDatabase.instance;
+    final assigned = <String>{};
+    final devicesSnap = await db.ref('devices').get();
+    if (devicesSnap.value is Map) {
+      (devicesSnap.value as Map).forEach((id, val) {
+        if (val is Map && (val['building'] ?? '').toString() == code) {
+          assigned.add(id.toString());
+        }
+      });
+    }
+    final masterSnap = await db.ref('master_devices').get();
+    if (masterSnap.value is Map) {
+      (masterSnap.value as Map).forEach((id, val) {
+        if (val is Map &&
+            (val['assignedTo'] ?? '').toString().startsWith('$code/')) {
+          assigned.add(id.toString());
+        }
+      });
+    }
+    if (!ctx.mounted) return;
+    final n = assigned.length;
+    final ok = await showWebConfirmDialog(
+      context: ctx,
+      title: 'Delete building?',
+      message: n > 0
+          ? '$name and its $n assigned device${n == 1 ? '' : 's'} will be '
+              "unassigned, and its map zone removed. This can't be undone."
+          : "$name and its map zone will be removed. This can't be undone.",
+      onConfirm: () async {
+        final updates = <String, dynamic>{
+          'buildings/$code': null,
+          'hotspots/$code': null,
+        };
+        for (final id in assigned) {
+          updates['master_devices/$id/assignedTo'] = '';
+          updates['devices/$id/building'] = '';
+          updates['devices/$id/floor'] = '';
+          updates['devices/$id/room'] = '';
+          updates['devices/$id/status'] = 'offline';
+        }
+        await db.ref().update(updates);
+      },
+    );
+    if (ok && ctx.mounted) {
+      TopToast.show(
+          ctx,
+          n > 0
+              ? '$code removed. $n device${n == 1 ? '' : 's'} unassigned.'
+              : '$code removed.');
+    }
+  }
+
   void _openDevice(String deviceId, String utility, String building,
       String room, int floor) {
     setState(() {
@@ -263,22 +434,14 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   bool get _isInstituteAdmin => _role == 'institute_admin';
   bool get _canAccessManagement => _isSuperAdmin || _isInstituteAdmin;
 
-  /// Resolution now lives centrally in `InstituteTheme.resolve` (see
-  /// theme/institute_colors.dart) instead of being recomputed here -- this
-  /// mirrors the fix already applied to the mobile dashboard's `_palette`.
-  /// Note this deliberately calls `InstituteTheme.resolve` directly rather
-  /// than `context.institutePalette`: `build()` below wraps its *returned*
-  /// subtree in a local `Theme` carrying the resolved `InstituteTheme`
-  /// extension, but this State's own `context` sits above that locally
-  /// created `Theme` in the element tree, so a lookup from here would never
-  /// see it and would silently fall back to green.
+  /// Resolution lives centrally in `InstituteTheme.resolve` (see
+  /// theme/institute_colors.dart). Called directly rather than via
+  /// `context.institutePalette`, because this State's own `context` sits
+  /// above the local `Theme` that `build()` creates.
   InstitutePalette get _palette =>
       InstituteTheme.resolve(_role, _institute).palette;
 
   Future<void> _loadRoleIfNeeded() async {
-    // Route arguments (from the login screen) are a fast first paint, but
-    // an institute admin's `institute` field only lives in Firebase, so we
-    // always follow up with a real fetch rather than short-circuiting here.
     final routeRole = widget.role?.trim();
     if (routeRole != null && routeRole.isNotEmpty) {
       _role = routeRole.toLowerCase();
@@ -309,8 +472,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         _listenInstituteScoped();
       }
     } catch (e) {
-      // Keep the default faculty role if role hydration fails, but log it so
-      // permission-denied reads on users/{uid} are visible in the console.
       debugPrint('[DashboardWeb] Failed to load role for ${user.uid}: $e');
     }
   }
@@ -344,136 +505,35 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     final showAnalytics = !_isInstituteAdmin;
     final showManagement = _canAccessManagement;
     final showUserManagement = _isSuperAdmin || _isInstituteAdmin;
-    final safeIndex = (!showAnalytics && _selectedIndex == 2) ||
-            (!showManagement && _selectedIndex == 4) ||
-            (!showUserManagement && _selectedIndex == 5)
-        ? 0
+    final safeIndex = (!showAnalytics && _selectedIndex == _tabAnalytics) ||
+            (!showManagement && _selectedIndex == _tabSettings) ||
+            (!showUserManagement && _selectedIndex == _tabUsers)
+        ? _tabDashboard
         : _selectedIndex;
 
-    // Local theme override carrying the resolved InstituteTheme extension,
-    // so any genuine descendant widget (its own BuildContext, below this
-    // point in the tree) can read `context.institutePalette`. This State's
-    // own `_palette` getter does not rely on this -- see its doc comment.
+    // A soft neutral page wash tinted by the palette -- lets the white
+    // cards (and the gradient hero card on the Devices tab) read clearly.
+    final pageBg = Color.alphaBlend(
+      palette.pale.withAlpha(60),
+      const Color(0xFFF6F8F7),
+    );
+
+    // Web typography (DM Sans body, Outfit headings, readable muted text)
+    // plus the resolved InstituteTheme extension for descendants.
     return Theme(
-      data: Theme.of(context).copyWith(
+      data: webTheme(Theme.of(context)).copyWith(
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: Scaffold(
-        // Institute-admin's tab (and its own building drill-down, same
-        // Scaffold) goes white so the new institute-scoped summary card's
-        // gradient fill reads clearly against the page; main-admin keeps
-        // the palette.pale wash exactly as before -- keyed off the same
-        // `_isInstituteAdmin` flag that already picks the tab below.
-        backgroundColor: _isInstituteAdmin ? AppColors.cardBg : palette.pale,
+        backgroundColor: pageBg,
         body: SafeArea(
           child: Row(
-            // Row defaults to centering children on the cross (vertical) axis,
-            // which let the content pane's height float with its own content
-            // instead of locking to the full window height -- shorter content
-            // (fewer room rows) ended up vertically centered with a bigger gap
-            // above it than taller content. Stretch pins both the side nav and
-            // the content pane to the full height, so the header position is
-            // fixed regardless of how much content follows it.
+            // Stretch pins both the side nav and the content pane to the
+            // full height, so the header position never floats.
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                width: 260,
-                color: palette.dark,
-                child: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 40,
-                            height: 40,
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: Colors.white24,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Image.asset(
-                              'promo/img/logo.png',
-                              fit: BoxFit.contain,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Text(
-                              'Smart Switch',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      const Divider(color: Colors.white24),
-                      const SizedBox(height: 8),
-                      _SideNavButton(
-                        icon: Icons.dashboard,
-                        label: 'Dashboard',
-                        onTap: () => _selectTab(0),
-                        isActive: safeIndex == 0 && !_isDrilledDown,
-                      ),
-                      _SideNavButton(
-                        icon: Icons.map,
-                        label: 'Map',
-                        onTap: () => _selectTab(1),
-                        isActive: safeIndex == 1 && !_isDrilledDown,
-                      ),
-                      if (showAnalytics)
-                        _SideNavButton(
-                          icon: Icons.bar_chart,
-                          label: 'Analytics',
-                          onTap: () => _selectTab(2),
-                          isActive: safeIndex == 2 && !_isDrilledDown,
-                        ),
-                      _SideNavButton(
-                        icon: Icons.schedule,
-                        label: 'Automation',
-                        onTap: () => _selectTab(3),
-                        isActive: safeIndex == 3 && !_isDrilledDown,
-                      ),
-                      if (showManagement || showUserManagement) ...[
-                        const SizedBox(height: 8),
-                        const Divider(color: Colors.white24),
-                        const SizedBox(height: 8),
-                      ],
-                      if (showUserManagement)
-                        _SideNavButton(
-                          icon: Icons.admin_panel_settings_outlined,
-                          label: 'Manage Users',
-                          onTap: () => _selectTab(5),
-                          isActive: safeIndex == 5 && !_isDrilledDown,
-                        ),
-                      if (showManagement)
-                        _SideNavButton(
-                          icon: Icons.settings_outlined,
-                          label: 'Settings',
-                          onTap: () => _selectTab(4),
-                          isActive: safeIndex == 4 && !_isDrilledDown,
-                        ),
-                      const Spacer(),
-                      _SideNavButton(
-                        icon: Icons.logout,
-                        label: 'Logout',
-                        onTap: () async {
-                          await FirebaseAuth.instance.signOut();
-                          if (!context.mounted) return;
-                          Navigator.pushReplacementNamed(context, '/login');
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-                  ),
-                ),
-              ),
+              _buildSideNav(palette, safeIndex, showAnalytics, showManagement,
+                  showUserManagement),
               Expanded(
                 child: Stack(
                   children: [
@@ -488,17 +548,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                           child: Container(color: Colors.transparent),
                         ),
                       ),
-                    // Floating overlay, not a layout row -- so it never pushes
-                    // tab content down (that caused clipping) and its position
-                    // never depends on that content's height. Sits roughly
-                    // level with each screen's own title row (they all use
-                    // ~20-24px top padding) so it reads as "inline" with it.
-                    // Role badge, matching mobile's top-bar `_roleBadge()`
-                    // (dashboard_screen.dart) -- the web shell has no single
-                    // global top bar (side nav + per-tab content instead), so
-                    // this is placed as a floating overlay just left of the
-                    // notification bell, visible on every tab like mobile's
-                    // version, rather than duplicated per-tab.
+                    // Floating overlays (role badge + bell), visible on
+                    // every tab, level with each screen's title row.
                     Positioned(
                       top: 22,
                       right: 76,
@@ -525,10 +576,140 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     );
   }
 
+  Widget _navSectionLabel(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: Colors.white.withAlpha(140),
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.4,
+          ),
+        ),
+      );
+
+  /// The floating, rounded side nav (reference-style): brand block, MAIN /
+  /// MANAGE groups, a white info card and Logout pinned to the bottom.
+  Widget _buildSideNav(InstitutePalette palette, int safeIndex,
+      bool showAnalytics, bool showManagement, bool showUserManagement) {
+    bool active(int i) => safeIndex == i && !_isDrilledDown;
+    Widget item(IconData icon, String label, int index) => _SideNavButton(
+          icon: icon,
+          label: label,
+          activeColor: palette.dark,
+          isActive: active(index),
+          onTap: () => _selectTab(index),
+        );
+
+    return Container(
+      width: 248,
+      margin: const EdgeInsets.fromLTRB(16, 16, 0, 16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            palette.dark,
+            Color.lerp(palette.dark, palette.mid, 0.45)!,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: palette.dark.withAlpha(64),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 22, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Column(
+              children: [
+                Container(
+                  width: 56,
+                  height: 56,
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withAlpha(38),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withAlpha(50)),
+                  ),
+                  child: Image.asset(
+                    'promo/img/logo.png',
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Smart Switch',
+                  style: TextStyle(
+                    fontFamily: 'Outfit',
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Campus Energy Monitor',
+                  style: TextStyle(
+                    color: Colors.white.withAlpha(170),
+                    fontSize: 12,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  _navSectionLabel('MAIN'),
+                  item(Icons.space_dashboard_outlined, 'Dashboard',
+                      _tabDashboard),
+                  item(Icons.devices_other_outlined, 'Devices', _tabDevices),
+                  item(Icons.map_outlined, 'Map', _tabMap),
+                  if (showAnalytics)
+                    item(Icons.insights_outlined, 'Analytics', _tabAnalytics),
+                  item(Icons.schedule_outlined, 'Automation', _tabAutomation),
+                  if (showManagement || showUserManagement) ...[
+                    const SizedBox(height: 14),
+                    _navSectionLabel('MANAGE'),
+                  ],
+                  if (showUserManagement)
+                    item(Icons.admin_panel_settings_outlined, 'Manage Users',
+                        _tabUsers),
+                  if (showManagement)
+                    item(Icons.settings_outlined, 'Settings', _tabSettings),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _SideNavButton(
+              icon: Icons.logout_rounded,
+              label: 'Logout',
+              activeColor: palette.dark,
+              onTap: () async {
+                await AutomationSchedulerService.stop();
+                await FirebaseAuth.instance.signOut();
+                if (!mounted) return;
+                Navigator.pushReplacementNamed(context, '/login');
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// The area to the right of the side nav: normally the tab [IndexedStack],
-  /// but swapped in-place for the building-floor / device-detail "drill
-  /// down" views when one is active -- so the side nav (and everything
-  /// else in the shell) stays put instead of pushing a full-screen route.
+  /// swapped in-place for the building-floor / device-detail drill-down.
   Widget _buildContentArea(
       int safeIndex, bool showManagement, bool showUserManagement) {
     if (_viewingDevice != null) {
@@ -564,18 +745,19 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
       );
     }
 
+    // Children order MUST match the _tab* constants above.
     return IndexedStack(
       index: safeIndex,
       children: [
-        _isInstituteAdmin ? _buildInstituteHomeTab() : _buildHomeTab(),
-        Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: CampusMapScreen(
-            role: _role,
-            showAppBar: false,
-            onBuildingTap: _openBuilding,
-          ),
+        // 0 Dashboard
+        _buildOverviewTab(),
+        // 1 Map
+        CampusMapScreenWeb(
+          role: _role,
+          onBuildingTap: _openBuilding,
+          onDeviceTap: _openDevice,
         ),
+        // 2 Analytics
         const Padding(
           padding: EdgeInsets.all(4.0),
           child: ResponsiveCenter(
@@ -583,6 +765,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
             child: HistoryScreenWeb(),
           ),
         ),
+        // 3 Automation
         Padding(
           padding: const EdgeInsets.all(4.0),
           child: ResponsiveCenter(
@@ -590,6 +773,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
             child: AutomationScreenWeb(role: _role),
           ),
         ),
+        // 4 Settings
         if (showManagement)
           const Padding(
             padding: EdgeInsets.all(4.0),
@@ -597,37 +781,57 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           )
         else
           const SizedBox.shrink(),
+        // 5 Manage Users
         if (showUserManagement)
-          ResponsiveCenter(
-            maxWidth: 1100,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20.0),
-              child: ManageUsersScreen(
-                role: _role,
-                institute: _institute,
-              ),
-            ),
+          ManageUsersScreenWeb(
+            key: ValueKey('users-$_role-$_institute'),
+            role: _role,
+            institute: _institute,
           )
         else
           const SizedBox.shrink(),
+        // 6 Devices (the previous home tab)
+        _isInstituteAdmin ? _buildInstituteHomeTab() : _buildHomeTab(),
       ],
     );
   }
 
-  /// Web equivalent of mobile's top-bar role badge
-  /// (dashboard_screen.dart's `_roleBadge()`), 3-way branched the same way
-  /// off `_isSuperAdmin` / `_isInstituteAdmin` -- but with deliberately
-  /// different copy for the top two tiers ("Super Admin" instead of
-  /// "Admin", "Member" instead of "Faculty", matching the tier labels
-  /// `manage_users_screen.dart`'s `_roleLabel()` already uses).
-  ///
-  /// Unlike mobile, this badge floats over web's light Scaffold background
-  /// (see `backgroundColor` in `build()`), not a solid dark top bar -- so
-  /// the non-highlighted "Member" tier can't reuse mobile's
-  /// white-on-translucent-white styling (unreadable on a light backdrop).
-  /// It uses `AppColors.textMuted`/a light grey chip instead, matching the
-  /// muted-chrome treatment used elsewhere in this file (e.g.
-  /// `_EnergyOverviewCard`'s labels before its gradient-card revert).
+  /// The new reference-style Dashboard. Institute admins get the same
+  /// layout scoped to their own building.
+  Widget _buildOverviewTab() {
+    if (_isInstituteAdmin && (_institute ?? '').isEmpty) {
+      return _noInstituteMessage();
+    }
+    return AnimatedBuilder(
+      animation: vm,
+      builder: (context, _) {
+        if (vm.hasError) return _buildDashboardError();
+        return WebOverviewTab(
+          vm: vm,
+          palette: _palette,
+          instituteCode: _isInstituteAdmin ? _institute : null,
+          userName: widget.name,
+          onOpenDevices: () => _selectTab(_tabDevices),
+          onOpenAnalytics:
+              _isInstituteAdmin ? null : () => _selectTab(_tabAnalytics),
+          onBuildingTap: _openBuilding,
+        );
+      },
+    );
+  }
+
+  Widget _noInstituteMessage() => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40.0),
+          child: Text(
+            'Your account has no institute assigned yet.\nAsk your main admin to assign one.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: WebColors.muted),
+          ),
+        ),
+      );
+
+  /// Web equivalent of mobile's top-bar role badge.
   Widget _buildRoleBadge() {
     final IconData icon;
     final String label;
@@ -636,42 +840,40 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     if (_isSuperAdmin) {
       icon = Icons.star;
       label = 'Super Admin';
-      color = _palette.light;
+      color = _palette.dark;
       highlighted = true;
     } else if (_isInstituteAdmin) {
       icon = Icons.school;
       label = 'Institute Admin';
-      color = _palette.light;
+      color = _palette.dark;
       highlighted = true;
     } else {
       icon = Icons.person;
       label = 'Member';
-      color = AppColors.textMuted;
+      color = WebColors.muted;
       highlighted = false;
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: highlighted ? color.withAlpha(51) : AppColors.cardBg,
+        color: highlighted ? _palette.pale : AppColors.cardBg,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-            color: highlighted ? color.withAlpha(102) : Colors.black12),
-        boxShadow: highlighted
-            ? null
-            : [
-                BoxShadow(
-                  color: Colors.black.withAlpha(15),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+            color: highlighted ? _palette.mid.withAlpha(90) : Colors.black12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(15),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(icon, size: 11, color: color),
         const SizedBox(width: 4),
         Text(label,
             style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+                fontSize: 12, fontWeight: FontWeight.w600, color: color)),
       ]),
     );
   }
@@ -710,7 +912,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 9,
+                        fontSize: 10,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -747,12 +949,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
               padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
               decoration: BoxDecoration(
                 color: AppColors.cardBg,
-                // Bug fix: this dropdown-style panel's header border was
-                // hardcoded to the main-admin green instead of following
-                // `_palette`, so an institute-themed viewer (e.g. IC/violet)
-                // got a notification bell/side nav that went violet
-                // everywhere except this popup, which silently stayed green
-                // -- same class of bug as mobile's burger-menu popup.
                 border: Border(
                   bottom: BorderSide(color: _palette.mid.withAlpha(26)),
                 ),
@@ -786,10 +982,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     );
   }
 
-  /// The main "Dashboard" section for everyone but institute admins: a
-  /// desktop-grid overview -- a hero energy tile plus stat tiles, a grid of
-  /// campus buildings (not a stretched full-width list), and a recent
-  /// activity card.
+  /// The "Devices" tab for everyone but institute admins (previously the
+  /// home tab): hero energy card, campus building grid, recent entries.
   Widget _buildHomeTab() {
     return AnimatedBuilder(
       animation: vm,
@@ -800,6 +994,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         final buildingsEmpty = vm.buildings.isEmpty && vm.isLoading;
         final displayBuildings =
             buildingsEmpty ? placeholderBuildingList() : vm.buildings;
+        final canManage = _isSuperAdmin && !buildingsEmpty;
         return ScreenSkeleton(
           isLoading: vm.isLoading,
           child: SingleChildScrollView(
@@ -810,7 +1005,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Dashboard',
+                    'Devices',
                     style: TextStyle(
                         fontFamily: 'Outfit',
                         fontSize: 22,
@@ -819,8 +1014,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                   ),
                   const SizedBox(height: 4),
                   const Text(
-                    'Live overview of campus energy usage',
-                    style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                    'Buildings, device counts and recent readings',
+                    style: TextStyle(fontSize: 13, color: WebColors.muted),
                   ),
                   const SizedBox(height: 24),
                   _EnergyOverviewCard(
@@ -839,8 +1034,20 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
                               color: AppColors.textDark)),
+                      const Spacer(),
                       Text('${displayBuildings.length} buildings',
-                          style: const TextStyle(color: AppColors.textMuted)),
+                          style: const TextStyle(color: WebColors.muted)),
+                      if (_isSuperAdmin) ...[
+                        const SizedBox(width: 12),
+                        Builder(
+                          builder: (ctx) => WebIconButton(
+                            icon: Icons.add_rounded,
+                            tooltip: 'Add building',
+                            solid: true,
+                            onPressed: () => _addBuilding(ctx),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -887,6 +1094,13 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                               levelColor: color,
                               onTap: () => _openBuilding(
                                   code, name, int.tryParse(floors) ?? 1),
+                              onEdit: canManage
+                                  ? (ctx) => _editBuilding(ctx, code, name,
+                                      int.tryParse(floors) ?? 1)
+                                  : null,
+                              onDelete: canManage
+                                  ? (ctx) => _deleteBuilding(ctx, code, name)
+                                  : null,
                             );
                           },
                         );
@@ -912,9 +1126,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        // Bug fix: was hardcoded green regardless of viewer -- matches
-        // mobile's `_buildBuildingCard`/`_buildInstituteEnergyCard` fix,
-        // which routes the same card-border tint through `_palette`.
         border: Border.all(color: _palette.mid.withAlpha(26)),
       ),
       child: displayHistory.isEmpty
@@ -922,7 +1133,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
               padding: EdgeInsets.symmetric(vertical: 20),
               child: Center(
                 child: Text('No data yet',
-                    style: TextStyle(color: AppColors.textMuted)),
+                    style: TextStyle(color: WebColors.muted)),
               ),
             )
           : Column(
@@ -937,13 +1148,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                             fontSize: 15,
                             color: AppColors.textDark)),
                     TextButton(
-                      onPressed: () => setState(() => _selectedIndex = 2),
-                      // Bug fix: this had no explicit style, so its resting
-                      // color fell back to ThemeData's seed-green
-                      // ColorScheme.primary (main.dart) regardless of the
-                      // viewer's institute -- always green even for a
-                      // violet/maroon/gold/blue institute theme. `_palette`
-                      // is already resolved for this exact viewer above.
+                      onPressed: () => _selectTab(_tabAnalytics),
                       child: Text('View full analytics',
                           style: TextStyle(color: _palette.dark)),
                     ),
@@ -963,7 +1168,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                             Text(
                               '${(e['kwh'] as num).toDouble().toStringAsFixed(2)} kWh',
                               style:
-                                  const TextStyle(color: AppColors.textMuted),
+                                  const TextStyle(color: WebColors.muted),
                             ),
                           ],
                         ),
@@ -974,11 +1179,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     );
   }
 
-  /// Shown in place of the dashboard's content (side nav stays put) when
-  /// [DashboardViewModel.hasError] is true -- either a real stream error or
-  /// the load-timeout safety net, both surfaced before any successful load.
-  /// Matches the error-card convention used by [AutomationScreenWeb] and
-  /// [NotificationsScreenWeb].
+  /// Shown in place of a tab's content (side nav stays put) when
+  /// [DashboardViewModel.hasError] is true.
   Widget _buildDashboardError() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
@@ -990,12 +1192,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           decoration: BoxDecoration(
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(18),
-            // Bug fix: this error card is reachable from both
-            // `_buildHomeTab` and `_buildInstituteHomeTab`, so an
-            // institute-themed viewer could hit a load error and see a
-            // green card here while the side nav/bell stayed per-institute
-            // -- matches mobile's `_buildError`, already migrated to
-            // `_palette`.
             border: Border.all(color: _palette.mid.withAlpha(26)),
           ),
           child: Center(
@@ -1019,7 +1215,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
               Text(vm.errorMessage ?? 'Something went wrong.',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                      fontSize: 13, color: AppColors.textMuted)),
+                      fontSize: 14, color: WebColors.muted)),
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 onPressed: vm.retry,
@@ -1046,22 +1242,12 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Text(text, style: const TextStyle(color: AppColors.textMuted)),
+        child: Text(text, style: const TextStyle(color: WebColors.muted)),
       );
 
-  /// An institute admin's "Dashboard" tab: an institute-scoped summary card
-  /// (`_InstituteSummaryCard`, fed by `_listenInstituteScoped()` -- every
-  /// number filtered to `_institute` only, never system-wide) above their
-  /// institute's rooms directly, no campus-wide buildings list.
-  ///
-  /// The summary card is handed to `BuildingFloorScreenWeb` as
-  /// `embeddedSummaryCard` rather than stacked above it here -- that keeps
-  /// it inside that screen's own `SingleChildScrollView`, alongside the
-  /// floor tabs and rooms grid, so it scrolls away with the rest of the
-  /// content instead of staying pinned (and getting visually cut off)
-  /// above an independently-scrolling rooms list. That screen already
-  /// hides the card once a room is selected, matching mobile's behavior of
-  /// pushing a full-screen `RoomDevicesScreen` that naturally covers it.
+  /// An institute admin's "Devices" tab: the institute-scoped summary card
+  /// embedded above their institute's rooms (see BuildingFloorScreenWeb's
+  /// `embeddedSummaryCard`).
   Widget _buildInstituteHomeTab() {
     return AnimatedBuilder(
       animation: vm,
@@ -1071,16 +1257,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         }
         final code = _institute ?? '';
         if (code.isEmpty) {
-          return const Center(
-            child: Padding(
-              padding: EdgeInsets.all(40.0),
-              child: Text(
-                'Your account has no institute assigned yet.\nAsk your main admin to assign one.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textMuted),
-              ),
-            ),
-          );
+          return _noInstituteMessage();
         }
         final match = vm.buildings.firstWhere(
           (b) => (b['code'] ?? '').toString() == code,
@@ -1128,16 +1305,9 @@ Color _energyColorForLevel(String level) {
   }
 }
 
-/// The home tab's energy summary: today's kWh as the headline figure, with
-/// month cost and device counts as a secondary breakdown row underneath --
-/// one cohesive card instead of four separate tiles competing for space.
-/// The institute admin home tab's summary card: same headline-kWh +
-/// 3-item mini-stat shape as [_EnergyOverviewCard] (main-admin's card), but
-/// with a colored/gradient fill using the institute's palette instead of a
-/// white background -- matching mobile dashboard_screen.dart's
-/// `_buildInstituteEnergyCard()`. Every value passed in must already be
-/// filtered to the viewer's institute; this widget does no filtering of its
-/// own, see `_DesktopDashboardScreenState._listenInstituteScoped()`.
+/// The institute admin Devices tab's summary card: headline kWh + 3
+/// mini-stats on a palette gradient. Every value passed in must already be
+/// filtered to the viewer's institute.
 class _InstituteSummaryCard extends StatelessWidget {
   final InstitutePalette palette;
   final double kwh;
@@ -1182,15 +1352,11 @@ class _InstituteSummaryCard extends StatelessWidget {
               const Text(
                 'Energy consumed today',
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: 14,
                   color: Colors.white,
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              // The role badge building_floor_screen_web.dart's own header
-              // used to show (hidden there via `showRoleBadge: false` when
-              // embedded below this card) -- this tab only ever renders for
-              // an institute_admin viewer, so it's always "Admin".
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -1201,7 +1367,7 @@ class _InstituteSummaryCard extends StatelessWidget {
                 child: const Text(
                   'Admin',
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: Colors.white,
                   ),
@@ -1278,7 +1444,7 @@ class _InstituteSummaryCard extends StatelessWidget {
             Icon(icon, size: 13, color: Colors.white70),
             const SizedBox(width: 6),
             Text(label,
-                style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         const SizedBox(height: 6),
@@ -1297,6 +1463,8 @@ class _InstituteSummaryCard extends StatelessWidget {
   }
 }
 
+/// The Devices tab's energy summary for main/super admins: today's kWh as
+/// the headline, with month cost and device counts underneath.
 class _EnergyOverviewCard extends StatelessWidget {
   final InstitutePalette palette;
   final double totalKwh;
@@ -1318,10 +1486,6 @@ class _EnergyOverviewCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
       decoration: BoxDecoration(
-        // Restored to the original gradient-fill hero card (green for
-        // super/main admin, since `palette` resolves to
-        // `InstituteColors.admin`), matching `_InstituteSummaryCard`'s
-        // visual language instead of the white-surface/bordered treatment.
         gradient: LinearGradient(
           colors: [palette.dark, palette.mid],
           begin: Alignment.topLeft,
@@ -1353,7 +1517,7 @@ class _EnergyOverviewCard extends StatelessWidget {
               const Text(
                 'Energy consumed today',
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: 14,
                   color: Colors.white,
                   fontWeight: FontWeight.w600,
                 ),
@@ -1429,7 +1593,7 @@ class _EnergyOverviewCard extends StatelessWidget {
             Icon(icon, size: 13, color: Colors.white70),
             const SizedBox(width: 6),
             Text(label,
-                style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         const SizedBox(height: 6),
@@ -1460,6 +1624,10 @@ class _WebBuildingCard extends StatelessWidget {
   final Color levelColor;
   final VoidCallback onTap;
 
+  /// Null hides the edit / delete buttons (non-admin viewers).
+  final void Function(BuildContext context)? onEdit;
+  final void Function(BuildContext context)? onDelete;
+
   const _WebBuildingCard({
     required this.palette,
     required this.code,
@@ -1471,6 +1639,8 @@ class _WebBuildingCard extends StatelessWidget {
     required this.levelLabel,
     required this.levelColor,
     required this.onTap,
+    this.onEdit,
+    this.onDelete,
   });
 
   @override
@@ -1483,11 +1653,8 @@ class _WebBuildingCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(16),
-          // Bug fix: was hardcoded green regardless of viewer -- matches
-          // mobile's `_buildBuildingCard` fix (card border + code-badge
-          // bg/text all route through `_palette`). `levelColor` below is
-          // deliberately untouched: it's the HIGH/MID/LOW severity
-          // indicator, a semantic color, not brand chrome.
+          // `levelColor` below is the HIGH/MID/LOW severity indicator, a
+          // semantic color, not brand chrome.
           border: Border.all(color: palette.mid.withAlpha(20)),
         ),
         child: Column(
@@ -1495,34 +1662,20 @@ class _WebBuildingCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: palette.pale,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          code,
-                          maxLines: 1,
-                          softWrap: false,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: palette.dark,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
+                Tooltip(
+                  message: code,
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: palette.pale,
+                      borderRadius: BorderRadius.circular(10),
                     ),
+                    child: Icon(Icons.apartment_rounded,
+                        size: 22, color: palette.dark),
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 10),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1536,10 +1689,28 @@ class _WebBuildingCard extends StatelessWidget {
                     style: TextStyle(
                       color: levelColor,
                       fontWeight: FontWeight.w700,
-                      fontSize: 11,
+                      fontSize: 12,
                     ),
                   ),
                 ),
+                const Spacer(),
+                if (onEdit != null)
+                  WebIconButton(
+                    icon: Icons.edit_outlined,
+                    tooltip: 'Edit building',
+                    size: 32,
+                    onPressed: () => onEdit!(context),
+                  ),
+                if (onDelete != null) ...[
+                  const SizedBox(width: 6),
+                  WebIconButton(
+                    icon: Icons.delete_outline_rounded,
+                    tooltip: 'Delete building',
+                    size: 32,
+                    danger: true,
+                    onPressed: () => onDelete!(context),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 12),
@@ -1555,12 +1726,12 @@ class _WebBuildingCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              '$floors ${floors == '1' ? 'floor' : 'floors'} · $devices devices',
+              '$code · $floors ${floors == '1' ? 'floor' : 'floors'} · $devices devices',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 12,
+                color: WebColors.muted,
+                fontSize: 13,
               ),
             ),
             const Spacer(),
@@ -1569,7 +1740,7 @@ class _WebBuildingCard extends StatelessWidget {
               style: const TextStyle(
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark,
-                fontSize: 13,
+                fontSize: 14,
               ),
             ),
           ],

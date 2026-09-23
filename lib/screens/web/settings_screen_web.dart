@@ -4,7 +4,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:rxdart/rxdart.dart';
-import '../../services/automation_scheduler_service.dart';
 import '../../services/davao_light_rate_monitor.dart';
 import '../../services/download_open_service.dart';
 import '../../services/github_update_service.dart';
@@ -12,6 +11,8 @@ import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import 'web_theme.dart';
+import 'web_widgets.dart';
 
 /// The desktop "Settings" section: the same actions as [SettingsScreen]
 /// (electricity rate + history, IoT device registration, GitHub updater,
@@ -33,6 +34,12 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   final _unassignedIotController = TextEditingController();
   bool _saving = false;
   bool _registeringIot = false;
+
+  // Inline field errors (red border + message + shake).
+  String? _rateError;
+  String? _iotError;
+  int _rateShake = 0;
+  int _iotShake = 0;
   double _currentRate = 11.5;
   DateTime? _lastRateUpdateTime;
   String _appVersion = '';
@@ -224,9 +231,21 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   }
 
   Future<void> _saveRate() async {
-    final rate = double.tryParse(_rateController.text.trim());
-    if (rate == null || rate <= 0) {
-      TopToast.show(context, 'Enter a valid rate.', isError: true);
+    final raw = _rateController.text.trim();
+    final rate = double.tryParse(raw);
+    String? err;
+    if (raw.isEmpty) {
+      err = 'Enter a rate.';
+    } else if (rate == null || !RegExp(r'^\d+(\.\d{1,2})?$').hasMatch(raw)) {
+      err = 'Use a number like 11.50 (up to 2 decimals).';
+    } else if (rate < 1 || rate > 100) {
+      err = 'Rate must be between ₱1 and ₱100 per kWh.';
+    }
+    if (err != null || rate == null) {
+      setState(() {
+        _rateError = err;
+        _rateShake++;
+      });
       return;
     }
     setState(() => _saving = true);
@@ -278,12 +297,16 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     if (_registeringIot) return;
 
     final id = _unassignedIotController.text.trim().toUpperCase();
+    void fail(String message) => setState(() {
+          _iotError = message;
+          _iotShake++;
+        });
+    if (id.isEmpty) {
+      fail('Enter a Device ID.');
+      return;
+    }
     if (!RegExp(r'^[A-Z0-9_-]{3,40}$').hasMatch(id)) {
-      TopToast.show(
-        context,
-        'Enter a valid Device ID (3-40 chars, A-Z, 0-9, _ or -).',
-        isError: true,
-      );
+      fail('Use 3–40 characters: letters, numbers, _ or -.');
       return;
     }
 
@@ -300,12 +323,8 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         final assignedTo = (existing['assignedTo'] ?? '').toString();
         if (assignedTo.isNotEmpty) {
           if (!mounted) return;
-          TopToast.show(
-            context,
-            'Device already assigned to $assignedTo.',
-            isError: true,
-          );
           setState(() => _registeringIot = false);
+          fail('Already assigned to $assignedTo.');
           return;
         }
 
@@ -441,13 +460,6 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     }
   }
 
-  Future<void> _logout() async {
-    await AutomationSchedulerService.stop();
-    await FirebaseAuth.instance.signOut();
-    if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/login');
-  }
-
   String _formatDateTime(DateTime dt) {
     final now = DateTime.now();
     final diff = now.difference(dt);
@@ -488,7 +500,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
                     color: AppColors.textDark)),
             const SizedBox(height: 4),
             const Text('Rate, devices, updates, and account',
-                style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                style: TextStyle(fontSize: 13, color: WebColors.muted)),
             const SizedBox(height: 24),
             if (_errorText != null)
               _buildError()
@@ -536,7 +548,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 14, color: WebColors.muted)),
           const SizedBox(height: 20),
           ElevatedButton.icon(
             onPressed: _retry,
@@ -620,29 +632,23 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text(
           'Register a real IoT device ID as unassigned so it can be added to a room/floor later.',
-          style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+          style: TextStyle(fontSize: 13, color: WebColors.muted),
         ),
         const SizedBox(height: 12),
-        TextField(
-          controller: _unassignedIotController,
-          textCapitalization: TextCapitalization.characters,
-          style: const TextStyle(fontSize: 14, color: AppColors.textDark),
-          decoration: InputDecoration(
-            hintText: 'e.g. ESP32-ROOM101-001',
-            hintStyle: const TextStyle(color: AppColors.textMuted),
-            filled: true,
-            fillColor: Colors.white,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-            enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: _palette.mid)),
+        ShakeOnChange(
+          trigger: _iotShake,
+          child: TextField(
+            controller: _unassignedIotController,
+            textCapitalization: TextCapitalization.characters,
+            style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+            decoration: webInputDecoration(_palette,
+                label: 'Device ID',
+                hint: 'e.g. ESP32-ROOM101-001',
+                error: _iotError),
+            onChanged: (_) {
+              if (_iotError != null) setState(() => _iotError = null);
+            },
+            onSubmitted: (_) => _registerUnassignedIotDevice(),
           ),
         ),
         const SizedBox(height: 12),
@@ -680,10 +686,10 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
       icon: Icons.payments_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Current rate: ₱${_currentRate.toStringAsFixed(2)} / kWh',
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+            style: const TextStyle(fontSize: 13, color: WebColors.muted)),
         const SizedBox(height: 6),
         Text('Last Updated: $lastUpdateText',
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+            style: const TextStyle(fontSize: 12, color: WebColors.muted)),
         const SizedBox(height: 12),
         SizedBox(
           width: double.infinity,
@@ -718,35 +724,28 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         const Text(
           'Manual Update',
           style: TextStyle(
-              fontSize: 12,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
               color: AppColors.textDark),
         ),
         const SizedBox(height: 10),
-        Row(children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Expanded(
-            child: TextField(
-              controller: _rateController,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(fontSize: 14, color: AppColors.textDark),
-              decoration: InputDecoration(
-                prefixText: '₱ ',
-                hintText: '11.5',
-                hintStyle: const TextStyle(color: AppColors.textMuted),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid)),
+            child: ShakeOnChange(
+              trigger: _rateShake,
+              child: TextField(
+                controller: _rateController,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                style:
+                    const TextStyle(fontSize: 14, color: AppColors.textDark),
+                decoration: webInputDecoration(_palette,
+                        label: 'Rate per kWh', hint: '11.50', error: _rateError)
+                    .copyWith(prefixText: '₱ '),
+                onChanged: (_) {
+                  if (_rateError != null) setState(() => _rateError = null);
+                },
+                onSubmitted: (_) => _saveRate(),
               ),
             ),
           ),
@@ -781,7 +780,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
               const Text(
                 'Rate Change History',
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark,
                 ),
@@ -789,8 +788,8 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
               Text(
                 '${_rateHistory.length} changes',
                 style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textMuted,
+                  fontSize: 12,
+                  color: WebColors.muted,
                 ),
               ),
             ],
@@ -839,7 +838,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
                         Text(
                           '₱${oldRate.toStringAsFixed(2)} → ₱${newRate.toStringAsFixed(2)}',
                           style: const TextStyle(
-                            fontSize: 12,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                             color: AppColors.textDark,
                           ),
@@ -847,8 +846,8 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
                         Text(
                           '${_formatDateTime(dateTime)} • ${isManual ? 'Manual' : 'Auto'}',
                           style: const TextStyle(
-                            fontSize: 10,
-                            color: AppColors.textMuted,
+                            fontSize: 11,
+                            color: WebColors.muted,
                           ),
                         ),
                       ],
@@ -865,8 +864,8 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
               child: Text(
                 'No rate changes yet',
                 style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
+                  fontSize: 13,
+                  color: WebColors.muted,
                 ),
               ),
             ),
@@ -882,22 +881,6 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
       icon: Icons.person_outline,
       child: Column(children: [
         _settingRow(Icons.email_outlined, 'Email', user?.email ?? ''),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          height: 46,
-          child: OutlinedButton.icon(
-            onPressed: _logout,
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Sign Out'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.error,
-              side: BorderSide(color: AppColors.error.withAlpha(102)),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ),
       ]),
     );
   }
@@ -938,7 +921,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         children: [
           const Text(
             'Updates are sourced from the fixed project GitHub Releases.',
-            style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+            style: TextStyle(fontSize: 13, color: WebColors.muted),
           ),
           const SizedBox(height: 12),
           SizedBox(
@@ -1005,7 +988,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
             const SizedBox(height: 8),
             Text(
               release.assetName ?? release.releaseUrl,
-              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+              style: const TextStyle(fontSize: 12, color: WebColors.muted),
               overflow: TextOverflow.ellipsis,
             ),
           ],
@@ -1018,15 +1001,15 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(children: [
-        Icon(icon, size: 16, color: AppColors.textMuted),
+        Icon(icon, size: 16, color: WebColors.muted),
         const SizedBox(width: 10),
         Text(label,
-            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+            style: const TextStyle(fontSize: 14, color: WebColors.muted)),
         const Spacer(),
         Flexible(
           child: Text(value,
               style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: 14,
                   fontWeight: FontWeight.w500,
                   color: AppColors.textDark),
               overflow: TextOverflow.ellipsis,

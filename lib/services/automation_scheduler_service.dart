@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 
+import 'schedule_windows.dart';
+
 String _dayLabel(DateTime now) {
   switch (now.weekday) {
     case DateTime.monday:
@@ -291,6 +293,10 @@ class _AutomationRecord {
   final List<String> days;
   final bool enabled;
 
+  /// Several ON windows (see schedule_windows.dart). When non-empty these
+  /// replace [onTime]/[offTime].
+  final List<ScheduleWindow> windows;
+
   /// 'weekly' (default, day-of-week [days]) or 'calendar' (fires every day
   /// within [startDate]..[endDate] inclusive -- a single selected day is
   /// just a 1-day range, so it naturally stops firing once that date is
@@ -308,6 +314,7 @@ class _AutomationRecord {
     required this.offTime,
     required this.days,
     required this.enabled,
+    required this.windows,
     required this.scheduleMode,
     required this.startDate,
     required this.endDate,
@@ -350,6 +357,7 @@ class _AutomationRecord {
       offTime: offTime,
       days: days,
       enabled: _parseBool(data['enabled'] ?? true),
+      windows: ScheduleWindow.listFrom(data['windows']),
       scheduleMode: scheduleMode,
       startDate: _parseIsoDate(data['startDate'] as String?),
       endDate: _parseIsoDate(data['endDate'] as String?),
@@ -384,7 +392,13 @@ class _AutomationRecord {
     return hour * 60 + minute;
   }
 
+  bool _runsOn(DateTime day) => scheduleMode == 'calendar'
+      ? _matchesDate(day)
+      : days.contains(_dayLabel(day));
+
   String? actionFor(DateTime now) {
+    if (windows.isNotEmpty) return windowsActionAt(windows, now, _runsOn);
+
     final current = now.hour * 60 + now.minute;
     final onMinutes = _parseMinutes(onTime);
     final offMinutes = _parseMinutes(offTime);

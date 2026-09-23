@@ -1130,6 +1130,9 @@ class _AutomationScreenState extends State<AutomationScreen> {
                           'action': 'on',
                           'time': onTimeStr,
                           'days': days,
+                          // Replaces any multi-window timing set on web,
+                          // which would otherwise override these times.
+                          'windows': null,
                         });
                       } catch (_) {
                         setS(() {

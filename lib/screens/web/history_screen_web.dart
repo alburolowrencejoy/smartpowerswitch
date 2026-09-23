@@ -8,17 +8,15 @@ import 'package:share_plus/share_plus.dart';
 import 'package:syncfusion_flutter_xlsio/xlsio.dart' as xlsio;
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
-import '../../utils/placeholder_data.dart';
-import '../../widgets/multi_month_range_picker.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../widgets/trend_chart_painters.dart';
+import 'web_forecast_cards.dart';
+import 'web_theme.dart';
+import 'web_trend_chart.dart';
 
-/// The desktop "Analytics" section: the full History screen's data and
-/// actions (range switching, trend chart with tap-to-inspect, forecast,
-/// device status, top utility/building, per-entry delete, organized Excel
-/// export) laid out as a grid of cards instead of [HistoryScreen]'s
-/// single stacked column. [HistoryScreen] itself is untouched -- this is
+/// The desktop "Analytics" section: Daily / Monthly totals, the last 30
+/// days (or 6 months) as a line or bar trend, ARIMA vs XGBoost / LSTM
+/// forecasts, top utility/building, and the organized Excel export. [HistoryScreen] itself is untouched -- this is
 /// an independent widget with its own Firebase listeners so the mobile
 /// screen's behavior can never be affected by desktop changes.
 class HistoryScreenWeb extends StatefulWidget {
@@ -32,24 +30,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   String _range = 'daily';
   String _trendChartType = 'line';
   bool _exporting = false;
-  String? _deletingHistoryKey;
-
-  /// Which of Week/Month/Year is shown by the combined granularity dropdown
-  /// -- tracked separately from [_range] so the dropdown keeps showing the
-  /// last-picked granularity even while the Daily tab is active.
-  String _lastGranularity = 'weekly';
-
-  /// Committed Daily date range (from the calendar range picker). `null`
-  /// means "no range applied yet" -- Daily behaves exactly as before,
-  /// showing every daily entry.
-  DateTimeRange? _dailyRange;
-
-  final List<Map<String, String>> _ranges = [
-    {'key': 'daily', 'label': 'Daily'},
-    {'key': 'weekly', 'label': 'Weekly'},
-    {'key': 'monthly', 'label': 'Monthly'},
-    {'key': 'yearly', 'label': 'Yearly'},
-  ];
 
   /// True until the combined stream's first emission. Never reverts to
   /// true afterwards -- a fresh instance of this screen is the only
@@ -63,16 +43,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   StreamSubscription? _combinedSub;
 
-  /// Backs the trend chart's horizontal scroll (see [_buildLineChart]) so
-  /// an explicit, always-visible [Scrollbar] can be attached to it -- the
-  /// chart can render far wider than the card when there's a lot of
-  /// history, and without a persistent visible affordance there was no
-  /// indication (beyond a mouse wheel/trackpad swipe) that it scrolls at
-  /// all.
-  final ScrollController _chartScrollController = ScrollController();
-
   Map<String, dynamic> _historyRoot = {};
-  List<Map<String, dynamic>> _historyData = [];
   Set<String> _deletedEntries = {};
   Map<String, Set<String>> _deletedEntriesByRange = {
     'daily': {},
@@ -130,7 +101,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   void dispose() {
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
-    _chartScrollController.dispose();
     super.dispose();
   }
 
@@ -261,10 +231,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       // view that already loaded once -- only accept "no data" before the
       // first successful load.
       if (mounted && _isLoading) {
-        setState(() {
-          _historyRoot = {};
-          _historyData = [];
-        });
+        setState(() => _historyRoot = {});
       }
       return;
     }
@@ -283,23 +250,11 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       deletedMap[ranges[i]] = deleted;
     }
 
-    final list = _parseRangeEntries(
-      root,
-      _range,
-      deletedMap[_range] ?? _deletedEntries,
-    );
-
     if (!mounted) return;
     setState(() {
       _historyRoot = root;
       _deletedEntriesByRange = deletedMap;
       _deletedEntries = deletedMap[_range] ?? {};
-      // The chart always shows the full trend for the active range -- a
-      // Daily calendar pick highlights itself *within* that trend instead
-      // of narrowing the dataset (see _dailyHighlightIndices/_buildLineChart
-      // and _breakdownListData, which is the one place that still scopes
-      // down to the picked day/range).
-      _historyData = list;
     });
   }
 
@@ -337,283 +292,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   }
 
   void _setRange(String key) {
-    setState(() {
-      _range = key;
-      if (key != 'daily') {
-        _lastGranularity = key;
-      } else {
-        // Switching to Daily from the funnel menu's "Daily" entry is a
-        // quick reset to the plain full daily trend -- any day/range picked
-        // via the calendar icon is cleared along with it.
-        _dailyRange = null;
-      }
-    });
+    setState(() => _range = key);
     _deletedEntries.clear();
     _listenAll();
   }
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  /// Scopes [entries] down to [_dailyRange] (inclusive), when one has been
-  /// applied via the calendar range picker. Every other range key, and
-  /// Daily with no range applied, passes [entries] through unchanged.
-  ///
-  /// This is used for the summary totals cards and the breakdown list
-  /// below the chart -- NOT the trend chart itself, which always shows the
-  /// full daily trend and only highlights the picked day/range within it
-  /// (see [_dailyHighlightIndices]).
-  List<Map<String, dynamic>> _applyDailyRangeFilter(
-      List<Map<String, dynamic>> entries) {
-    if (_range != 'daily' || _dailyRange == null) return entries;
-    final start = _dateOnly(_dailyRange!.start);
-    final end = _dateOnly(_dailyRange!.end);
-    return entries.where((e) {
-      final d = DateTime.tryParse(e['label'].toString());
-      if (d == null) return false;
-      final dd = _dateOnly(d);
-      return !dd.isBefore(start) && !dd.isAfter(end);
-    }).toList();
-  }
-
-  /// The breakdown list below the chart still scopes down to the picked
-  /// Daily range (unlike the chart, which stays unfiltered and just
-  /// highlights the selection -- see [_dailyHighlightIndices]).
-  List<Map<String, dynamic>> _breakdownListData() =>
-      _applyDailyRangeFilter(_historyData);
-
-  /// Locates the picked Daily day/range within the *full* [_historyData]
-  /// list so the trend chart can highlight it in place instead of
-  /// filtering the dataset down to it. Returns `(null, null)` when Daily
-  /// has no range applied, or when literally no entry in [_historyData]
-  /// falls inside the picked range.
-  ///
-  /// This scans for *any* entry whose date falls within
-  /// `[_dailyRange.start, _dailyRange.end]` inclusive, rather than
-  /// requiring an exact-label match at the two boundary days -- a picked
-  /// range's start/end days frequently have no recorded entry themselves
-  /// (e.g. a weekend with no usage, or a device offline that day) even
-  /// though days strictly between them do. Matching only the boundaries
-  /// silently dropped the highlight entirely in that case, which is what
-  /// made a selected range look like it never reflected in the chart at
-  /// all. [startIndex]/[endIndex] are the first/last matching entries,
-  /// mirroring how the picker itself lets the two ends fall on whichever
-  /// days actually have data.
-  (int?, int?) _dailyHighlightIndices() {
-    if (_range != 'daily' || _dailyRange == null) return (null, null);
-    final start = _dateOnly(_dailyRange!.start);
-    final end = _dateOnly(_dailyRange!.end);
-    int? startIndex;
-    int? endIndex;
-    for (var i = 0; i < _historyData.length; i++) {
-      final d = DateTime.tryParse(_historyData[i]['label'].toString());
-      if (d == null) continue;
-      final dd = _dateOnly(d);
-      if (dd.isBefore(start) || dd.isAfter(end)) continue;
-      startIndex ??= i;
-      endIndex = i;
-    }
-    return (startIndex, endIndex);
-  }
-
-  /// The earliest/latest first-of-month across every daily history entry,
-  /// so the calendar range picker's grid mirrors how far back real data
-  /// actually goes instead of a hardcoded month count. Falls back to just
-  /// the current month if there's no daily data yet, and always includes
-  /// the current month so "today" is always reachable.
-  (DateTime, DateTime) _dailyMonthSpan() {
-    final now = DateTime.now();
-    final currentMonth = DateTime(now.year, now.month, 1);
-    final dailyEntries = _dailyHistoryEntries();
-    if (dailyEntries.isEmpty) return (currentMonth, currentMonth);
-
-    DateTime? earliest;
-    DateTime? latest;
-    for (final entry in dailyEntries) {
-      final d = DateTime.tryParse(entry['label'].toString());
-      if (d == null) continue;
-      final monthStart = DateTime(d.year, d.month, 1);
-      if (earliest == null || monthStart.isBefore(earliest)) {
-        earliest = monthStart;
-      }
-      if (latest == null || monthStart.isAfter(latest)) {
-        latest = monthStart;
-      }
-    }
-    earliest ??= currentMonth;
-    latest ??= currentMonth;
-    if (currentMonth.isAfter(latest)) latest = currentMonth;
-    if (currentMonth.isBefore(earliest)) earliest = currentMonth;
-    return (earliest, latest);
-  }
-
-  String _fmtShortDate(DateTime d) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-    return '${months[d.month - 1]} ${d.day}, ${d.year}';
-  }
-
-  Future<void> _deleteHistoryEntry(String label) async {
-    if (_deletingHistoryKey != null) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete history?'),
-        content: Text(
-          'This will delete the ${_capitalizeFirst(_range)} record for $label.',
-        ),
-        actions: [
-          // Bug fix: neither button had an explicit style, so their resting
-          // color fell back to the app-wide seed-green ColorScheme.primary
-          // (main.dart) instead of this viewer's institute theme / the
-          // Cancel/Delete convention every other confirm dialog in this
-          // codebase already follows (AppColors.textMuted / AppColors.error).
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textMuted)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete',
-                style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    setState(() => _deletingHistoryKey = label);
-
-    try {
-      await FirebaseDatabase.instance.ref('history/$_range/$label').remove();
-
-      await FirebaseDatabase.instance
-          .ref('history/deleted/$_range/$label')
-          .set(true);
-
-      if (mounted) {
-        TopToast.threshold(
-            context, 'Deleted ${_capitalizeFirst(_range)} history.');
-      }
-      _listenAll();
-    } catch (e) {
-      if (mounted) {
-        TopToast.error(context, 'Delete failed: $e');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _deletingHistoryKey = null);
-      }
-    }
-  }
-
-  Map<String, double> _currentPeriodTotals() {
-    final entries = _parseRangeEntries(
-      _historyRoot,
-      _range,
-      _deletedEntriesByRange[_range] ?? {},
-    );
-
-    if (entries.isEmpty) return {'kwh': 0.0, 'cost': 0.0};
-
-    // A Daily range applied via the calendar picker sums every day inside
-    // it, the same way Weekly/Monthly/Yearly summary cards already show one
-    // aggregated total for their whole active period.
-    if (_range == 'daily' && _dailyRange != null) {
-      final filtered = _applyDailyRangeFilter(entries);
-      final kwh =
-          filtered.fold<double>(0.0, (s, e) => s + (e['kwh'] as double));
-      final cost =
-          filtered.fold<double>(0.0, (s, e) => s + (e['cost'] as double));
-      return {'kwh': kwh, 'cost': cost};
-    }
-
-    final now = DateTime.now();
-    final currentLabel = _rangeLabel(now, _range);
-
-    final filtered = entries.where((e) {
-      final label = e['label'].toString();
-      if (_range == 'monthly') {
-        return label.startsWith(currentLabel);
-      }
-      return label == currentLabel;
-    }).toList();
-
-    final kwh = filtered.fold<double>(0.0, (s, e) => s + (e['kwh'] as double));
-    final cost =
-        filtered.fold<double>(0.0, (s, e) => s + (e['cost'] as double));
-    return {'kwh': kwh, 'cost': cost};
-  }
-
-  String _currentPeriodLabel() {
-    switch (_range) {
-      case 'daily':
-        if (_dailyRange != null) {
-          final start = _dailyRange!.start;
-          final end = _dailyRange!.end;
-          if (_dateOnly(start) == _dateOnly(end)) {
-            return _fmtShortDate(start);
-          }
-          return '${_fmtShortDate(start)} - ${_fmtShortDate(end)}';
-        }
-        return 'Today';
-      case 'weekly':
-        return 'This week';
-      case 'monthly':
-        return 'This month';
-      case 'yearly':
-        return 'This year';
-      default:
-        return '';
-    }
-  }
-
-  double _chartMaxForRange(String range) {
-    switch (range) {
-      case 'daily':
-        return 50.0;
-      case 'weekly':
-        return 100.0;
-      case 'monthly':
-        return 150.0;
-      case 'yearly':
-        return 1000.0;
-      default:
-        return 100.0;
-    }
-  }
-
-  String _formatAxisTick(double value) {
-    final rounded = value.roundToDouble();
-    if ((value - rounded).abs() < 0.001) {
-      return rounded.toInt().toString();
-    }
-    return value.toStringAsFixed(1);
-  }
-
-  List<String> _chartYAxisLabels() {
-    final max = _chartMaxForRange(_range);
-    const segments = 5;
-    final step = max / segments;
-    return List<String>.generate(
-      segments + 1,
-      (i) => _formatAxisTick(max - (step * i)),
-    );
-  }
 
   List<Map<String, dynamic>> _dailyHistoryEntries() {
     return _parseRangeEntries(
@@ -623,91 +307,67 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  List<double> _forecastValues(List<double> history, int horizon) {
-    if (history.isEmpty) return List<double>.filled(horizon, 0.0);
-    if (history.length == 1) {
-      return List<double>.filled(
-          horizon, history.first < 0 ? 0.0 : history.first);
-    }
-
-    final n = history.length.toDouble();
-    final meanX = (n - 1) / 2.0;
-    final meanY = history.fold<double>(0.0, (sum, value) => sum + value) / n;
-    double numerator = 0.0;
-    double denominator = 0.0;
-
-    for (var i = 0; i < history.length; i++) {
-      final dx = i - meanX;
-      final dy = history[i] - meanY;
-      numerator += dx * dy;
-      denominator += dx * dx;
-    }
-
-    final slope = denominator == 0 ? 0.0 : numerator / denominator;
-    final intercept = meanY - slope * meanX;
-
-    return List<double>.generate(horizon, (i) {
-      final x = history.length + i;
-      final value = intercept + slope * x;
-      return value < 0 ? 0.0 : value;
-    });
-  }
-
-  double _averageRateFromEntries(List<Map<String, dynamic>> entries) {
-    double totalKwh = 0.0;
-    double totalCost = 0.0;
-
-    for (final entry in entries) {
-      totalKwh += (entry['kwh'] as num).toDouble();
-      totalCost += (entry['cost'] as num).toDouble();
-    }
-
-    if (totalKwh <= 0) return 0.0;
-    return totalCost / totalKwh;
-  }
-
   DateTime? _tryParseDailyLabel(String label) => DateTime.tryParse(label);
 
-  String _formatDailyLabel(DateTime date) =>
-      '${date.year}-${_pad(date.month)}-${_pad(date.day)}';
+  static const _monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-  _PredictionSeries? _buildPredictionSeries() {
-    final dailyEntries = _dailyHistoryEntries();
-    if (dailyEntries.isEmpty) return null;
-
-    final actualValues =
-        dailyEntries.map((entry) => (entry['kwh'] as num).toDouble()).toList();
-    final actualLabels =
-        dailyEntries.map((entry) => entry['label'].toString()).toList();
-
-    final regressionWindow = actualValues.length > 90
-        ? actualValues.sublist(actualValues.length - 90)
-        : actualValues;
-    final forecastValues = _forecastValues(regressionWindow, 30);
-
-    final lastLabel = actualLabels.isNotEmpty ? actualLabels.last : null;
-    final lastDate = lastLabel == null ? null : _tryParseDailyLabel(lastLabel);
-    final forecastLabels = <String>[];
-    if (lastDate != null) {
-      for (var i = 1; i <= forecastValues.length; i++) {
-        forecastLabels.add(_formatDailyLabel(lastDate.add(Duration(days: i))));
-      }
+  /// The trend window: the last 30 days (Daily) or 6 months (Monthly)
+  /// ending at the newest entry that isn't in the future. Missing days or
+  /// months count as 0 so the axis stays evenly spaced. Stray old entries
+  /// (e.g. from a device with an unset clock) fall outside the window.
+  List<({DateTime date, double kwh})> _trendWindow() {
+    final monthly = _range == 'monthly';
+    final entries = _parseRangeEntries(
+        _historyRoot, _range, _deletedEntriesByRange[_range] ?? {});
+    final today = _dateOnly(DateTime.now());
+    final byDate = <DateTime, double>{};
+    for (final e in entries) {
+      final label = e['label'].toString();
+      final d = DateTime.tryParse(monthly ? '$label-01' : label);
+      if (d == null || d.isAfter(today)) continue;
+      byDate[_dateOnly(d)] = (byDate[_dateOnly(d)] ?? 0) + (e['kwh'] as double);
     }
+    if (byDate.isEmpty) return const [];
+    final last = byDate.keys.reduce((a, b) => a.isAfter(b) ? a : b);
+    final count = monthly ? 6 : 30;
+    return [
+      for (var i = count - 1; i >= 0; i--)
+        (() {
+          final d = monthly
+              ? DateTime(last.year, last.month - i, 1)
+              : DateTime(last.year, last.month, last.day - i);
+          return (date: d, kwh: byDate[d] ?? 0.0);
+        })(),
+    ];
+  }
 
-    final predictedKwh =
-        forecastValues.fold<double>(0.0, (sum, value) => sum + value);
-    final averageRate = _averageRateFromEntries(dailyEntries);
-    final predictedBill = predictedKwh * _electricityRate;
+  String _windowLabel(List<({DateTime date, double kwh})> w) {
+    if (_range != 'monthly') return 'Last 30 days';
+    if (w.isEmpty) return 'Last 6 months';
+    final a = w.first.date, b = w.last.date;
+    return a.year == b.year
+        ? '${_monthNames[a.month - 1]} – ${_monthNames[b.month - 1]} ${b.year}'
+        : '${_monthNames[a.month - 1]} ${a.year} – ${_monthNames[b.month - 1]} ${b.year}';
+  }
 
-    return _PredictionSeries(
-      actualValues: actualValues,
-      actualLabels: actualLabels,
-      forecastValues: forecastValues,
-      forecastLabels: forecastLabels,
-      predictedKwh: predictedKwh,
-      predictedBill: predictedBill,
-      averageRate: averageRate,
-    );
+  List<TrendPoint> _trendPoints(List<({DateTime date, double kwh})> w) {
+    final monthly = _range == 'monthly';
+    return [
+      for (final p in w)
+        TrendPoint(
+          monthly
+              ? _monthNames[p.date.month - 1]
+              : '${_monthNames[p.date.month - 1]} ${p.date.day}',
+          monthly
+              ? '${_monthNames[p.date.month - 1]} ${p.date.year} · ${p.kwh.toStringAsFixed(1)} kWh'
+              : '${_monthNames[p.date.month - 1]} ${p.date.day} · ${_dayNames[p.date.weekday - 1]} · ${p.kwh.toStringAsFixed(1)} kWh',
+          p.kwh,
+        ),
+    ];
   }
 
   double _asDouble(dynamic value) {
@@ -1198,8 +858,10 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   @override
   Widget build(BuildContext context) {
-    final periodTotals = _currentPeriodTotals();
-    final periodLabel = _currentPeriodLabel();
+    final window = _trendWindow();
+    final windowLabel = _windowLabel(window);
+    final totalKwh = window.fold<double>(0, (a, p) => a + p.kwh);
+    final deviceTotal = _onlineCount + _offlineCount;
     return Theme(
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(_role, _institute)],
@@ -1207,60 +869,33 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       child: ScreenSkeleton(
       isLoading: _isLoading,
       child: SingleChildScrollView(
-      padding: const EdgeInsets.all(24.0),
+      padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Analytics',
-                        style: TextStyle(
-                            fontFamily: 'Outfit',
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textDark)),
-                    SizedBox(height: 4),
-                    Text('Energy analytics, forecast, and history',
-                        style: TextStyle(
-                            fontSize: 12, color: AppColors.textMuted)),
-                  ],
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: _palette.pale,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Container(
-                      width: 7,
-                      height: 7,
-                      decoration:
-                          BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
-                  const SizedBox(width: 5),
-                  Text('Live',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: _palette.dark,
-                          fontWeight: FontWeight.w600)),
-                ]),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
+          Row(children: [
+            const Text('Analytics',
+                style: TextStyle(
+                    fontFamily: 'Outfit',
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark)),
+            const SizedBox(width: 12),
+            _livePill(),
+          ]),
+          const SizedBox(height: 4),
+          const Text('Energy analytics and forecast',
+              style: TextStyle(fontSize: 14, color: WebColors.muted)),
+          const SizedBox(height: 18),
           if (_errorText != null)
             _buildLoadError()
           else ...[
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _buildRangeSelector(),
+                _rangeTabs(),
+                const SizedBox(width: 12),
+                _softChip(windowLabel),
                 const Spacer(),
                 SizedBox(
                   height: 46,
@@ -1282,18 +917,32 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                 ),
               ],
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             _equalRow([
-              _summaryCard('${periodTotals['kwh']!.toStringAsFixed(1)} kWh',
-                  Icons.bolt, periodLabel),
-              _summaryCard('₱ ${periodTotals['cost']!.toStringAsFixed(0)}',
-                  Icons.payments_outlined, periodLabel),
-              _buildDeviceStatusCard(),
+              _statCard(
+                icon: Icons.bolt_rounded,
+                value: _fmtNumber(totalKwh, decimals: 1),
+                unit: 'kWh',
+                label: 'Total energy',
+                caption: windowLabel,
+              ),
+              _statCard(
+                icon: Icons.payments_outlined,
+                value: '₱${_fmtNumber(totalKwh * _electricityRate)}',
+                label: 'Total cost',
+                caption: 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh',
+              ),
+              _statCard(
+                icon: Icons.wifi_tethering_rounded,
+                value: '$_onlineCount / $deviceTotal',
+                label: 'Device status',
+                caption: 'Online now',
+              ),
             ]),
             const SizedBox(height: 20),
-            _buildLineChart(),
+            _trendCard(window),
             const SizedBox(height: 20),
-            _buildPredictionCard(),
+            _buildForecasts(),
             if (_utilityTotals.isNotEmpty || _buildingTotals.isNotEmpty) ...[
               const SizedBox(height: 16),
               _equalRow([
@@ -1301,8 +950,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                 if (_buildingTotals.isNotEmpty) _buildTopBuildingCard(),
               ]),
             ],
-            const SizedBox(height: 20),
-            _buildHistoryList(),
           ],
         ],
       ),
@@ -1340,7 +987,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 14, color: WebColors.muted)),
           const SizedBox(height: 20),
           ElevatedButton.icon(
             onPressed: _retry,
@@ -1358,768 +1005,205 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  /// Top-level Daily / Week-Month-Year selector. Only two elements now:
-  /// Daily (arrow opens the calendar range picker) and a combined dropdown
-  /// for whichever of Week/Month/Year is active (tap the body to switch
-  /// granularity, arrow still opens the existing capped specific-period
-  /// list for that granularity).
-  /// Icon-only toolbar: a calendar icon (opens the Daily calendar range
-  /// picker) and a funnel/sort icon (opens the Week/Month/Year granularity
-  /// menu). Both keep the rounded-pill card look used elsewhere in this
-  /// row, just without text labels -- each carries a [Tooltip] so they
-  /// stay discoverable.
-  Widget _buildRangeSelector() {
-    return Container(
-      height: 52,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-          color: _palette.pale, borderRadius: BorderRadius.circular(12)),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildDailyIconButton(),
+  // ── Preview-style header, stats and trend ─────────────────────────────
+
+  String _fmtNumber(double v, {int decimals = 0}) {
+    final fixed = v.toStringAsFixed(decimals);
+    final parts = fixed.split('.');
+    final whole = parts[0].replaceAllMapped(
+        RegExp(r'(\d)(?=(\d{3})+$)'), (m) => '${m[1]},');
+    return parts.length > 1 ? '$whole.${parts[1]}' : whole;
+  }
+
+  Widget _livePill() => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+            color: _palette.pale, borderRadius: BorderRadius.circular(20)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+              width: 7,
+              height: 7,
+              decoration:
+                  BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
           const SizedBox(width: 6),
-          _buildGranularityIconButton(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDailyIconButton() {
-    final isSelected = _range == 'daily';
-    return Builder(builder: (btnContext) {
-      return Tooltip(
-        message: 'Daily -- pick a date or date range',
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => _showDailyRangePicker(btnContext),
-          child: Container(
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: isSelected ? _palette.dark : AppColors.cardBg,
-              borderRadius: BorderRadius.circular(8),
-              border: isSelected
-                  ? null
-                  : Border.all(color: _palette.mid.withAlpha(60)),
-            ),
-            child: Icon(
-              Icons.calendar_month,
-              size: 20,
-              color: isSelected ? Colors.white : _palette.dark,
-            ),
-          ),
-        ),
-      );
-    });
-  }
-
-  Widget _buildGranularityIconButton() {
-    final isSelected = _range != 'daily';
-    final activeKey = isSelected ? _range : _lastGranularity;
-    final label =
-        _ranges.firstWhere((r) => r['key'] == activeKey, orElse: () => _ranges[1])['label']!;
-    return Builder(builder: (btnContext) {
-      return Tooltip(
-        message: 'Daily / Week / Month / Year -- currently $label. '
-            'Right-click to pick a specific $label period.',
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => _showGranularityMenu(btnContext),
-          onSecondaryTap: () =>
-              _showRangeDropdown(btnContext, activeKey, Offset.zero),
-          child: Container(
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: isSelected ? _palette.dark : AppColors.cardBg,
-              borderRadius: BorderRadius.circular(8),
-              border: isSelected
-                  ? null
-                  : Border.all(color: _palette.mid.withAlpha(60)),
-            ),
-            child: Icon(
-              Icons.filter_list,
-              size: 20,
-              color: isSelected ? Colors.white : _palette.dark,
-            ),
-          ),
-        ),
-      );
-    });
-  }
-
-  /// Opens the menu that lets the user pick which granularity (Daily /
-  /// Week / Month / Year) is active -- this is the "single dropdown" that
-  /// replaced the three always-visible Weekly/Monthly/Yearly segments.
-  /// Picking "Daily" here is a quick reset to the plain full daily trend
-  /// (see [_setRange]); picking a specific day/range within Daily is still
-  /// the calendar icon's job.
-  Future<void> _showGranularityMenu(BuildContext btnContext) async {
-    final overlay =
-        Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
-    final btnBox = btnContext.findRenderObject() as RenderBox?;
-    if (overlay == null || btnBox == null) return;
-
-    final btnTopLeft = btnBox.localToGlobal(Offset.zero, ancestor: overlay);
-    final top = btnTopLeft.dy + btnBox.size.height;
-    final bottom = overlay.size.height - top;
-    final menuWidth = btnBox.size.width.clamp(140.0, overlay.size.width - 40.0);
-    var desiredLeft = btnTopLeft.dx;
-    desiredLeft =
-        desiredLeft.clamp(12.0, overlay.size.width - menuWidth - 12.0);
-    final adjustedRight = overlay.size.width - desiredLeft - menuWidth;
-    final position =
-        RelativeRect.fromLTRB(desiredLeft, top, adjustedRight, bottom);
-
-    final selected = await showMenu<String>(
-      context: btnContext,
-      position: position,
-      items: _ranges.map((r) {
-        final selectedItem = r['key'] == _range;
-        return PopupMenuItem<String>(
-          value: r['key'],
-          child: SizedBox(
-            width: menuWidth,
-            child: Row(
-              children: [
-                Icon(
-                  selectedItem ? Icons.check : null,
-                  size: 16,
+          Text('Live',
+              style: TextStyle(
+                  fontSize: 13,
                   color: _palette.dark,
-                ),
-                const SizedBox(width: 8),
-                Text(r['label']!, style: const TextStyle(fontSize: 13)),
-              ],
-            ),
-          ),
-        );
-      }).toList(),
-    );
-
-    if (selected == null) return;
-    _setRange(selected);
-  }
-
-  /// Opens the multi-month calendar range picker for the Daily tab (see
-  /// [MultiMonthRangePicker]). Nothing is applied until "Apply" is pressed;
-  /// closing the dialog any other way leaves the current Daily view
-  /// untouched.
-  Future<void> _showDailyRangePicker(BuildContext btnContext) async {
-    final (earliestMonth, latestMonth) = _dailyMonthSpan();
-    DateTimeRange? localPending = _dailyRange;
-
-    final result = await showDialog<_DailyRangeDialogResult>(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(builder: (context, setDialogState) {
-          return Dialog(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: 700,
-                maxHeight: MediaQuery.of(context).size.height - 64,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Select a date range',
-                            style: TextStyle(
-                              fontFamily: 'Outfit',
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textDark,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          onPressed: () => Navigator.pop(dialogContext),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      localPending == null
-                          ? 'Click a day to select just that day, or double-click to start a range (double-click another day to finish it).'
-                          : (_dateOnly(localPending!.start) ==
-                                  _dateOnly(localPending!.end)
-                              ? 'Day: ${_fmtShortDate(localPending!.start)}'
-                              : 'Range: ${_fmtShortDate(localPending!.start)} - ${_fmtShortDate(localPending!.end)}'),
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textMuted),
-                    ),
-                    const SizedBox(height: 12),
-                    Flexible(
-                      child: MultiMonthRangePicker(
-                        earliestMonth: earliestMonth,
-                        latestMonth: latestMonth,
-                        initialStart: _dailyRange?.start,
-                        initialEnd: _dailyRange?.end,
-                        onPendingChanged: (range) =>
-                            setDialogState(() => localPending = range),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        // Bug fix: neither button had an explicit style, so
-                        // their resting color fell back to the app-wide
-                        // seed-green ColorScheme.primary (main.dart) instead
-                        // of this viewer's institute theme.
-                        TextButton(
-                          onPressed: () => Navigator.pop(
-                            dialogContext,
-                            const _DailyRangeDialogResult(null),
-                          ),
-                          child: Text('Show all days',
-                              style: TextStyle(color: _palette.dark)),
-                        ),
-                        const SizedBox(width: 4),
-                        TextButton(
-                          onPressed: () => Navigator.pop(dialogContext),
-                          child: const Text('Cancel',
-                              style: TextStyle(color: AppColors.textMuted)),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: localPending == null
-                              ? null
-                              : () => Navigator.pop(
-                                    dialogContext,
-                                    _DailyRangeDialogResult(localPending),
-                                  ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _palette.dark,
-                            foregroundColor: Colors.white,
-                          ),
-                          child: const Text('Apply'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        });
-      },
-    );
-
-    if (result == null) return;
-
-    setState(() {
-      _range = 'daily';
-      _dailyRange = result.range;
-      // The chart always shows the full daily trend (see
-      // _dailyHighlightIndices) -- refresh _historyData to the full list in
-      // case _range was something else (weekly/monthly/yearly) before this
-      // picker was opened.
-      _historyData = _parseRangeEntries(
-        _historyRoot,
-        'daily',
-        _deletedEntriesByRange['daily'] ?? {},
+                  fontWeight: FontWeight.w600)),
+        ]),
       );
-    });
-    // Keep the deleted-entries listener in sync with the active range, same
-    // as switching tabs/granularity does.
-    _listenAll();
-  }
 
-  Future<void> _showRangeDropdown(
-      BuildContext btnContext, String rangeKey, Offset globalTap) async {
-    final entries = _parseRangeEntries(
-      _historyRoot,
-      rangeKey,
-      _deletedEntriesByRange[rangeKey] ?? {},
-    );
-    if (entries.isEmpty) return;
+  Widget _softChip(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+            color: _palette.pale.withAlpha(200),
+            borderRadius: BorderRadius.circular(9)),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: _palette.dark)),
+      );
 
-    final overlay =
-        Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
-    final btnBox = btnContext.findRenderObject() as RenderBox?;
-    if (overlay == null || btnBox == null) return;
-
-    final btnTopLeft = btnBox.localToGlobal(Offset.zero, ancestor: overlay);
-    final top = btnTopLeft.dy + btnBox.size.height;
-    final bottom = overlay.size.height - top;
-
-    final rawMenuWidth = btnBox.size.width + 24;
-    final menuWidth = rawMenuWidth.clamp(160.0, overlay.size.width - 40.0);
-
-    double desiredLeft = btnTopLeft.dx;
-    if (desiredLeft + menuWidth > overlay.size.width - 12.0) {
-      desiredLeft = btnTopLeft.dx + btnBox.size.width - menuWidth;
-    }
-    desiredLeft =
-        desiredLeft.clamp(12.0, overlay.size.width - menuWidth - 12.0);
-
-    final adjustedRight = overlay.size.width - desiredLeft - menuWidth;
-    final adjustedPosition =
-        RelativeRect.fromLTRB(desiredLeft, top, adjustedRight, bottom);
-
-    // Cap how many menu items get built. A long-running system can
-    // accumulate hundreds/thousands of periods, and building one
-    // PopupMenuItem per entry with no limit froze the UI. Entries are
-    // already sorted ascending, so the tail is the most recent ones.
-    const maxMenuItems = 60;
-    final showTruncated = entries.length > maxMenuItems;
-    final offset = showTruncated ? entries.length - maxMenuItems : 0;
-    final visibleEntries = showTruncated ? entries.sublist(offset) : entries;
-
-    final selected = await showMenu<int>(
-      context: btnContext,
-      position: adjustedPosition,
-      items: [
-        if (showTruncated)
-          PopupMenuItem<int>(
-            enabled: false,
-            child: SizedBox(
-              width: menuWidth,
-              child: Center(
-                child: Text(
-                  'Showing latest $maxMenuItems of ${entries.length}',
-                  style:
-                      const TextStyle(fontSize: 11, color: AppColors.textMuted),
-                ),
-              ),
-            ),
-          ),
-        ...List.generate(visibleEntries.length, (i) {
-          final label = visibleEntries[i]['label'].toString();
-          return PopupMenuItem<int>(
-            value: offset + i,
-            child: SizedBox(
-              width: menuWidth,
-              child: Center(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13),
-                ),
-              ),
-            ),
-          );
-        }),
-      ],
-    );
-
-    if (selected == null) return;
-
-    setState(() {
-      _range = rangeKey;
-      _historyData = entries;
-    });
-    _listenAll();
-  }
-
-  Widget _summaryCard(String value, IconData icon, String subtitle) {
+  /// Segmented pill: a white "thumb" on the selected option.
+  Widget _segmented(
+      Map<String, String> options, String selected, ValueChanged<String> onTap) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: _palette.mid.withAlpha(26),
-            borderRadius: BorderRadius.circular(10),
+          color: _palette.pale.withAlpha(170),
+          borderRadius: BorderRadius.circular(11)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        for (final e in options.entries)
+          Material(
+            color: e.key == selected ? Colors.white : Colors.transparent,
+            elevation: e.key == selected ? 1 : 0,
+            shadowColor: Colors.black26,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => onTap(e.key),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                child: Text(e.value,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: e.key == selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                        color: e.key == selected
+                            ? _palette.dark
+                            : WebColors.mid)),
+              ),
+            ),
           ),
-          child: Icon(icon, size: 18, color: _palette.mid),
-        ),
-        const SizedBox(height: 14),
-        Text(value,
-            style: const TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
-        const SizedBox(height: 4),
-        Text(subtitle,
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
       ]),
     );
   }
 
-  Widget _buildLineChart() {
-    final chartDataLoading = _historyData.isEmpty && _isLoading;
-    final chartData =
-        chartDataLoading ? placeholderHistoryList() : _historyData;
-    final canSwitchChart = chartData.length > 1;
-    final yAxisLabels = _chartYAxisLabels();
-    final chartMaxKwh = _chartMaxForRange(_range);
-    final (int?, int?) dailyHighlight =
-        chartDataLoading ? (null, null) : _dailyHighlightIndices();
-    final dailyHighlightStart = dailyHighlight.$1;
-    final dailyHighlightEnd = dailyHighlight.$2;
+  Widget _rangeTabs() => _segmented(
+        const {'daily': 'Daily', 'monthly': 'Monthly'},
+        _range == 'monthly' ? 'monthly' : 'daily',
+        (k) {
+          if (k != _range) _setRange(k);
+        },
+      );
+
+  Widget _statCard({
+    required IconData icon,
+    required String value,
+    String? unit,
+    required String label,
+    required String caption,
+  }) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: _palette.mid.withAlpha(22)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Consumption Trend',
-                      style: TextStyle(
-                        fontFamily: 'Outfit',
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      'kWh over time (realtime)',
-                      style:
-                          TextStyle(fontSize: 11, color: AppColors.textMuted),
-                    ),
-                  ],
-                ),
-              ),
-              if (canSwitchChart) ...[
-                _chartTypeButton('line', Icons.show_chart),
-                const SizedBox(width: 6),
-                _chartTypeButton('bar', Icons.bar_chart),
-              ],
-            ],
-          ),
-          const SizedBox(height: 20),
-          chartData.isEmpty
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: 30),
-                    child: Text(
-                      'No data yet',
-                      style:
-                          TextStyle(fontSize: 13, color: AppColors.textMuted),
-                    ),
-                  ),
-                )
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    final chartWidth = (chartData.length * 54.0)
-                        .clamp(constraints.maxWidth, constraints.maxWidth * 2.8)
-                        .toDouble();
-                    final values = chartData
-                        .map((d) => (d['kwh'] as num).toDouble())
-                        .toList();
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 38,
-                          height: 200,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: yAxisLabels
-                                .map(
-                                  (label) => Text(
-                                    label,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: AppColors.textMuted,
-                                    ),
-                                  ),
-                                )
-                                .toList(),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Scrollbar(
-                            controller: _chartScrollController,
-                            thumbVisibility: true,
-                            trackVisibility: true,
-                            child: SingleChildScrollView(
-                              controller: _chartScrollController,
-                              scrollDirection: Axis.horizontal,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(14),
-                                child: SizedBox(
-                                  width: chartWidth,
-                                  height: 200,
-                                  child: CustomPaint(
-                                    painter: _trendChartType == 'bar'
-                                        ? BarChartPainter(
-                                            data: values,
-                                            maxKwh: chartMaxKwh,
-                                            highlightStartIndex:
-                                                dailyHighlightStart,
-                                            highlightEndIndex:
-                                                dailyHighlightEnd,
-                                            highlightColor: AppColors.warning,
-                                          )
-                                        : LineChartPainter(
-                                            data: values,
-                                            maxKwh: chartMaxKwh,
-                                            highlightStartIndex:
-                                                dailyHighlightStart,
-                                            highlightEndIndex:
-                                                dailyHighlightEnd,
-                                            highlightColor: AppColors.warning,
-                                          ),
-                                    child: Container(),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-          const SizedBox(height: 8),
-          if (chartData.isNotEmpty)
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  chartData.first['label'],
-                  style:
-                      const TextStyle(fontSize: 9, color: AppColors.textMuted),
-                ),
-                if (chartData.length > 2)
-                  Text(
-                    chartData[chartData.length ~/ 2]['label'],
-                    style: const TextStyle(
-                        fontSize: 9, color: AppColors.textMuted),
-                  ),
-                Text(
-                  chartData.last['label'],
-                  style:
-                      const TextStyle(fontSize: 9, color: AppColors.textMuted),
-                ),
-              ],
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _chartTypeButton(String type, IconData icon) {
-    final isSelected = _trendChartType == type;
-    return GestureDetector(
-      onTap: () {
-        if (_trendChartType == type) return;
-        setState(() => _trendChartType = type);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(
-          color: isSelected ? _palette.dark : _palette.pale,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-              color: isSelected
-                  ? _palette.dark
-                  : _palette.mid.withAlpha(80)),
-        ),
-        child: Icon(
-          icon,
-          size: 14,
-          color: isSelected ? Colors.white : _palette.dark,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPredictionCard() {
-    final series = _buildPredictionSeries();
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Next Month Prediction',
-            style: TextStyle(
-              fontFamily: 'Outfit',
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            series == null
-                ? 'Waiting for daily RTDB history data.'
-                : 'Forecast derived from live daily history in RTDB.',
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
-          ),
-          const SizedBox(height: 20),
-          if (series == null || series.actualValues.length < 2)
-            Container(
-              height: 160,
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: _palette.pale.withAlpha(70),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: _palette.mid.withAlpha(28)),
-              ),
-              child: const Center(
-                child: Text(
-                  'Need at least 2 daily points to forecast',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textMuted,
-                  ),
-                ),
-              ),
-            )
-          else ...[
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final actualWindow = series.actualValues.length > 90
-                    ? series.actualValues
-                        .sublist(series.actualValues.length - 90)
-                    : series.actualValues;
-                final chartWidth = constraints.maxWidth;
-                const chartHeight = 180.0;
-                const chartMaxFixed = 150.0;
-                const safeMax = chartMaxFixed;
-
-                return Column(
-                  children: [
-                    SizedBox(
-                      width: chartWidth,
-                      height: chartHeight,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: CustomPaint(
-                          painter: ForecastChartPainter(
-                            actualData: actualWindow,
-                            forecastData: series.forecastValues,
-                            maxKwh: safeMax,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _miniForecastStat(
-                            'Projected 30-day kWh',
-                            series.predictedKwh.toStringAsFixed(2),
-                            Icons.bolt,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _miniForecastStat(
-                            'Estimated bill',
-                            '₱ ${series.predictedBill.toStringAsFixed(2)}',
-                            Icons.payments_outlined,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        // Semantic: paired against the fixed amber "Forecast"
-                        // dot immediately after -- communicates the actual-vs-
-                        // forecast data series, not brand chrome. Deliberately
-                        // NOT retheme'd (matches mobile history_screen.dart).
-                        _forecastLegendDot('Actual', AppColors.greenMid),
-                        _forecastLegendDot('Forecast', const Color(0xFFF59E0B)),
-                        Text(
-                          'Rate: ₱ ${_electricityRate.toStringAsFixed(2)}/kWh',
-                          style: const TextStyle(
-                              fontSize: 10, color: AppColors.textMuted),
-                        ),
-                      ],
-                    ),
-                  ],
-                );
-              },
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _miniForecastStat(String label, String value, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: _palette.pale.withAlpha(65),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _palette.mid.withAlpha(28)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 18, color: _palette.dark),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              fontFamily: 'Outfit',
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textDark,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _forecastLegendDot(String label, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
+      child: Row(children: [
         Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          width: 50,
+          height: 50,
+          decoration: BoxDecoration(
+              color: _palette.pale.withAlpha(200), shape: BoxShape.circle),
+          child: Icon(icon, color: _palette.dark, size: 24),
         ),
-        const SizedBox(width: 5),
-        Text(label,
-            style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-      ],
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text.rich(
+              TextSpan(children: [
+                TextSpan(
+                    text: value,
+                    style: const TextStyle(
+                        fontFamily: 'Outfit',
+                        fontSize: 26,
+                        fontWeight: FontWeight.w700,
+                        color: WebColors.ink)),
+                if (unit != null)
+                  TextSpan(
+                      text: ' $unit',
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: WebColors.mid)),
+              ]),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: WebColors.ink)),
+            Text(caption,
+                style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _trendCard(List<({DateTime date, double kwh})> window) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _palette.mid.withAlpha(22)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Consumption Trend',
+                  style: TextStyle(
+                      fontFamily: 'Outfit',
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: WebColors.ink)),
+              SizedBox(height: 2),
+              Text('kWh over time (realtime) · hover for values',
+                  style: TextStyle(fontSize: 13, color: WebColors.muted)),
+            ]),
+          ),
+          _segmented(const {'line': 'Line', 'bar': 'Bar'}, _trendChartType,
+              (k) => setState(() => _trendChartType = k)),
+        ]),
+        const SizedBox(height: 16),
+        if (window.isEmpty)
+          const SizedBox(
+            height: 200,
+            child: Center(
+              child: Text('No data yet',
+                  style: TextStyle(fontSize: 14, color: WebColors.muted)),
+            ),
+          )
+        else
+          WebTrendChart(
+            points: _trendPoints(window),
+            bars: _trendChartType == 'bar',
+            color: AppColors.greenMid,
+          ),
+      ]),
+    );
+  }
+
+  /// ARIMA (left) and a model picker (right) over the daily history.
+  Widget _buildForecasts() {
+    final daily = _dailyHistoryEntries();
+    return ForecastComparison(
+      palette: _palette,
+      daily: [for (final e in daily) (e['kwh'] as num).toDouble()],
+      lastDate: daily.isEmpty
+          ? null
+          : _tryParseDailyLabel(daily.last['label'].toString()),
+      rate: _electricityRate,
     );
   }
 
@@ -2138,80 +1222,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           ],
         ],
       ),
-    );
-  }
-
-  Widget _buildDeviceStatusCard() {
-    final total = _onlineCount + _offlineCount;
-    final onlinePct = total == 0 ? 0.0 : _onlineCount / total;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Device Status',
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        Row(children: [
-          Expanded(
-              // Semantic: paired against AppColors.warning for the "Offline"
-              // badge below -- communicates online/offline device state, not
-              // brand chrome. Deliberately NOT retheme'd (matches mobile
-              // history_screen.dart).
-              child: _statusBadge(
-                  'Online', _onlineCount, AppColors.greenMid, Icons.wifi)),
-          const SizedBox(width: 12),
-          Expanded(
-              child: _statusBadge(
-                  'Offline', _offlineCount, AppColors.warning, Icons.wifi_off)),
-        ]),
-        const SizedBox(height: 14),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: LinearProgressIndicator(
-            value: onlinePct,
-            minHeight: 8,
-            backgroundColor: AppColors.warning.withAlpha(50),
-            // Semantic: same online/offline pairing as the badges above.
-            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.greenMid),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text('${(onlinePct * 100).toStringAsFixed(0)}% devices online',
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-      ]),
-    );
-  }
-
-  Widget _statusBadge(String label, int count, Color color, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: color.withAlpha(20),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withAlpha(50)),
-      ),
-      child: Row(children: [
-        Icon(icon, size: 18, color: color),
-        const SizedBox(width: 8),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('$count',
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: color,
-                  fontFamily: 'Outfit')),
-          Text(label,
-              style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-        ]),
-      ]),
     );
   }
 
@@ -2255,12 +1265,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(e.key,
                     style: const TextStyle(
-                        fontSize: 13,
+                        fontSize: 14,
                         fontWeight: FontWeight.w500,
                         color: AppColors.textDark)),
                 Text('${e.value.toStringAsFixed(1)} kWh',
                     style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                         color: _palette.dark)),
               ]),
@@ -2335,7 +1345,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                     // barColors above -- NOT retheme'd.
                     child: Text('${i + 1}',
                         style: TextStyle(
-                            fontSize: 10,
+                            fontSize: 11,
                             fontWeight: FontWeight.w700,
                             color:
                                 i == 0 ? Colors.white : AppColors.greenDark))),
@@ -2350,12 +1360,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                         children: [
                           Text(e.key,
                               style: const TextStyle(
-                                  fontSize: 13,
+                                  fontSize: 14,
                                   fontWeight: FontWeight.w500,
                                   color: AppColors.textDark)),
                           Text('${e.value.toStringAsFixed(1)} kWh',
                               style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                   color: _palette.dark)),
                         ]),
@@ -2376,138 +1386,4 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       ]),
     );
   }
-
-  Widget _buildHistoryList() {
-    final breakdownData = _breakdownListData();
-    final listData = breakdownData.isEmpty && _isLoading
-        ? placeholderHistoryList()
-        : breakdownData;
-    if (listData.isEmpty) return const SizedBox.shrink();
-    final latestFirst = [...listData]
-      ..sort((a, b) => b['label'].toString().compareTo(a['label'].toString()));
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Breakdown',
-              style: TextStyle(
-                  fontFamily: 'Outfit',
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-          const SizedBox(height: 12),
-          LayoutBuilder(builder: (context, constraints) {
-            final crossAxisCount = constraints.maxWidth >= 900 ? 2 : 1;
-            final entries = latestFirst.take(10).toList();
-            return GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: crossAxisCount,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: crossAxisCount == 2 ? 5.6 : 5.0,
-              ),
-              itemCount: entries.length,
-              itemBuilder: (context, i) {
-                final d = entries[i];
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _palette.mid.withAlpha(20)),
-                  ),
-                  child: Row(children: [
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                          color: _palette.pale,
-                          borderRadius: BorderRadius.circular(8)),
-                      child: Icon(Icons.calendar_today,
-                          size: 16, color: _palette.dark),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child: Text(d['label'],
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                                color: AppColors.textDark))),
-                    Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text('${(d['kwh'] as num).toStringAsFixed(1)} kWh',
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: _palette.dark)),
-                          Text('₱ ${(d['cost'] as num).toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                  fontSize: 11, color: AppColors.textMuted)),
-                        ]),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      tooltip: 'Delete history',
-                      onPressed: _deletingHistoryKey == d['label']
-                          ? null
-                          : () => _deleteHistoryEntry(d['label'].toString()),
-                      icon: _deletingHistoryKey == d['label']
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.delete_outline,
-                              size: 18, color: AppColors.offline),
-                    ),
-                  ]),
-                );
-              },
-            );
-          }),
-        ],
-      ),
-    );
-  }
-}
-
-/// Result of the Daily calendar range dialog. Distinguishes "Apply/Show all
-/// days pressed" (an instance of this class, possibly wrapping a `null`
-/// range to mean "show everything") from "dialog dismissed without a
-/// decision" (the `showDialog` future resolving to `null` itself), so
-/// cancelling never changes what's currently displayed.
-class _DailyRangeDialogResult {
-  final DateTimeRange? range;
-  const _DailyRangeDialogResult(this.range);
-}
-
-class _PredictionSeries {
-  _PredictionSeries({
-    required this.actualValues,
-    required this.actualLabels,
-    required this.forecastValues,
-    required this.forecastLabels,
-    required this.predictedKwh,
-    required this.predictedBill,
-    required this.averageRate,
-  });
-
-  final List<double> actualValues;
-  final List<String> actualLabels;
-  final List<double> forecastValues;
-  final List<String> forecastLabels;
-  final double predictedKwh;
-  final double predictedBill;
-  final double averageRate;
 }

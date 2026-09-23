@@ -137,6 +137,114 @@ def train_and_forecast(df, window=14, epochs=50, horizon=30):
     }
 
 
+BACKTEST_DAYS = 14
+
+
+def forecast_errors(actual, predicted):
+    """MAE (kWh/day) and MAPE (%) -- same rules as the app's Dart backtest:
+    MAPE skips near-zero days, where a percentage error is meaningless."""
+    actual = np.asarray(actual, dtype='float64')
+    predicted = np.asarray(predicted, dtype='float64')
+    err = np.abs(actual - predicted)
+    mask = actual > 0.05
+    mape = float(np.mean(err[mask] / actual[mask]) * 100) if mask.any() else 0.0
+    return {'mae': float(np.mean(err)), 'mape': mape, 'days': int(len(actual))}
+
+
+def lstm_values(series, horizon, window=14, epochs=50):
+    """Trains a fresh LSTM on `series` and forecasts `horizon` days."""
+    series = np.asarray(series, dtype='float32')
+    mean = series.mean()
+    std = series.std() if series.std() > 0 else 1.0
+    norm = (series - mean) / std
+    X, y = make_sequences(norm, window)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+    model = build_model(window)
+    es = EarlyStopping(monitor='loss', patience=6, restore_best_weights=True)
+    model.fit(X, y, epochs=epochs, batch_size=8, callbacks=[es], verbose=0)
+    last = norm[-window:].tolist()
+    preds = []
+    for _ in range(horizon):
+        p = model.predict(np.array(last[-window:]).reshape((1, window, 1)), verbose=0)[0, 0]
+        last.append(p)
+        preds.append(p)
+    return np.maximum(np.array(preds) * std + mean, 0.0)
+
+
+def _xgb_features(values, t, dow0):
+    dow = (dow0 + t) % 7
+    return [1.0 if dow >= 5 else 0.0, float(dow), values[t - 1], values[t - 7],
+            float(np.mean(values[t - 7:t]))]
+
+
+def xgb_values(series, horizon, dow0):
+    """XGBoost on weekend flag, weekday, yesterday, same day last week and
+    the 7-day average; forecasts one day at a time, feeding each back in."""
+    import xgboost as xgb
+    values = [float(v) for v in series]
+    X = [_xgb_features(values, t, dow0) for t in range(7, len(values))]
+    y = values[7:]
+    model = xgb.XGBRegressor(n_estimators=200, max_depth=3, learning_rate=0.08,
+                             subsample=0.9, objective='reg:squarederror')
+    model.fit(np.array(X), np.array(y))
+    out = list(values)
+    for _ in range(horizon):
+        x = np.array([_xgb_features(out, len(out), dow0)])
+        out.append(max(0.0, float(model.predict(x)[0])))
+    return np.array(out[len(values):])
+
+
+def run_model(name, fn, series, horizon=30):
+    """Full forecast plus a backtest on the last BACKTEST_DAYS days."""
+    if len(series) < BACKTEST_DAYS + 21:
+        print(f'{name}: not enough history ({len(series)} days)')
+        return None
+    held = fn(series[:-BACKTEST_DAYS], BACKTEST_DAYS)
+    return {
+        'values': [float(v) for v in fn(series, horizon)],
+        'backtest': forecast_errors(series[-BACKTEST_DAYS:], held),
+    }
+
+
+def push_models(df, horizon=30):
+    """Writes history/predictions/models/{lstm,xgboost}. Kept apart from
+    history/predictions/daily, which the app rewrites with its own linear
+    fallback every few hours."""
+    series = df['kwh'].values.astype('float64')[-120:]
+    labels_hist = df['label'].values[-len(series):]
+    try:
+        first = datetime.strptime(labels_hist[0], '%Y-%m-%d')
+        last_date = datetime.strptime(labels_hist[-1], '%Y-%m-%d')
+    except Exception:
+        print('Daily labels are not YYYY-MM-DD; skipping model comparison')
+        return
+    dow0 = first.weekday()  # Monday = 0, matching the weekend flag above
+    labels = [(last_date + timedelta(days=i + 1)).strftime('%Y-%m-%d')
+              for i in range(horizon)]
+    generated = int(datetime.utcnow().timestamp() * 1000)
+
+    models = {
+        'lstm': lambda s, h: lstm_values(s, h),
+        'xgboost': lambda s, h: xgb_values(s, h, dow0),
+    }
+    for key, fn in models.items():
+        try:
+            result = run_model(key, fn, series, horizon)
+        except Exception as exc:  # one failing model must not block the other
+            print(f'{key}: failed: {exc}')
+            continue
+        if not result:
+            continue
+        db.reference(f'history/predictions/models/{key}').set({
+            'generated_at': generated,
+            'labels': labels,
+            'values': result['values'],
+            'predicted_kwh_total': float(sum(result['values'])),
+            'backtest': result['backtest'],
+        })
+        print(f"{key}: MAPE {result['backtest']['mape']:.1f}% pushed")
+
+
 def push_forecast(payload):
     ref = db.reference('history/predictions/daily')
     data = {
@@ -166,6 +274,7 @@ def main():
     print('Forecast generated, total predicted kWh:', result['predicted_kwh_total'])
     push_forecast(result)
     print('Forecast pushed to RTDB at history/predictions/daily')
+    push_models(df)
 
 
 if __name__ == '__main__':

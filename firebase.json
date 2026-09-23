@@ -2,7 +2,6 @@
   "database": {
     "rules": "database.rules.json"
   },
-
   "hosting": [
     {
       "target": "app",
@@ -79,7 +78,6 @@
       ]
     }
   ],
-
   "flutter": {
     "platforms": {
       "dart": {
@@ -102,7 +100,6 @@
       }
     }
   },
-
   "functions": [
     {
       "source": "functions",

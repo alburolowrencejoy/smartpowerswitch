@@ -373,9 +373,11 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   Future<void> _saveHotspot(String buildingId) async {
     final spot = _hotspots[buildingId];
     if (spot == null) return;
+    // update, not set: keeps the per-device map positions the web map
+    // stores under hotspots/{building}/devices.
     await FirebaseDatabase.instance
         .ref('hotspots/$buildingId')
-        .set(spot.toMap());
+        .update(spot.toMap());
   }
 
   void _onBuildingTap(String buildingId) {
@@ -1169,7 +1171,7 @@ class _BuildingPopup extends StatelessWidget {
                             as List<Map<String, dynamic>>?) ??
                         [];
                     final roomKwh =
-                        utilities.fold(0.0, (s, u) => s + (u['kwh'] as double));
+                        utilities.fold(0.0, (s, u) => s + (u['kwh'] as num).toDouble());
                     return _RoomTile(
                         roomName: roomName,
                         utilities: utilities,
@@ -1272,7 +1274,7 @@ class _RoomTile extends StatelessWidget {
           children: utilities.map((u) {
             final status = (u['status'] as String?) ?? 'offline';
             final utility = (u['utility'] as String?) ?? '';
-            final kwh = (u['kwh'] as double?) ?? 0.0;
+            final kwh = (u['kwh'] as num?)?.toDouble() ?? 0.0;
             final isOnline = status == 'online';
             return Row(
               mainAxisSize: MainAxisSize.min,

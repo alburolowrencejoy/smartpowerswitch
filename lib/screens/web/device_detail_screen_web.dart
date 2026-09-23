@@ -9,6 +9,7 @@ import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../services/readings_service.dart';
 import '../../services/home_widget_service.dart';
+import 'web_theme.dart';
 
 /// The desktop "Device Detail" page: the same live PZEM readings, relay
 /// control, cost, and device info as [DeviceDetailScreen], laid out as a
@@ -415,7 +416,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.cloud_off_outlined,
-              size: 48, color: AppColors.textMuted),
+              size: 48, color: WebColors.muted),
           const SizedBox(height: 12),
           const Text('Cannot load this device',
               style: TextStyle(
@@ -425,7 +426,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                   color: AppColors.textDark)),
           const SizedBox(height: 6),
           Text(_errorText ?? 'Something went wrong.',
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 13, color: WebColors.muted)),
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: _retry,
@@ -488,7 +489,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
               Text(
                   '${widget.deviceId} · ${widget.building} · Floor ${widget.floor} · ${widget.room}',
                   style: const TextStyle(
-                      fontSize: 12, color: AppColors.textMuted)),
+                      fontSize: 13, color: WebColors.muted)),
             ],
           ),
         ),
@@ -518,7 +519,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
             const SizedBox(width: 5),
             Text(_isOnline ? 'Online' : 'Offline',
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: _isOnline ? AppColors.greenDark : AppColors.offline,
                 )),
@@ -591,10 +592,10 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
             children: [
               Text(isAc ? 'Contactor' : 'Relay',
                   style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 14,
                       color: relayVisible
                           ? AppColors.greenPale
-                          : AppColors.textMuted)),
+                          : WebColors.muted)),
               const SizedBox(height: 4),
               Text(relayVisible ? 'Turned ON' : 'Turned OFF',
                   style: TextStyle(
@@ -614,17 +615,17 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                                 ? 'Click to turn off'
                                 : 'Click to turn on'))),
                 style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 13,
                     color: relayVisible
                         ? AppColors.greenPale.withAlpha(179)
-                        : AppColors.textMuted),
+                        : WebColors.muted),
               ),
               if (warningMessage != null) ...[
                 const SizedBox(height: 6),
                 Text(
                   warningMessage,
                   style: const TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: Color(0xFFFFC107),
                   ),
@@ -674,7 +675,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                               size: 17,
                               color: relayVisible
                                   ? AppColors.greenMid
-                                  : AppColors.textMuted,
+                                  : WebColors.muted,
                             ),
                     ),
                   ),
@@ -691,7 +692,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
               borderRadius: BorderRadius.circular(19),
             ),
             child: const Icon(Icons.lock_outline,
-                size: 18, color: AppColors.textMuted),
+                size: 18, color: WebColors.muted),
           ),
       ]),
     );
@@ -782,13 +783,13 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                   padding: const EdgeInsets.only(bottom: 2),
                   child: Text(unit,
                       style: const TextStyle(
-                          fontSize: 10, color: AppColors.textMuted)),
+                          fontSize: 11, color: WebColors.muted)),
                 ),
               ],
             ]),
             Text(label,
                 style:
-                    const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                    const TextStyle(fontSize: 12, color: WebColors.muted)),
           ]),
         ],
       ),
@@ -807,7 +808,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('Estimated Cost',
-              style: TextStyle(fontSize: 12, color: AppColors.textMid)),
+              style: TextStyle(fontSize: 13, color: AppColors.textMid)),
           const SizedBox(height: 4),
           Text('₱ ${cost.toStringAsFixed(2)}',
               style: TextStyle(
@@ -816,12 +817,12 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                   fontWeight: FontWeight.w700,
                   color: _palette.dark)),
           Text('at ₱${_ratePhp.toStringAsFixed(2)} / kWh',
-              style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 12, color: WebColors.muted)),
           const SizedBox(height: 14),
           Container(height: 1, color: _palette.mid.withAlpha(40)),
           const SizedBox(height: 14),
           const Text('Total Energy',
-              style: TextStyle(fontSize: 11, color: AppColors.textMid)),
+              style: TextStyle(fontSize: 12, color: AppColors.textMid)),
           Text('${energy.toStringAsFixed(2)} kWh',
               style: TextStyle(
                   fontFamily: 'Outfit',
@@ -884,14 +885,14 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(children: [
         Text(label,
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+            style: const TextStyle(fontSize: 13, color: WebColors.muted)),
         const Spacer(),
         Flexible(
           child: Text(value,
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
         ),
@@ -950,7 +951,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       case 'air conditioner':
         return const Color(0xFF2196F3);
       default:
-        return AppColors.textMuted;
+        return WebColors.muted;
     }
   }
 }

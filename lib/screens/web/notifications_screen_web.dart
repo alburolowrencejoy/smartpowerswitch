@@ -9,6 +9,7 @@ import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import 'web_theme.dart';
 
 /// The desktop "Notifications" section: the same alert feed as
 /// [NotificationsScreen] (high-consumption/offline alerts, app-update
@@ -246,7 +247,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                   const SizedBox(height: 6),
                   Text(message,
                       style: const TextStyle(
-                          fontSize: 12, color: AppColors.textMid)),
+                          fontSize: 13, color: AppColors.textMid)),
                 ],
                 if (versionLine.isNotEmpty) ...[
                   const SizedBox(height: 10),
@@ -258,7 +259,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                       Text(
                         'Version: $versionLine',
                         style: TextStyle(
-                            fontSize: 12,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                             color: _palette.dark),
                       ),
@@ -270,7 +271,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                   Text(
                     'Published: ${publishedAt.day}/${publishedAt.month}/${publishedAt.year}',
                     style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted),
+                        fontSize: 12, color: WebColors.muted),
                   ),
                 ],
                 const SizedBox(height: 14),
@@ -299,7 +300,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                           ? 'No detailed release notes were provided for this version.'
                           : notes,
                       style: const TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 13.5,
                           height: 1.35,
                           color: AppColors.textDark),
                     ),
@@ -314,11 +315,11 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                       // Bug fix: no explicit style meant this fell back to
                       // the app-wide seed-green ColorScheme.primary
                       // (main.dart) instead of this viewer's resolved
-                      // institute theme -- AppColors.textMuted matches the
+                      // institute theme -- WebColors.muted matches the
                       // "Cancel"/neutral-dismiss convention used by every
                       // other dialog button in this file.
                       child: const Text('Close',
-                          style: TextStyle(color: AppColors.textMuted)),
+                          style: TextStyle(color: WebColors.muted)),
                     ),
                     const SizedBox(width: 8),
                     OutlinedButton.icon(
@@ -348,7 +349,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _palette.dark,
                         disabledBackgroundColor:
-                            AppColors.textMuted.withAlpha(70),
+                            WebColors.muted.withAlpha(70),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
                       ),
@@ -384,7 +385,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                     child: Text(
                       '${_notifications.length} ${_notifications.length == 1 ? 'alert' : 'alerts'}',
                       style: const TextStyle(
-                          fontSize: 12, color: AppColors.textMuted),
+                          fontSize: 13, color: WebColors.muted),
                     ),
                   ),
                   _iconToggle(
@@ -476,7 +477,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: Text(
                   'Alerts for high consumption and offline devices will appear here.',
-                  style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                  style: TextStyle(fontSize: 13, color: WebColors.muted),
                   textAlign: TextAlign.center),
             ),
           ],
@@ -518,7 +519,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
             Text(_errorText ?? 'Something went wrong.',
                 textAlign: TextAlign.center,
                 style:
-                    const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                    const TextStyle(fontSize: 13, color: WebColors.muted)),
           ],
         ),
       ),
@@ -614,7 +615,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 12.5,
+                            fontSize: 13.5,
                             fontWeight: FontWeight.w600,
                             color: AppColors.textDark)),
                     const SizedBox(height: 3),
@@ -622,7 +623,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 11, color: AppColors.textMuted)),
+                            fontSize: 12, color: WebColors.muted)),
                     if (isUpdate && details.isNotEmpty) ...[
                       const SizedBox(height: 3),
                       Text(
@@ -630,13 +631,13 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 10.5, color: AppColors.textMid),
+                            fontSize: 11.5, color: AppColors.textMid),
                       ),
                     ],
                     const SizedBox(height: 2),
                     Text(timeStr,
                         style: const TextStyle(
-                            fontSize: 10, color: AppColors.textMuted)),
+                            fontSize: 11, color: WebColors.muted)),
                   ]),
             ),
           ]),

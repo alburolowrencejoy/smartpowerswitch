@@ -8,6 +8,8 @@ import '../../utils/placeholder_data.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import 'web_theme.dart';
+import 'web_widgets.dart';
 
 /// The desktop "Building Floor" page: the same rooms/floors/devices, admin
 /// actions (add/edit/delete room, add/remove device, room-wide relay
@@ -456,376 +458,231 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
   String _monthKey(DateTime date) =>
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
+  DatabaseReference get _roomsRef => FirebaseDatabase.instance
+      .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms');
+
+  Future<void> _writeRooms(List<String> rooms) => _roomsRef.set(
+      rooms.isEmpty ? {} : {for (int i = 0; i < rooms.length; i++) '$i': rooms[i]});
+
+  /// Error for a room name on the current floor, or null when it's valid.
+  String? _roomNameError(String name, {String? except}) {
+    if (name.isEmpty) return 'Room name is required.';
+    final taken = (_rooms[_selectedFloor] ?? []).any((r) =>
+        r != except && r.trim().toLowerCase() == name.toLowerCase());
+    return taken ? 'A room with that name exists on this floor.' : null;
+  }
+
   Future<void> _addRoom() async {
-    final controller = TextEditingController();
-    final result = await showDialog<String>(
+    String? added;
+    await showWebFormDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Add Room',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: 'e.g. Room 2, Lab 1, Office',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: _palette.mid)),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Add', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+      title: 'Add room',
+      subtitle: 'Floor $_selectedFloor',
+      okLabel: 'Add',
+      fields: const [
+        WebField(id: 'name', label: 'Room name', hint: 'e.g. Room 2, Lab 1, Office'),
+      ],
+      onSubmit: (v) async {
+        final name = v['name']!;
+        final err = _roomNameError(name);
+        if (err != null) return {'name': err};
+        await _writeRooms([...(_rooms[_selectedFloor] ?? []), name]);
+        added = name;
+        return null;
+      },
     );
-
-    if (result == null || result.isEmpty) return;
-    final current = _rooms[_selectedFloor] ?? [];
-    if (current.contains(result)) {
-      if (!mounted) return;
-      TopToast.error(context, 'Room already exists.');
-      return;
-    }
-
-    final updated = [...current, result];
-    final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(roomMap);
+    if (added != null && mounted) TopToast.success(context, '"$added" added.');
   }
 
   Future<void> _editRoom(String oldRoom) async {
-    final controller = TextEditingController(text: oldRoom);
-    final result = await showDialog<String>(
+    String? renamed;
+    await showWebFormDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Edit Room Name',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: 'e.g. Room 2, Lab 1, Office',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: _palette.mid)),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Save', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
+      title: 'Rename room',
+      subtitle: 'Floor $_selectedFloor',
+      fields: [WebField(id: 'name', label: 'Room name', initial: oldRoom)],
+      onSubmit: (v) async {
+        final result = v['name']!;
+        if (result == oldRoom) return null;
+        final err = _roomNameError(result, except: oldRoom);
+        if (err != null) return {'name': err};
 
-    if (result == null || result.isEmpty || result == oldRoom) return;
+        final current = _rooms[_selectedFloor] ?? [];
+        await _writeRooms(
+            current.map((r) => r == oldRoom ? result : r).toList());
 
-    final current = _rooms[_selectedFloor] ?? [];
-    if (current.contains(result)) {
-      if (!mounted) return;
-      TopToast.error(context, 'Room name already exists.');
-      return;
-    }
-
-    final updated = current.map((r) => r == oldRoom ? result : r).toList();
-    final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(roomMap);
-
-    final snap = await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-        .get();
-
-    if (snap.exists) {
-      final data = snap.value as Map<dynamic, dynamic>;
-      for (final entry in data.entries) {
-        final val = entry.value as Map?;
-        if (val?['room'] == oldRoom) {
-          final deviceId = entry.key.toString();
-          await FirebaseDatabase.instance
-              .ref(
-                  'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/room')
-              .set(result);
-          await FirebaseDatabase.instance
-              .ref('devices/$deviceId/room')
-              .set(result);
+        final snap = await FirebaseDatabase.instance
+            .ref(
+                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
+            .get();
+        if (snap.value is Map) {
+          final updates = <String, dynamic>{};
+          (snap.value as Map).forEach((id, val) {
+            if (val is Map && val['room'] == oldRoom) {
+              updates['buildings/${widget.buildingCode}/floorData/'
+                  '$_selectedFloor/devices/$id/room'] = result;
+              updates['devices/$id/room'] = result;
+            }
+          });
+          if (updates.isNotEmpty) {
+            await FirebaseDatabase.instance.ref().update(updates);
+          }
         }
-      }
+        renamed = result;
+        return null;
+      },
+    );
+    if (renamed != null && mounted) {
+      TopToast.success(context, '"$oldRoom" renamed to "$renamed".');
     }
-
-    if (!mounted) return;
-    TopToast.success(context, '"$oldRoom" renamed to "$result".');
   }
 
   Future<void> _deleteRoom(String room) async {
-    final confirm = await showDialog<bool>(
+    final n = _roomDeviceEntries(room).length;
+    final ok = await showWebConfirmDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Room',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Text('Delete "$room" and all its utilities?',
-            style: const TextStyle(fontSize: 14)),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+      title: 'Delete room?',
+      message: n > 0
+          ? '$room and its $n device${n == 1 ? '' : 's'} will be unassigned.'
+          : '$room will be removed.',
+      onConfirm: () async {
+        final snap = await FirebaseDatabase.instance
+            .ref(
+                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
+            .get();
+        if (snap.value is Map) {
+          for (final entry in (snap.value as Map).entries) {
+            final val = entry.value;
+            if (val is Map && val['room'] == room) {
+              await _unassignDevice(entry.key.toString());
+            }
+          }
+        }
+        final current = List<String>.from(_rooms[_selectedFloor] ?? [])
+          ..remove(room);
+        await _writeRooms(current);
+      },
     );
-    if (confirm != true) return;
-
-    final snap = await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-        .get();
-
-    if (snap.exists) {
-      final data = snap.value as Map<dynamic, dynamic>;
-      for (final entry in data.entries) {
-        final val = entry.value as Map?;
-        if (val?['room'] == room) await _unassignDevice(entry.key.toString());
-      }
-    }
-
-    final current = List<String>.from(_rooms[_selectedFloor] ?? []);
-    current.remove(room);
-    final roomMap = {for (int i = 0; i < current.length; i++) '$i': current[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(current.isEmpty ? {} : roomMap);
-
-    if (!mounted) return;
+    if (!ok || !mounted) return;
+    if (_selectedRoom == room) _setSelectedRoom(null);
     TopToast.success(context, '"$room" deleted.');
   }
+
+  static const _utilityOptions = ['Lights', 'Outlets', 'AC'];
 
   Future<void> _addUtility(String room) async {
     if (_totalAssigned >= 24) {
       TopToast.threshold(context, 'Device limit reached (24 max).');
       return;
     }
-
-    String? utility = await showDialog<String>(
+    String? addedId;
+    String? addedUtility;
+    await showWebFormDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Select Utility Type',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          _utilityPickTile('Lights', Icons.lightbulb_outline, 'Lights',
-              'Relay 220V', const Color(0xFFE8922A)),
-          const SizedBox(height: 8),
-          // Bug fix: was hardcoded green regardless of viewer -- "Outlets"
-          // is the one utility type whose color is tied to the app's brand
-          // ramp rather than a fixed categorical hue (Lights/AC stay fixed
-          // orange/blue), matching the convention `_utilityColor` below and
-          // mobile's room-row utility dot already follow via `_palette.mid`.
-          _utilityPickTile('Outlets', Icons.electrical_services, 'Outlets',
-              'Relay 220V', _palette.mid),
-          const SizedBox(height: 8),
-          _utilityPickTile('AC', Icons.ac_unit, 'AC Unit', 'Contactor 220V',
-              const Color(0xFF2196F3)),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-        ],
-      ),
+      title: 'Add device',
+      subtitle: '$room · Floor $_selectedFloor. '
+          'Type the Device ID from the sticker on the ESP32.',
+      okLabel: 'Add',
+      fields: const [
+        WebField(
+            id: 'id', label: 'Device ID', hint: 'e.g. DEV-2024-A3F7', uppercase: true),
+        WebField(
+            id: 'utility',
+            label: 'Utility type',
+            options: _utilityOptions,
+            initial: 'Lights'),
+      ],
+      onSubmit: (v) async {
+        final id = v['id']!.toUpperCase();
+        final utility = v['utility']!;
+        if (id.isEmpty) return {'id': 'Device ID is required.'};
+        if (_devices.containsKey(id)) {
+          return {'id': 'That device is already on this floor.'};
+        }
+        final snap =
+            await FirebaseDatabase.instance.ref('master_devices/$id').get();
+        if (!snap.exists) return {'id': 'Device ID not found in the system.'};
+        final assigned = (snap.value as Map?)?['assignedTo'] as String?;
+        if (assigned != null && assigned.isNotEmpty) {
+          return {'id': 'Already assigned to $assigned.'};
+        }
+
+        await FirebaseDatabase.instance
+            .ref(
+                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$id')
+            .set({
+          'utility': utility,
+          'status': 'offline',
+          'relay': false,
+          'room': room,
+        });
+        await FirebaseDatabase.instance.ref('devices/$id').update({
+          'building': widget.buildingCode,
+          'floor': '$_selectedFloor',
+          'room': room,
+          'utility': utility,
+          'relay': false,
+          'status': 'offline',
+          'kwh': 0,
+          'voltage': 0,
+          'current': 0,
+          'power': 0,
+          'last_seen': 0,
+          'last_updated': 0,
+        });
+        await FirebaseDatabase.instance
+            .ref('master_devices/$id/assignedTo')
+            .set('${widget.buildingCode}/$_selectedFloor/$room');
+        addedId = id;
+        addedUtility = utility;
+        return null;
+      },
     );
-    if (utility == null || !mounted) return;
+    if (addedId != null && mounted) {
+      TopToast.success(context, '$addedId added as $addedUtility in $room.');
+    }
+  }
 
-    final deviceIdController = TextEditingController();
-    String? errorText;
-
-    final deviceId = await showDialog<String>(
+  /// Changes a device's utility type (Lights / Outlets / AC).
+  Future<void> _editDevice(String deviceId, String utility) async {
+    final current = _utilityOptions.firstWhere(
+        (o) => o.toLowerCase() == utility.toLowerCase(),
+        orElse: () => _utilityOptions.first);
+    final ok = await showWebFormDialog(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Enter Device ID',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Text(
-                'Type the unique Device ID from the sticker on your ESP32.',
-                style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: deviceIdController,
-              textCapitalization: TextCapitalization.characters,
-              decoration: InputDecoration(
-                hintText: 'e.g. DEV-2024-A3F7',
-                errorText: errorText,
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: _palette.mid)),
-                prefixIcon:
-                    const Icon(Icons.qr_code, color: AppColors.textMuted),
-              ),
-              autofocus: true,
-            ),
-          ]),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: () async {
-                final id = deviceIdController.text.trim().toUpperCase();
-                if (id.isEmpty) {
-                  setS(() => errorText = 'Please enter a Device ID');
-                  return;
-                }
-                final snap = await FirebaseDatabase.instance
-                    .ref('master_devices/$id')
-                    .get();
-                if (!snap.exists) {
-                  setS(() => errorText = 'Device ID not found in system');
-                  return;
-                }
-                final assigned = (snap.value as Map?)?['assignedTo'] as String?;
-                if (assigned != null && assigned.isNotEmpty) {
-                  setS(
-                      () => errorText = 'Device already assigned to $assigned');
-                  return;
-                }
-                if (_devices.containsKey(id)) {
-                  setS(() => errorText = 'Device already added to this floor');
-                  return;
-                }
-                if (ctx.mounted) Navigator.pop(ctx, id);
-              },
-              child: const Text('Add Device',
-                  style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
+      title: 'Edit device',
+      subtitle: deviceId,
+      fields: [
+        WebField(
+            id: 'utility',
+            label: 'Utility type',
+            options: _utilityOptions,
+            initial: current),
+      ],
+      onSubmit: (v) async {
+        final next = v['utility']!;
+        if (next == current) return null;
+        await FirebaseDatabase.instance.ref().update({
+          'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/utility':
+              next,
+          'devices/$deviceId/utility': next,
+        });
+        return null;
+      },
     );
-    if (deviceId == null || !mounted) return;
-
-    await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
-        .set({
-      'utility': utility,
-      'status': 'offline',
-      'relay': false,
-      'room': room,
-    });
-
-    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-      'building': widget.buildingCode,
-      'floor': '$_selectedFloor',
-      'room': room,
-      'utility': utility,
-      'relay': false,
-      'status': 'offline',
-      'kwh': 0,
-      'voltage': 0,
-      'current': 0,
-      'power': 0,
-      'last_seen': 0,
-      'last_updated': 0,
-    });
-
-    await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId/assignedTo')
-        .set('${widget.buildingCode}/$_selectedFloor/$room');
-
-    if (!mounted) return;
-    TopToast.success(context, '$deviceId added as $utility in $room.');
+    if (ok && mounted) TopToast.success(context, '$deviceId updated.');
   }
 
   Future<void> _deleteDevice(String deviceId, String utility) async {
-    final confirm = await showDialog<bool>(
+    final ok = await showWebConfirmDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Remove Device',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Remove ${_utilityLabel(utility)} ($deviceId)?',
-                style: const TextStyle(fontSize: 14)),
-            const SizedBox(height: 8),
-            const Text('The device will be unassigned and available for reuse.',
-                style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Remove', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
+      title: 'Remove device?',
+      message: '${_utilityLabel(utility)} ($deviceId) will be unassigned and '
+          'available for reuse.',
+      okLabel: 'Remove',
+      onConfirm: () => _unassignDevice(deviceId),
     );
-    if (confirm != true) return;
-    await _unassignDevice(deviceId);
-    if (!mounted) return;
-    TopToast.success(context, '$deviceId removed.');
+    if (ok && mounted) TopToast.success(context, '$deviceId removed.');
   }
 
   Future<void> _unassignDevice(String deviceId) async {
@@ -842,44 +699,6 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       'room': '',
       'status': 'offline',
     });
-  }
-
-  Widget _utilityPickTile(
-      String value, IconData icon, String label, String sub, Color color) {
-    return GestureDetector(
-      onTap: () => Navigator.pop(context, value),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: color.withAlpha(15),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withAlpha(51)),
-        ),
-        child: Row(children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-                color: color.withAlpha(26),
-                borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, size: 20, color: color),
-          ),
-          const SizedBox(width: 12),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(label,
-                style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textDark)),
-            Text(sub,
-                style:
-                    const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-          ]),
-          const Spacer(),
-          Icon(Icons.chevron_right, color: color, size: 18),
-        ]),
-      ),
-    );
   }
 
   // ── Build (desktop grid layout) ───────────────────────────────────────────
@@ -947,7 +766,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.cloud_off_outlined,
-              size: 48, color: AppColors.textMuted),
+              size: 48, color: WebColors.muted),
           const SizedBox(height: 12),
           const Text('Cannot load this building',
               style: TextStyle(
@@ -957,7 +776,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                   color: AppColors.textDark)),
           const SizedBox(height: 6),
           Text(_errorText ?? 'Something went wrong.',
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 13, color: WebColors.muted)),
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: _retry,
@@ -1026,7 +845,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                   borderRadius: BorderRadius.circular(20)),
               child: Text(isAdmin ? 'Admin' : 'Faculty',
                   style: TextStyle(
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: _palette.dark)),
             ),
@@ -1040,17 +859,13 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
   /// instead of the page header, and doubles as the call-to-action in
   /// those sections' empty states.
   Widget _addActionButton() {
-    return ElevatedButton.icon(
+    return WebIconButton(
+      icon: _selectedRoom == null ? Icons.add_rounded : Icons.add_to_queue_rounded,
+      tooltip: _selectedRoom == null ? 'Add room' : 'Add device',
+      solid: true,
+      size: 38,
       onPressed:
           _selectedRoom == null ? _addRoom : () => _addUtility(_selectedRoom!),
-      icon: const Icon(Icons.add, color: Colors.white, size: 18),
-      label: Text(_selectedRoom == null ? 'Add Room' : 'Add Utility',
-          style: const TextStyle(color: Colors.white)),
-      style: ElevatedButton.styleFrom(
-          backgroundColor: _palette.dark,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
     );
   }
 
@@ -1109,7 +924,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style:
-                  TextStyle(fontSize: 11, color: Colors.white.withAlpha(200))),
+                  TextStyle(fontSize: 12, color: Colors.white.withAlpha(200))),
         ],
       ),
     );
@@ -1137,7 +952,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                   child: Text('Floor $floor',
                       style: TextStyle(
                           fontFamily: 'Outfit',
-                          fontSize: 13,
+                          fontSize: 14,
                           fontWeight: FontWeight.w600,
                           color:
                               isSelected ? Colors.white : AppColors.textMid)),
@@ -1284,7 +1099,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                                   ? 'No utilities added'
                                   : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} · $onlineCount online',
                               style: const TextStyle(
-                                  fontSize: 12, color: AppColors.textMuted),
+                                  fontSize: 13, color: WebColors.muted),
                             ),
                             const SizedBox(height: 8),
                             Wrap(spacing: 6, children: [
@@ -1302,7 +1117,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                         ),
                       ),
                       const Icon(Icons.chevron_right,
-                          color: AppColors.textMuted, size: 20),
+                          color: WebColors.muted, size: 20),
                     ],
                   ),
                 ),
@@ -1320,7 +1135,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                           child: Text('Room switch',
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                  fontSize: 11, color: AppColors.textMuted)),
+                                  fontSize: 12, color: WebColors.muted)),
                         ),
                         const SizedBox(width: 6),
                         Switch.adaptive(
@@ -1334,45 +1149,28 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                     ),
                   ] else
                     const Spacer(),
-                  // Fixed: these two TextButton.icon widgets have no
-                  // Expanded/Flexible ancestor here, so on a narrow card
-                  // (3-column grid can't reflow -- see the comment on
-                  // `_buildRoomsGrid`) their combined intrinsic width could
-                  // exceed what's left after the switch, throwing a
-                  // RenderFlex overflow. FittedBox lets each one shrink
-                  // instead of overflowing.
-                  Flexible(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: () => _editRoom(room),
-                        icon: Icon(Icons.edit_outlined,
-                            size: 15, color: _palette.dark),
-                        label: Text('Edit',
-                            style:
-                                TextStyle(fontSize: 12, color: _palette.dark)),
-                        style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 8)),
-                      ),
-                    ),
+                  WebIconButton(
+                    icon: Icons.add_to_queue_rounded,
+                    tooltip: 'Add device',
+                    size: 30,
+                    onPressed: () => _addUtility(room),
                   ),
-                  Flexible(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: () => _deleteRoom(room),
-                        icon: const Icon(Icons.delete_outline,
-                            size: 15, color: AppColors.error),
-                        label: const Text('Delete',
-                            style: TextStyle(
-                                fontSize: 12, color: AppColors.error)),
-                        style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 8)),
-                      ),
-                    ),
+                  const SizedBox(width: 6),
+                  WebIconButton(
+                    icon: Icons.edit_outlined,
+                    tooltip: 'Rename room',
+                    size: 30,
+                    onPressed: () => _editRoom(room),
                   ),
+                  const SizedBox(width: 6),
+                  WebIconButton(
+                    icon: Icons.delete_outline_rounded,
+                    tooltip: 'Delete room',
+                    size: 30,
+                    danger: true,
+                    onPressed: () => _deleteRoom(room),
+                  ),
+                  const SizedBox(width: 4),
                 ]),
               ),
             ],
@@ -1456,7 +1254,8 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                 crossAxisCount: crossAxisCount,
                 crossAxisSpacing: 14,
                 mainAxisSpacing: 14,
-                childAspectRatio: 1.05,
+                // Admin tiles carry an extra edit/delete row.
+                childAspectRatio: isAdmin ? 0.9 : 1.05,
               ),
               itemCount: displayRoomDevices.length,
               itemBuilder: (context, index) {
@@ -1506,7 +1305,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                 size: 18,
                 color: isActive
                     ? const Color(0xFFF2C94C)
-                    : AppColors.textMuted.withAlpha(180)),
+                    : WebColors.muted.withAlpha(180)),
           ),
           const Spacer(),
           Container(
@@ -1525,12 +1324,12 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                 color: AppColors.textDark)),
         Text(deviceId,
             maxLines: 1,
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+            style: const TextStyle(fontSize: 12, color: WebColors.muted),
             overflow: TextOverflow.ellipsis),
         const SizedBox(height: 4),
         Text(isActive ? 'ON' : 'OFF',
             style: TextStyle(
-                fontSize: 11,
+                fontSize: 12,
                 fontWeight: FontWeight.w600,
                 color: isActive ? AppColors.success : AppColors.offline)),
         const Spacer(),
@@ -1560,29 +1359,36 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                 child: Center(
                   child: Text('View',
                       style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color: _palette.dark)),
                 ),
               ),
             ),
           ),
-          if (isAdmin) ...[
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _deleteDevice(deviceId, utility),
-              child: Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                    color: AppColors.error.withAlpha(20),
-                    borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.delete_outline,
-                    size: 16, color: AppColors.error),
-              ),
-            ),
-          ],
         ]),
+        if (isAdmin) ...[
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              WebIconButton(
+                icon: Icons.edit_outlined,
+                tooltip: 'Edit device',
+                size: 28,
+                onPressed: () => _editDevice(deviceId, utility),
+              ),
+              const SizedBox(width: 6),
+              WebIconButton(
+                icon: Icons.delete_outline_rounded,
+                tooltip: 'Remove device',
+                size: 28,
+                danger: true,
+                onPressed: () => _deleteDevice(deviceId, utility),
+              ),
+            ],
+          ),
+        ],
       ]),
     );
   }
@@ -1602,7 +1408,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       ),
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 48, color: AppColors.textMuted),
+          Icon(icon, size: 48, color: WebColors.muted),
           const SizedBox(height: 12),
           Text(title,
               style: const TextStyle(
@@ -1612,7 +1418,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                   color: AppColors.textDark)),
           const SizedBox(height: 6),
           Text(subtitle,
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 13, color: WebColors.muted)),
           if (action != null) ...[
             const SizedBox(height: 16),
             action,
@@ -1639,7 +1445,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       case 'air conditioner':
         return const Color(0xFF2196F3);
       default:
-        return AppColors.textMuted;
+        return WebColors.muted;
     }
   }
 

@@ -23,11 +23,18 @@ class RangeCalendar extends StatefulWidget {
   /// duration of the drag.
   final ValueChanged<bool>? onDragActiveChanged;
 
+  /// Pre-selects a day ([initialEnd] null or equal) or a range, e.g. when
+  /// editing an existing schedule. The calendar opens on that month.
+  final DateTime? initialStart;
+  final DateTime? initialEnd;
+
   const RangeCalendar({
     super.key,
     this.onRangeChanged,
     this.onDaySelected,
     this.onDragActiveChanged,
+    this.initialStart,
+    this.initialEnd,
   });
 
   @override
@@ -51,8 +58,14 @@ class _RangeCalendarState extends State<RangeCalendar> {
   @override
   void initState() {
     super.initState();
-    final now = DateTime.now();
-    _visibleMonth = DateTime(now.year, now.month, 1);
+    final start = widget.initialStart;
+    final shown = start ?? DateTime.now();
+    _visibleMonth = DateTime(shown.year, shown.month, 1);
+    if (start != null) {
+      _anchor = DateTime(start.year, start.month, start.day);
+      final end = widget.initialEnd ?? start;
+      _focusDay = DateTime(end.year, end.month, end.day);
+    }
   }
 
   bool get _isRange =>
@@ -99,14 +112,16 @@ class _RangeCalendarState extends State<RangeCalendar> {
   void _onTapDay(DateTime day) {
     if (_longPressActive) return; // ignore stray tap right after a long-press
     setState(() {
-      if (_anchor != null &&
-          ((!_isRange && _isSameDay(_anchor!, day)) || _isRange)) {
-        // tapping resets an existing single selection or range
+      if (_anchor == null || _isRange) {
+        // nothing selected, or a finished range: start over on this day
+        _anchor = day;
+        _focusDay = day;
+      } else if (_isSameDay(_anchor!, day)) {
+        // tapping the selected day again clears it
         _anchor = null;
         _focusDay = null;
       } else {
-        // select this single day
-        _anchor = day;
+        // a second, different day completes a range
         _focusDay = day;
       }
     });
@@ -187,11 +202,11 @@ class _RangeCalendarState extends State<RangeCalendar> {
       if (_isRange) {
         final lo = _anchor!.isBefore(_focusDay!) ? _anchor! : _focusDay!;
         final hi = _anchor!.isBefore(_focusDay!) ? _focusDay! : _anchor!;
-        return 'Range: ${_fmt(lo)} to ${_fmt(hi)} — tap to reset';
+        return 'Range: ${_fmt(lo)} to ${_fmt(hi)}. Click a day to start over.';
       }
-      return 'Selected: ${_fmt(_anchor!)} — tap to reset';
+      return 'Selected: ${_fmt(_anchor!)}. Click another day for a range.';
     }
-    return 'Tap a day to select it, or long-press and drag for a range.';
+    return 'Click a day, click two days, or drag across days for a range.';
   }
 
   @override
@@ -285,6 +300,23 @@ class _RangeCalendarState extends State<RangeCalendar> {
                   if (day != null) _onLongPressMoveUpdate(day);
                 },
                 onLongPressEnd: (_) => _onLongPressEnd(),
+                // Plain mouse drag selects a range too (same handlers).
+                onPanStart: (details) {
+                  final box =
+                      _gridKey.currentContext!.findRenderObject() as RenderBox;
+                  final day =
+                      dayAtLocalOffset(box.globalToLocal(details.globalPosition));
+                  if (day != null) _onLongPressStart(day);
+                },
+                onPanUpdate: (details) {
+                  final box =
+                      _gridKey.currentContext!.findRenderObject() as RenderBox;
+                  final day =
+                      dayAtLocalOffset(box.globalToLocal(details.globalPosition));
+                  if (day != null) _onLongPressMoveUpdate(day);
+                },
+                onPanEnd: (_) => _onLongPressEnd(),
+                onPanCancel: _onLongPressEnd,
                 child: GridView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),

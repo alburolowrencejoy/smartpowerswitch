@@ -5,5 +5,36 @@
       "envManager": "ms-python.python:venv",
       "packageManager": "ms-python.python:pip"
     }
-  ]
+  ],
+
+  // Keep VS Code from watching / indexing generated folders (saves RAM + CPU).
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/.dart_tool/**": true,
+    "**/android/.gradle/**": true,
+    "**/android/app/build/**": true,
+    "**/ios/Pods/**": true,
+    "**/node_modules/**": true,
+    "**/models/**": true
+  },
+  "search.exclude": {
+    "**/build": true,
+    "**/.dart_tool": true,
+    "**/android/.gradle": true,
+    "**/ios/Pods": true,
+    "**/node_modules": true
+  },
+
+  // Dart extension: skip work you don't need day to day.
+  "dart.analysisExcludedFolders": ["build", "tools", "scripts"],
+  "dart.showTodos": false,
+  "dart.closingLabels": false,
+
+  // The Java extension would import android/ as a Gradle project, which
+  // starts a Gradle daemon (~1 GB) and a Kotlin daemon (~0.5 GB) in the
+  // background. Flutter runs Gradle itself when you build for Android.
+  "java.import.gradle.enabled": false,
+  "java.import.maven.enabled": false,
+  "java.autobuild.enabled": false,
+  "java.configuration.updateBuildConfiguration": "disabled"
 }

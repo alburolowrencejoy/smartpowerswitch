@@ -1,0 +1,86 @@
+name: Build And Deploy Web
+
+# Builds the Flutter web app and deploys it to Firebase Hosting (target
+# "app" in firebase.json / .firebaserc -> smartpowerswitch-e90d0.web.app).
+#
+# - After "Auto Version Bump" succeeds on main: deploys to the live site,
+#   in step with the APK release (build-and-upload-apk.yml).
+# - On a pull request: deploys to a temporary preview channel (expires after
+#   7 days) and comments the preview URL on the PR. The live site is untouched.
+# - Manually from the Actions tab: deploys the chosen branch to the live site.
+#
+# Needs the FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 secret
+# (created by `firebase init hosting:github`).
+# The service account needs the "Firebase Hosting Admin" role.
+
+on:
+  workflow_run:
+    workflows:
+      - Auto Version Bump
+    types:
+      - completed
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write # preview URL comment
+  checks: write
+
+concurrency:
+  group: web-${{ github.event.pull_request.number || 'live' }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-web:
+    # workflow_run: only after a successful version bump on main.
+    # pull_request: skip PRs from forks (they can't read the secret).
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # workflow_run: latest main (includes the version-bump commit).
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build web
+        run: flutter build web --release --no-wasm-dry-run
+
+      - name: Deploy preview (pull request)
+        if: github.event_name == 'pull_request'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 }}
+          projectId: smartpowerswitch-e90d0
+          target: app
+          expires: 7d
+
+      - name: Deploy live (main)
+        if: github.event_name != 'pull_request'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 }}
+          projectId: smartpowerswitch-e90d0
+          target: app
+          channelId: live

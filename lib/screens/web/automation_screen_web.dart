@@ -4,10 +4,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../services/schedule_windows.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/range_calendar.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import 'web_theme.dart';
+import 'web_widgets.dart';
 
 String _isoDate(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -60,9 +63,9 @@ Widget _scheduleModeToggle({
             child: Text(
               label,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: selected ? Colors.white : AppColors.textMuted,
+                color: selected ? Colors.white : WebColors.muted,
               ),
             ),
           ),
@@ -124,7 +127,21 @@ class WebAutomationSchedule {
   final String? startDate;
   final String? endDate;
 
+  /// Several ON windows (see services/schedule_windows.dart). Empty for
+  /// schedules saved before windows existed, which use [onTime]/[offTime].
+  final List<ScheduleWindow> windows;
+
   bool get isCalendarMode => scheduleMode == 'calendar';
+
+  /// [windows], or the single [onTime]/[offTime] pair as one window. The
+  /// conversion is exact: OFF at [offTime] == ON until one minute before.
+  List<ScheduleWindow> get effectiveWindows {
+    if (windows.isNotEmpty) return windows;
+    final on = parseHm(onTime);
+    final off = parseHm(offTime);
+    if (on == null || off == null) return const [];
+    return [ScheduleWindow(on, (off - 1 + 24 * 60) % (24 * 60))];
+  }
 
   WebAutomationSchedule({
     required this.id,
@@ -139,6 +156,7 @@ class WebAutomationSchedule {
     this.scheduleMode = 'weekly',
     this.startDate,
     this.endDate,
+    this.windows = const [],
   });
 
   factory WebAutomationSchedule.fromMap(String id, Map<String, dynamic> data) {
@@ -186,6 +204,7 @@ class WebAutomationSchedule {
       scheduleMode: scheduleMode,
       startDate: (startDate != null && startDate.isNotEmpty) ? startDate : null,
       endDate: (endDate != null && endDate.isNotEmpty) ? endDate : null,
+      windows: ScheduleWindow.listFrom(data['windows']),
     );
   }
 
@@ -203,7 +222,22 @@ class WebAutomationSchedule {
         'scheduleMode': scheduleMode,
         if (startDate != null) 'startDate': startDate,
         if (endDate != null) 'endDate': endDate,
+        if (windows.isNotEmpty) 'windows': [for (final w in windows) w.toMap()],
       };
+
+  /// The timing fields written for [windows]: the list itself plus the
+  /// first window as `onTime`/`offTime` (and the legacy `time`), so the
+  /// mobile screen and older app versions keep running that window.
+  static Map<String, dynamic> timingFields(List<ScheduleWindow> windows) {
+    final first = windows.first;
+    return {
+      'windows': [for (final w in windows) w.toMap()],
+      'onTime': first.onLabel,
+      'offTime': first.offLabel,
+      'action': 'on',
+      'time': first.onLabel,
+    };
+  }
 
   /// A single fake schedule, used only while this screen's skeleton
   /// shimmer is showing (see [ScreenSkeleton]).
@@ -394,7 +428,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                     child: const Text(
                       'No buildings found',
                       style:
-                          TextStyle(fontSize: 13, color: AppColors.textMuted),
+                          TextStyle(fontSize: 14, color: WebColors.muted),
                     ),
                   )
                 : _dropdown<String>(
@@ -448,7 +482,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                               ? 'Select a room first'
                               : 'No devices in this room',
                           style: const TextStyle(
-                              fontSize: 13, color: AppColors.textMuted),
+                              fontSize: 14, color: WebColors.muted),
                         ),
                       )
                     : Column(
@@ -484,7 +518,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                                 Expanded(
                                     child: Text(e.value,
                                         style: TextStyle(
-                                            fontSize: 12,
+                                            fontSize: 13,
                                             fontWeight: FontWeight.w600,
                                             color: isSelected
                                                 ? Colors.white
@@ -504,7 +538,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
         TextButton(
             onPressed: () => _safeDialogPop(context),
             child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textMuted))),
+                style: TextStyle(color: WebColors.muted))),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
               backgroundColor: widget.palette.dark,
@@ -532,14 +566,14 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
         child: Center(
             child: Text(step,
                 style: const TextStyle(
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: Colors.white))),
       ),
       const SizedBox(width: 8),
       Text(label,
           style: const TextStyle(
-              fontSize: 12,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
               color: AppColors.textDark)),
     ]);
@@ -570,7 +604,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
             borderSide: BorderSide(color: widget.palette.mid)),
       ),
       hint: Text(hint,
-          style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          style: const TextStyle(fontSize: 14, color: WebColors.muted)),
       items: items
           .map((i) => DropdownMenuItem<T>(value: i, child: Text(labelOf(i))))
           .toList(),
@@ -586,6 +620,646 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
 /// as a card grid instead of a stacked column and the FAB replaced by a
 /// header button. Independent Firebase listeners from the mobile screen, so
 /// [AutomationScreen] itself is never touched.
+// ─── Schedule form (add + edit) ────────────────────────────────────────────
+
+/// Add Schedule (every field) or Edit Schedule (timing and days only; the
+/// scope, target and utility stay locked, as before). Each invalid field
+/// shows its own message with a red border and a shake. Resolves to `true`
+/// once saved.
+class _ScheduleFormDialog extends StatefulWidget {
+  final InstitutePalette palette;
+  final List<String> buildings;
+  final Map<String, int> buildingFloors;
+  final bool loadingBuildings;
+  final WebAutomationSchedule? existing;
+
+  const _ScheduleFormDialog({
+    required this.palette,
+    required this.buildings,
+    required this.buildingFloors,
+    required this.loadingBuildings,
+    this.existing,
+  });
+
+  @override
+  State<_ScheduleFormDialog> createState() => _ScheduleFormDialogState();
+}
+
+class _WindowDraft {
+  TimeOfDay? on;
+  TimeOfDay? until;
+  _WindowDraft(this.on, this.until);
+
+  ScheduleWindow? get window => on == null || until == null
+      ? null
+      : ScheduleWindow(on!.hour * 60 + on!.minute,
+          until!.hour * 60 + until!.minute);
+}
+
+class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
+  static const _allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  static const _utilities = ['All', 'Lights', 'Outlets', 'AC'];
+
+  final _nameCtrl = TextEditingController();
+  String _scope = 'global';
+  String _target = 'all';
+  String _deviceLabel = '';
+  String _utility = 'All';
+  late final List<_WindowDraft> _windows;
+  List<String> _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  String _mode = 'weekly';
+  DateTime? _day;
+  DateTimeRange? _range;
+  bool _dragActive = false;
+  bool _saving = false;
+
+  /// Field id -> message. Window rows use 'w0', 'w1', ...; 'windows' is a
+  /// problem with the set as a whole; '' is a save error.
+  Map<String, String> _errors = {};
+  int _shake = 0;
+
+  bool get _isEdit => widget.existing != null;
+  InstitutePalette get _p => widget.palette;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.existing;
+    if (s == null) {
+      _windows = [
+        _WindowDraft(const TimeOfDay(hour: 8, minute: 0),
+            const TimeOfDay(hour: 17, minute: 59)),
+      ];
+      return;
+    }
+    _nameCtrl.text = s.name;
+    _scope = s.scope;
+    _target = s.target;
+    _utility = s.utility;
+    _windows = [
+      for (final w in s.effectiveWindows)
+        _WindowDraft(TimeOfDay(hour: w.on ~/ 60, minute: w.on % 60),
+            TimeOfDay(hour: w.until ~/ 60, minute: w.until % 60)),
+    ];
+    if (_windows.isEmpty) _windows.add(_WindowDraft(null, null));
+    _mode = s.scheduleMode;
+    if (s.days.isNotEmpty) _days = [...s.days];
+    final start = _parseIso(s.startDate);
+    final end = _parseIso(s.endDate);
+    if (start != null && end != null && start != end) {
+      _range = DateTimeRange(start: start, end: end);
+    } else {
+      _day = start;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  static DateTime? _parseIso(String? iso) {
+    final parts = (iso ?? '').split('-');
+    if (parts.length != 3) return null;
+    final y = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    final d = int.tryParse(parts[2]);
+    if (y == null || m == null || d == null) return null;
+    return DateTime(y, m, d);
+  }
+
+  void _clear(String key) {
+    if (_errors.containsKey(key)) setState(() => _errors.remove(key));
+  }
+
+  Map<String, String> _validate() {
+    final e = <String, String>{};
+    if (!_isEdit) {
+      if (_nameCtrl.text.trim().isEmpty) e['name'] = 'Schedule name is required.';
+      if (_scope == 'building' && !widget.buildings.contains(_target)) {
+        e['target'] = 'Pick a building.';
+      }
+      if (_scope == 'device' && _target == 'all') {
+        e['target'] = 'Pick a device.';
+      }
+    }
+    final werr = validateWindows([for (final w in _windows) w.window]);
+    werr.forEach((i, msg) => e[i < 0 ? 'windows' : 'w$i'] = msg);
+    if (_mode == 'weekly' && _days.isEmpty) {
+      e['days'] = 'Select at least one day.';
+    }
+    if (_mode == 'calendar' && _day == null && _range == null) {
+      e['days'] = 'Pick a date on the calendar.';
+    }
+    return e;
+  }
+
+  Future<void> _save() async {
+    final errs = _validate();
+    if (errs.isNotEmpty) {
+      setState(() {
+        _errors = errs;
+        _shake++;
+      });
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _errors = {};
+    });
+
+    final windows = [for (final w in _windows) w.window!];
+    String? startDate;
+    String? endDate;
+    if (_mode == 'calendar') {
+      startDate = _isoDate(_range?.start ?? _day!);
+      endDate = _isoDate(_range?.end ?? _day!);
+    }
+    final timing = {
+      ...WebAutomationSchedule.timingFields(windows),
+      'scheduleMode': _mode,
+      'days': _mode == 'weekly' ? _days : <String>[],
+      'startDate': startDate,
+      'endDate': endDate,
+    };
+
+    try {
+      if (_isEdit) {
+        await FirebaseDatabase.instance
+            .ref('automations/${widget.existing!.id}')
+            .update(timing);
+      } else {
+        final ref = FirebaseDatabase.instance.ref('automations').push();
+        await ref.set({
+          'name': _nameCtrl.text.trim(),
+          'scope': _scope,
+          'target': _scope == 'global' ? 'all' : _target,
+          'utility': _scope == 'utility' ? _target : _utility,
+          'enabled': true,
+          ...timing,
+        }..removeWhere((_, v) => v == null));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _errors = {
+          '': e.toString().toLowerCase().contains('permission')
+              ? 'You do not have permission to change schedules.'
+              : 'Could not save the schedule. Try again.'
+        };
+        _shake++;
+      });
+      return;
+    }
+    if (mounted) Navigator.pop(context, true);
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────
+
+  Widget _shaking(String key, Widget child) =>
+      ShakeOnChange(trigger: _errors.containsKey(key) ? _shake : 0, child: child);
+
+  Widget _errorText(String key) {
+    final msg = _errors[key];
+    if (msg == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, left: 4),
+      child: Text(msg,
+          style: const TextStyle(fontSize: 12.5, color: AppColors.error)),
+    );
+  }
+
+  Widget _label(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(text,
+            style: const TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: WebColors.mid)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.existing;
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
+      contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 8),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+      title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(_isEdit ? 'Edit schedule' : 'Add schedule',
+            style: const TextStyle(
+                fontFamily: 'Outfit',
+                fontSize: 19,
+                fontWeight: FontWeight.w700,
+                color: WebColors.ink)),
+        if (s != null) ...[
+          const SizedBox(height: 4),
+          Text('${s.name} · ${_scopeText(s)} · ${s.utility}',
+              style: const TextStyle(fontSize: 13.5, color: WebColors.muted)),
+        ],
+      ]),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          // Off while drag-selecting dates, so the scroll view doesn't
+          // swallow the calendar's drag.
+          physics: _dragActive ? const NeverScrollableScrollPhysics() : null,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (!_isEdit) ..._targetFields(),
+              _label('Time windows'),
+              for (var i = 0; i < _windows.length; i++) _windowRow(i),
+              _shaking('windows', _errorText('windows')),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _windows.length >= 6
+                      ? null
+                      : () => setState(() {
+                            _windows.add(_WindowDraft(null, null));
+                            _errors.remove('windows');
+                          }),
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('Add time window'),
+                  style: TextButton.styleFrom(foregroundColor: _p.dark),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 14),
+                child: Text(
+                    'Devices turn ON at the start and OFF one minute after the '
+                    'end time. A window may run past midnight.',
+                    style: TextStyle(fontSize: 12.5, color: WebColors.muted)),
+              ),
+              if (!_isEdit) ...[
+                _scheduleModeToggle(
+                  scheduleMode: _mode,
+                  palette: _p,
+                  onChanged: (v) => setState(() {
+                    _mode = v;
+                    _errors.remove('days');
+                  }),
+                ),
+                const SizedBox(height: 14),
+              ],
+              _shaking('days', _whenField()),
+              _errorText('days'),
+              if (_errors.containsKey('')) ...[
+                const SizedBox(height: 12),
+                _shaking('', _errorText('')),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancel', style: TextStyle(color: WebColors.mid)),
+        ),
+        ElevatedButton(
+          onPressed: _saving ? null : _save,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _p.dark,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          child: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : Text(_isEdit ? 'Save' : 'Add schedule'),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _targetFields() {
+    return [
+      _shaking(
+        'name',
+        TextField(
+          controller: _nameCtrl,
+          autofocus: true,
+          decoration: webInputDecoration(_p,
+              label: 'Schedule name',
+              hint: 'e.g. Weekday lights',
+              error: _errors['name']),
+          onChanged: (_) => _clear('name'),
+        ),
+      ),
+      const SizedBox(height: 14),
+      _dropdown('Scope', _scope, const {
+        'global': 'Global (every building)',
+        'building': 'One building',
+        'utility': 'One utility everywhere',
+        'device': 'One device',
+      }, (v) {
+        setState(() {
+          _scope = v;
+          _target = v == 'building' && widget.buildings.isNotEmpty
+              ? widget.buildings.first
+              : v == 'utility'
+                  ? 'Lights'
+                  : 'all';
+          _deviceLabel = '';
+          _errors.remove('target');
+        });
+      }),
+      const SizedBox(height: 14),
+      if (_scope == 'building') ...[
+        if (widget.loadingBuildings)
+          LinearProgressIndicator(color: _p.mid)
+        else
+          _shaking(
+            'target',
+            _dropdown(
+              'Building',
+              widget.buildings.contains(_target) ? _target : '',
+              {for (final b in widget.buildings) b: b},
+              (v) => setState(() {
+                _target = v;
+                _errors.remove('target');
+              }),
+              error: _errors['target'],
+            ),
+          ),
+        const SizedBox(height: 14),
+      ],
+      if (_scope == 'utility') ...[
+        _dropdown('Utility', _target, const {
+          'Lights': 'Lights',
+          'Outlets': 'Outlets',
+          'AC': 'AC',
+        }, (v) => setState(() => _target = v)),
+        const SizedBox(height: 14),
+      ],
+      if (_scope == 'device') ...[
+        _shaking('target', _devicePickerField()),
+        const SizedBox(height: 14),
+      ],
+      if (_scope != 'utility') ...[
+        _dropdown('Utility to control', _utility,
+            {for (final u in _utilities) u: u},
+            (v) => setState(() => _utility = v)),
+        const SizedBox(height: 18),
+      ],
+    ];
+  }
+
+  Widget _dropdown(String label, String value, Map<String, String> items,
+      ValueChanged<String> onChanged,
+      {String? error}) {
+    return DropdownButtonFormField<String>(
+      key: ValueKey('$label-$value-${items.length}'),
+      initialValue: items.containsKey(value) ? value : null,
+      isExpanded: true,
+      decoration: webInputDecoration(_p, label: label, error: error),
+      items: [
+        for (final e in items.entries)
+          DropdownMenuItem(value: e.key, child: Text(e.value)),
+      ],
+      onChanged: (v) {
+        if (v != null) onChanged(v);
+      },
+    );
+  }
+
+  Widget _devicePickerField() {
+    final err = _errors['target'];
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () async {
+        final result = await showDialog<Map<String, String>>(
+          context: context,
+          builder: (_) => _DevicePickerDialog(
+            buildingList: widget.buildings,
+            buildingFloors: widget.buildingFloors,
+            palette: _p,
+          ),
+        );
+        if (result != null) {
+          setState(() {
+            _target = result['id']!;
+            _deviceLabel = result['label']!;
+            _errors.remove('target');
+          });
+        }
+      },
+      child: InputDecorator(
+        decoration: webInputDecoration(_p, label: 'Device', error: err),
+        child: Row(children: [
+          Expanded(
+            child: Text(
+              _deviceLabel.isEmpty
+                  ? 'Pick building → floor → room → device'
+                  : _deviceLabel,
+              style: TextStyle(
+                  fontSize: 14,
+                  color:
+                      _deviceLabel.isEmpty ? WebColors.muted : WebColors.ink),
+            ),
+          ),
+          const Icon(Icons.chevron_right, color: WebColors.muted, size: 18),
+        ]),
+      ),
+    );
+  }
+
+  Widget _windowRow(int i) {
+    final d = _windows[i];
+    final w = d.window;
+    final key = 'w$i';
+    final hasError = _errors.containsKey(key);
+    String hint = '';
+    if (w != null && w.duration < 24 * 60) {
+      hint = 'OFF at ${w.offLabel}${w.overnight ? ' (next day)' : ''}';
+    }
+    return _shaking(
+      key,
+      Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: hasError ? AppColors.error : _p.mid.withAlpha(60),
+                  width: hasError ? 1.6 : 1.2,
+                ),
+              ),
+              child: Row(children: [
+                const Text('ON',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: AppColors.greenMid)),
+                const SizedBox(width: 10),
+                _timeButton(d.on, 'Start', (t) => setState(() {
+                      d.on = t;
+                      _errors.remove(key);
+                    })),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Text('to',
+                      style: TextStyle(fontSize: 13, color: WebColors.muted)),
+                ),
+                _timeButton(d.until, 'End', (t) => setState(() {
+                      d.until = t;
+                      _errors.remove(key);
+                    })),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(hint,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5, color: WebColors.muted)),
+                ),
+                WebIconButton(
+                  icon: Icons.delete_outline_rounded,
+                  tooltip: 'Remove window',
+                  size: 30,
+                  danger: true,
+                  onPressed: _windows.length <= 1
+                      ? null
+                      : () => setState(() {
+                            _windows.removeAt(i);
+                            _errors.removeWhere((k, _) => k.startsWith('w'));
+                          }),
+                ),
+              ]),
+            ),
+            _errorText(key),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _timeButton(
+      TimeOfDay? value, String placeholder, ValueChanged<TimeOfDay> onPicked) {
+    return OutlinedButton(
+      onPressed: () async {
+        final picked = await showTimePicker(
+          context: context,
+          initialTime: value ?? const TimeOfDay(hour: 8, minute: 0),
+          builder: (ctx, child) => MediaQuery(
+            data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+            child: child!,
+          ),
+        );
+        if (picked != null) onPicked(picked);
+      },
+      style: OutlinedButton.styleFrom(
+        foregroundColor: WebColors.ink,
+        side: BorderSide(color: _p.mid.withAlpha(70)),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      ),
+      child: Text(
+        value == null ? placeholder : formatHm(value.hour * 60 + value.minute),
+        style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: value == null ? WebColors.muted : WebColors.ink),
+      ),
+    );
+  }
+
+  Widget _whenField() {
+    if (_mode == 'weekly') {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _label('Repeat on'),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final d in _allDays)
+              _dayChip(d, _days.contains(d), () => setState(() {
+                    _days.contains(d) ? _days.remove(d) : _days.add(d);
+                    _errors.remove('days');
+                  })),
+          ],
+        ),
+      ]);
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _label('Date(s)'),
+      Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: _errors.containsKey('days')
+                ? AppColors.error
+                : _p.mid.withAlpha(40),
+            width: _errors.containsKey('days') ? 1.6 : 1,
+          ),
+        ),
+        child: RangeCalendar(
+          initialStart: _range?.start ?? _day,
+          initialEnd: _range?.end ?? _day,
+          onDaySelected: (d) => setState(() {
+            _day = d;
+            if (d != null) _errors.remove('days');
+          }),
+          onRangeChanged: (r) => setState(() {
+            _range = r;
+            if (r != null) _errors.remove('days');
+          }),
+          onDragActiveChanged: (a) => setState(() => _dragActive = a),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _dayChip(String label, bool selected, VoidCallback onTap) {
+    return Material(
+      color: selected ? _p.dark : _p.pale,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? Colors.white : AppColors.textMid)),
+        ),
+      ),
+    );
+  }
+}
+
+String _scopeText(WebAutomationSchedule s) {
+  switch (s.scope) {
+    case 'global':
+      return 'All buildings';
+    case 'building':
+      return 'Building ${s.target}';
+    case 'utility':
+      return 'Utility ${s.target}';
+    case 'device':
+      return 'Device ${s.target}';
+    default:
+      return s.scope;
+  }
+}
+
 class AutomationScreenWeb extends StatefulWidget {
   final String role;
   const AutomationScreenWeb({super.key, this.role = 'faculty'});
@@ -622,7 +1296,6 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     'Sat',
     'Sun'
   ];
-  static const List<String> _utilities = ['All', 'Lights', 'Outlets', 'AC'];
 
   List<String> _buildings = [];
   Map<String, int> _buildingFloors = {};
@@ -748,613 +1421,31 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
   }
 
   Future<void> _deleteSchedule(WebAutomationSchedule s) async {
-    final confirm = await showDialog<bool>(
+    final ok = await showWebConfirmDialog(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Schedule',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: Text('Delete "${s.name}"?'),
-        actions: [
-          TextButton(
-              onPressed: () => _safeDialogPop(dialogCtx, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => _safeDialogPop(dialogCtx, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+      title: 'Delete schedule?',
+      message: '"${s.name}" will stop running and be removed.',
+      onConfirm: () =>
+          FirebaseDatabase.instance.ref('automations/${s.id}').remove(),
+    );
+    if (ok && mounted) TopToast.show(context, 'Schedule deleted.');
+  }
+
+  /// Opens the schedule form: a new schedule, or [s]'s timing and days.
+  Future<void> _openScheduleForm([WebAutomationSchedule? s]) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => _ScheduleFormDialog(
+        palette: _palette,
+        buildings: _buildings,
+        buildingFloors: _buildingFloors,
+        loadingBuildings: _loadingBuildings,
+        existing: s,
       ),
     );
-    if (confirm != true) return;
-    try {
-      await FirebaseDatabase.instance.ref('automations/${s.id}').remove();
-    } catch (_) {
-      if (!mounted) return;
-      TopToast.show(context, 'Unable to delete schedule.', isError: true);
+    if (saved == true && mounted) {
+      TopToast.show(context, s == null ? 'Schedule added.' : 'Schedule updated.');
     }
-  }
-
-  Future<void> _addSchedule() async {
-    final nameCtrl = TextEditingController();
-    String scope = 'global';
-    String target = 'all';
-    String deviceLabel = '';
-    String utility = 'All';
-    TimeOfDay onTime = const TimeOfDay(hour: 8, minute: 0);
-    TimeOfDay offTime = const TimeOfDay(hour: 18, minute: 0);
-    List<String> days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    String scheduleMode = 'weekly';
-    DateTime? calendarDay;
-    DateTimeRange? calendarRange;
-    bool calendarDragActive = false;
-    String? error;
-    bool loading = false;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Add Schedule',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-          content: SizedBox(
-            width: 420,
-            child: SingleChildScrollView(
-              // Disabled while drag-selecting a calendar range so this
-              // scroll view's own drag recognizer doesn't compete with
-              // and swallow the calendar's long-press-drag.
-              physics: calendarDragActive
-                  ? const NeverScrollableScrollPhysics()
-                  : null,
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                TextField(
-                  controller: nameCtrl,
-                  decoration: _inputDeco('Schedule name', Icons.label_outline),
-                  autofocus: true,
-                ),
-                const SizedBox(height: 14),
-                _dropdownField(
-                    'Scope',
-                    scope,
-                    ['global', 'building', 'utility', 'device'],
-                    (v) => setS(() {
-                          scope = v!;
-                          target = 'all';
-                          deviceLabel = '';
-                        })),
-                const SizedBox(height: 12),
-                if (scope == 'building') ...[
-                  _loadingBuildings
-                      ? Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          child:
-                              LinearProgressIndicator(color: _palette.mid),
-                        )
-                      : _dropdownField(
-                          'Building',
-                          _buildings.isEmpty
-                              ? target
-                              : (_buildings.contains(target)
-                                  ? target
-                                  : _buildings.first),
-                          _buildings,
-                          (v) => setS(() => target = v!),
-                        ),
-                  const SizedBox(height: 12),
-                ],
-                if (scope == 'utility') ...[
-                  _dropdownField(
-                      'Utility',
-                      target == 'all' ? 'Lights' : target,
-                      ['Lights', 'Outlets', 'AC'],
-                      (v) => setS(() => target = v!)),
-                  const SizedBox(height: 12),
-                ],
-                if (scope == 'device') ...[
-                  GestureDetector(
-                    onTap: () async {
-                      final result = await showDialog<Map<String, String>>(
-                        context: ctx,
-                        builder: (_) => _DevicePickerDialog(
-                          buildingList: _buildings,
-                          buildingFloors: _buildingFloors,
-                          palette: _palette,
-                        ),
-                      );
-                      if (result != null) {
-                        setS(() {
-                          target = result['id']!;
-                          deviceLabel = result['label']!;
-                        });
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 14),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: _palette.mid.withAlpha(80)),
-                        borderRadius: BorderRadius.circular(12),
-                        color: Colors.white,
-                      ),
-                      child: Row(children: [
-                        const Icon(Icons.device_hub,
-                            size: 18, color: AppColors.textMuted),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            deviceLabel.isEmpty
-                                ? 'Click to pick a device'
-                                : deviceLabel,
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: deviceLabel.isEmpty
-                                    ? AppColors.textMuted
-                                    : AppColors.textDark),
-                          ),
-                        ),
-                        const Icon(Icons.chevron_right,
-                            color: AppColors.textMuted, size: 18),
-                      ]),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (scope != 'utility') ...[
-                  _dropdownField('Utility to control', utility, _utilities,
-                      (v) => setS(() => utility = v!)),
-                  const SizedBox(height: 12),
-                ],
-                // Semantic: paired against AppColors.warning for the "OFF
-                // time" tile directly below -- communicates ON vs OFF, not
-                // brand chrome. Deliberately NOT retheme'd (matches mobile
-                // automation_screen.dart).
-                _timePickerTile(
-                  context: ctx,
-                  label: 'ON time',
-                  value: onTime,
-                  icon: Icons.power_settings_new,
-                  iconColor: AppColors.greenMid,
-                  onPicked: (v) => setS(() => onTime = v),
-                ),
-                const SizedBox(height: 10),
-                _timePickerTile(
-                  context: ctx,
-                  label: 'OFF time',
-                  value: offTime,
-                  icon: Icons.power_off_outlined,
-                  iconColor: AppColors.warning,
-                  onPicked: (v) => setS(() => offTime = v),
-                ),
-                const SizedBox(height: 12),
-                _scheduleModeToggle(
-                  scheduleMode: scheduleMode,
-                  onChanged: (v) => setS(() => scheduleMode = v),
-                  palette: _palette,
-                ),
-                const SizedBox(height: 12),
-                if (scheduleMode == 'weekly') ...[
-                  const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('Repeat on',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMuted,
-                              fontWeight: FontWeight.w500))),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: _allDays.map((d) {
-                      final selected = days.contains(d);
-                      return GestureDetector(
-                        onTap: () => setS(() {
-                          if (selected) {
-                            days.remove(d);
-                          } else {
-                            days.add(d);
-                          }
-                        }),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: selected ? _palette.dark : _palette.pale,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(d,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: selected
-                                      ? Colors.white
-                                      : AppColors.textMid)),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ] else ...[
-                  const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('Pick a date, or drag for a range',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMuted,
-                              fontWeight: FontWeight.w500))),
-                  const SizedBox(height: 6),
-                  RangeCalendar(
-                    onDaySelected: (d) => setS(() => calendarDay = d),
-                    onRangeChanged: (r) => setS(() => calendarRange = r),
-                    onDragActiveChanged: (active) =>
-                        setS(() => calendarDragActive = active),
-                  ),
-                ],
-                if (error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(error!,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.error)),
-                ],
-              ]),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => _safeDialogPop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: loading
-                  ? null
-                  : () async {
-                      final name = nameCtrl.text.trim();
-                      if (name.isEmpty) {
-                        setS(() => error = 'Name is required');
-                        return;
-                      }
-                      if (scheduleMode == 'weekly' && days.isEmpty) {
-                        setS(() => error = 'Select at least one day');
-                        return;
-                      }
-                      String? startDateStr;
-                      String? endDateStr;
-                      if (scheduleMode == 'calendar') {
-                        if (calendarRange != null) {
-                          startDateStr = _isoDate(calendarRange!.start);
-                          endDateStr = _isoDate(calendarRange!.end);
-                        } else if (calendarDay != null) {
-                          startDateStr = _isoDate(calendarDay!);
-                          endDateStr = startDateStr;
-                        } else {
-                          setS(() => error = 'Pick a date on the calendar');
-                          return;
-                        }
-                      }
-                      if (scope == 'device' && target == 'all') {
-                        setS(() => error = 'Please select a device');
-                        return;
-                      }
-                      if (scope == 'building' && !_buildings.contains(target)) {
-                        setS(() => error = 'Please select a building');
-                        return;
-                      }
-
-                      final finalTarget = scope == 'global'
-                          ? 'all'
-                          : scope == 'utility'
-                              ? target
-                              : target;
-                      final finalUtility =
-                          scope == 'utility' ? target : utility;
-                      final onTimeStr =
-                          '${onTime.hour.toString().padLeft(2, '0')}:${onTime.minute.toString().padLeft(2, '0')}';
-                      final offTimeStr =
-                          '${offTime.hour.toString().padLeft(2, '0')}:${offTime.minute.toString().padLeft(2, '0')}';
-                      if (onTimeStr == offTimeStr) {
-                        setS(() => error = 'ON and OFF time must be different');
-                        return;
-                      }
-
-                      setS(() {
-                        loading = true;
-                        error = null;
-                      });
-
-                      final newRef =
-                          FirebaseDatabase.instance.ref('automations').push();
-                      try {
-                        await newRef.set(WebAutomationSchedule(
-                          id: newRef.key!,
-                          name: name,
-                          scope: scope,
-                          target: finalTarget,
-                          utility: finalUtility,
-                          onTime: onTimeStr,
-                          offTime: offTimeStr,
-                          days: scheduleMode == 'weekly' ? days : const [],
-                          enabled: true,
-                          scheduleMode: scheduleMode,
-                          startDate: startDateStr,
-                          endDate: endDateStr,
-                        ).toMap());
-                      } catch (_) {
-                        setS(() {
-                          loading = false;
-                          error = 'No permission to add schedules.';
-                        });
-                        return;
-                      }
-
-                      if (!mounted || !ctx.mounted) return;
-                      _safeDialogPop(ctx);
-                      TopToast.show(context, 'Schedule added.');
-                    },
-              child: loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  TimeOfDay _parseTime(String value, {required TimeOfDay fallback}) {
-    final parts = value.split(':');
-    if (parts.length != 2) return fallback;
-    final h = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) {
-      return fallback;
-    }
-    return TimeOfDay(hour: h, minute: m);
-  }
-
-  DateTime? _parseIsoDate(String? iso) {
-    if (iso == null || iso.isEmpty) return null;
-    final parts = iso.split('-');
-    if (parts.length != 3) return null;
-    final y = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    final d = int.tryParse(parts[2]);
-    if (y == null || m == null || d == null) return null;
-    return DateTime(y, m, d);
-  }
-
-  Future<void> _editScheduleTiming(WebAutomationSchedule s) async {
-    TimeOfDay onTime =
-        _parseTime(s.onTime, fallback: const TimeOfDay(hour: 8, minute: 0));
-    TimeOfDay offTime =
-        _parseTime(s.offTime, fallback: const TimeOfDay(hour: 18, minute: 0));
-    List<String> days = [...s.days];
-    if (days.isEmpty) {
-      days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    }
-    final startDate = _parseIsoDate(s.startDate);
-    final endDate = _parseIsoDate(s.endDate);
-    DateTime? calendarDay =
-        (startDate != null && endDate != null && startDate == endDate)
-            ? startDate
-            : null;
-    DateTimeRange? calendarRange =
-        (startDate != null && endDate != null && startDate != endDate)
-            ? DateTimeRange(start: startDate, end: endDate)
-            : null;
-    bool calendarDragActive = false;
-    String? error;
-    bool loading = false;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Edit Schedule Time & Days',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-          content: SizedBox(
-            width: 420,
-            child: SingleChildScrollView(
-              physics: calendarDragActive
-                  ? const NeverScrollableScrollPhysics()
-                  : null,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(s.name,
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textDark)),
-                  const SizedBox(height: 4),
-                  Text('Settings are locked: ${_scopeLabel(s)} · ${s.utility}',
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textMuted)),
-                  const SizedBox(height: 12),
-                  // Semantic: paired against AppColors.warning for the "OFF
-                  // time" tile directly below -- deliberately NOT retheme'd
-                  // (matches mobile automation_screen.dart).
-                  _timePickerTile(
-                    context: ctx,
-                    label: 'ON time',
-                    value: onTime,
-                    icon: Icons.power_settings_new,
-                    iconColor: AppColors.greenMid,
-                    onPicked: (v) => setS(() => onTime = v),
-                  ),
-                  const SizedBox(height: 10),
-                  _timePickerTile(
-                    context: ctx,
-                    label: 'OFF time',
-                    value: offTime,
-                    icon: Icons.power_off_outlined,
-                    iconColor: AppColors.warning,
-                    onPicked: (v) => setS(() => offTime = v),
-                  ),
-                  const SizedBox(height: 12),
-                  if (!s.isCalendarMode) ...[
-                    const Text('Repeat on',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textMuted,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: _allDays.map((d) {
-                        final selected = days.contains(d);
-                        return GestureDetector(
-                          onTap: () => setS(() {
-                            if (selected) {
-                              days.remove(d);
-                            } else {
-                              days.add(d);
-                            }
-                          }),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 150),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: selected ? _palette.dark : _palette.pale,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(d,
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: selected
-                                        ? Colors.white
-                                        : AppColors.textMid)),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ] else ...[
-                    const Text('Date(s)',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textMuted,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 6),
-                    RangeCalendar(
-                      onDaySelected: (d) => setS(() => calendarDay = d),
-                      onRangeChanged: (r) => setS(() => calendarRange = r),
-                      onDragActiveChanged: (active) =>
-                          setS(() => calendarDragActive = active),
-                    ),
-                  ],
-                  if (error != null) ...[
-                    const SizedBox(height: 10),
-                    Text(error!,
-                        style: const TextStyle(
-                            fontSize: 12, color: AppColors.error)),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => _safeDialogPop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: loading
-                  ? null
-                  : () async {
-                      String? startDateStr;
-                      String? endDateStr;
-                      if (s.isCalendarMode) {
-                        if (calendarRange != null) {
-                          startDateStr = _isoDate(calendarRange!.start);
-                          endDateStr = _isoDate(calendarRange!.end);
-                        } else if (calendarDay != null) {
-                          startDateStr = _isoDate(calendarDay!);
-                          endDateStr = startDateStr;
-                        } else {
-                          setS(() => error = 'Pick a date on the calendar');
-                          return;
-                        }
-                      } else if (days.isEmpty) {
-                        setS(() => error = 'Select at least one day');
-                        return;
-                      }
-
-                      final onTimeStr =
-                          '${onTime.hour.toString().padLeft(2, '0')}:${onTime.minute.toString().padLeft(2, '0')}';
-                      final offTimeStr =
-                          '${offTime.hour.toString().padLeft(2, '0')}:${offTime.minute.toString().padLeft(2, '0')}';
-                      if (onTimeStr == offTimeStr) {
-                        setS(() => error = 'ON and OFF time must be different');
-                        return;
-                      }
-
-                      setS(() {
-                        loading = true;
-                        error = null;
-                      });
-
-                      try {
-                        await FirebaseDatabase.instance
-                            .ref('automations/${s.id}')
-                            .update({
-                          'onTime': onTimeStr,
-                          'offTime': offTimeStr,
-                          'action': 'on',
-                          'time': onTimeStr,
-                          if (s.isCalendarMode) 'startDate': startDateStr,
-                          if (s.isCalendarMode) 'endDate': endDateStr,
-                          if (!s.isCalendarMode) 'days': days,
-                        });
-                      } catch (_) {
-                        setS(() {
-                          loading = false;
-                          error = 'Unable to update schedule timing.';
-                        });
-                        return;
-                      }
-
-                      if (!mounted || !ctx.mounted) return;
-                      _safeDialogPop(ctx);
-                      TopToast.show(context, 'Schedule updated.');
-                    },
-              child: loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   // ── Build (desktop grid layout) ───────────────────────────────────────────
@@ -1388,22 +1479,21 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                     SizedBox(height: 4),
                     Text('Scheduled ON/OFF rules for buildings and devices',
                         style: TextStyle(
-                            fontSize: 12, color: AppColors.textMuted)),
+                            fontSize: 13, color: WebColors.muted)),
                   ],
                 ),
               ),
               if (isAdmin)
-                ElevatedButton.icon(
-                  onPressed: _addSchedule,
-                  icon: const Icon(Icons.add, color: Colors.white, size: 18),
-                  label: const Text('Add Schedule',
-                      style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: _palette.dark,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12))),
+                Padding(
+                  // Clear of the shell's floating role badge and bell.
+                  padding: const EdgeInsets.only(right: 180),
+                  child: WebIconButton(
+                    icon: Icons.add_rounded,
+                    tooltip: 'Add schedule',
+                    solid: true,
+                    size: 40,
+                    onPressed: _openScheduleForm,
+                  ),
                 ),
             ],
           ),
@@ -1451,7 +1541,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 14, color: WebColors.muted)),
         ]),
       ),
     );
@@ -1486,9 +1576,9 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
           const SizedBox(height: 6),
           Text(
               isAdmin
-                  ? 'Click + Add Schedule to create one'
+                  ? 'Use the + button to create one'
                   : 'No automation schedules set',
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 14, color: WebColors.muted)),
         ]),
       ),
     );
@@ -1555,7 +1645,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               color: _palette.pale, borderRadius: BorderRadius.circular(20)),
           child: Text('$count',
               style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: _palette.dark)),
         ),
@@ -1580,13 +1670,29 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                  color: _palette.mid.withAlpha(20),
-                  borderRadius: BorderRadius.circular(12)),
-              child: Icon(Icons.schedule, color: _palette.mid, size: 20)),
+          if (isAdmin) ...[
+            WebIconButton(
+              icon: Icons.edit_outlined,
+              tooltip: 'Edit schedule',
+              size: 34,
+              onPressed: () => _openScheduleForm(s),
+            ),
+            const SizedBox(width: 6),
+            WebIconButton(
+              icon: Icons.delete_outline_rounded,
+              tooltip: 'Delete schedule',
+              size: 34,
+              danger: true,
+              onPressed: () => _deleteSchedule(s),
+            ),
+          ] else
+            Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                    color: _palette.mid.withAlpha(20),
+                    borderRadius: BorderRadius.circular(12)),
+                child: Icon(Icons.schedule, color: _palette.mid, size: 20)),
           const SizedBox(width: 12),
           Expanded(
               child: Column(
@@ -1605,7 +1711,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted)),
+                        fontSize: 12, color: WebColors.muted)),
               ])),
           if (isAdmin)
             // Semantic: communicates "this automation rule is currently
@@ -1620,9 +1726,13 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         Wrap(spacing: 8, runSpacing: 8, children: [
           // Semantic: ON chip paired against the OFF chip's AppColors.warning
           // immediately below -- deliberately NOT retheme'd.
-          _chip(Icons.power_settings_new, 'ON ${s.onTime}', AppColors.greenMid),
-          _chip(
-              Icons.power_off_outlined, 'OFF ${s.offTime}', AppColors.warning),
+          for (final w in s.effectiveWindows)
+            Tooltip(
+              message: 'ON at ${w.onLabel}, OFF at ${w.offLabel}'
+                  '${w.overnight ? ' the next day' : ''}',
+              child: _chip(Icons.power_settings_new,
+                  'ON ${w.onLabel}–${w.untilLabel}', AppColors.greenMid),
+            ),
           _chip(Icons.electrical_services, s.utility, _palette.mid),
         ]),
         const SizedBox(height: 8),
@@ -1642,61 +1752,12 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                 ),
                 child: Text(d,
                     style: TextStyle(
-                        fontSize: 10,
+                        fontSize: 11,
                         fontWeight: FontWeight.w600,
-                        color: active ? Colors.white : AppColors.textMuted)),
+                        color: active ? Colors.white : WebColors.muted)),
               );
             }).toList(),
           ),
-        if (isAdmin) ...[
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              GestureDetector(
-                onTap: () => _editScheduleTiming(s),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: _palette.pale,
-                      borderRadius: BorderRadius.circular(8)),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.edit_outlined,
-                        size: 14, color: _palette.dark),
-                    const SizedBox(width: 4),
-                    Text('Edit time/days',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: _palette.dark,
-                            fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () => _deleteSchedule(s),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: AppColors.error.withAlpha(15),
-                      borderRadius: BorderRadius.circular(8)),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.delete_outline,
-                        size: 14, color: AppColors.error),
-                    SizedBox(width: 4),
-                    Text('Delete',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.error,
-                            fontWeight: FontWeight.w600)),
-                  ]),
-                ),
-              ),
-            ]),
-          ),
-        ],
       ]),
     );
   }
@@ -1714,7 +1775,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         const SizedBox(width: 4),
         Text(label,
             style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+                fontSize: 12, fontWeight: FontWeight.w600, color: color)),
       ]),
     );
   }
@@ -1742,86 +1803,4 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     }
   }
 
-  Widget _timePickerTile({
-    required BuildContext context,
-    required String label,
-    required TimeOfDay value,
-    required IconData icon,
-    required Color iconColor,
-    required void Function(TimeOfDay value) onPicked,
-  }) {
-    return GestureDetector(
-      onTap: () async {
-        final picked =
-            await showTimePicker(context: context, initialTime: value);
-        if (picked != null) onPicked(picked);
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        decoration: BoxDecoration(
-          border: Border.all(color: _palette.mid.withAlpha(80)),
-          borderRadius: BorderRadius.circular(12),
-          color: Colors.white,
-        ),
-        child: Row(children: [
-          Icon(icon, size: 18, color: iconColor),
-          const SizedBox(width: 10),
-          Text(label,
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-          const Spacer(),
-          Text(value.format(context),
-              style: const TextStyle(fontSize: 14, color: AppColors.textDark)),
-          const SizedBox(width: 8),
-          const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
-        ]),
-      ),
-    );
-  }
-
-  Widget _dropdownField(String label, String value, List<String> items,
-      void Function(String?) onChanged) {
-    return DropdownButtonFormField<String>(
-      initialValue: items.contains(value) ? value : items.first,
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-        focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid)),
-      ),
-      items:
-          items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(),
-      onChanged: onChanged,
-    );
-  }
-
-  InputDecoration _inputDeco(String hint, IconData icon) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
-      prefixIcon: Icon(icon, size: 18, color: AppColors.textMuted),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid)),
-    );
-  }
 }
