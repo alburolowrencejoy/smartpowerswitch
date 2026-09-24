@@ -50,3 +50,5 @@ app.*.map.json
 # Firebase service account key (never commit!)
 functions/serviceAccountKey.json
 serviceAccountKey.json
+# Local database backups (may contain user data)
+backups/

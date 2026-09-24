@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../services/history_clock.dart';
 
 /// Time-range presets of the Analytics filter bar.
 enum RangePreset {
@@ -247,7 +248,7 @@ class AnalyticsFilter {
   }
 
   DateTimeRange span([DateTime? today]) =>
-      presetSpan(range, today ?? DateTime.now(), from: from, to: to);
+      presetSpan(range, today ?? HistoryClock.instance.now(), from: from, to: to);
 
   int get days => spanDays(span());
 

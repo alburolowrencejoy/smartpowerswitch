@@ -10,6 +10,7 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 /// The desktop building page: floor tabs, then one card per room listing
 /// its devices with a live switch, View, and admin add/edit/delete icons.
@@ -218,7 +219,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       });
     });
 
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance
           .ref(

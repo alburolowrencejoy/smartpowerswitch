@@ -11,6 +11,7 @@ import '../../widgets/top_toast.dart';
 import 'room_devices_panel.dart';
 import 'room_devices_screen.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 class BuildingFloorScreen extends StatefulWidget {
   final String buildingCode;
@@ -221,7 +222,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       });
     }
 
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance
           .ref(

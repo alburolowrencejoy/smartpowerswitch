@@ -14,13 +14,16 @@ import '../../widgets/top_toast.dart';
 import 'analytics/analytics_data.dart';
 import 'analytics/analytics_filter.dart';
 import 'analytics/analytics_filter_bar.dart';
+import 'analytics/analytics_focus.dart';
 import 'analytics/analytics_ui.dart';
 import 'analytics/breakdown_panel.dart';
 import 'analytics/utility_donut.dart';
 import 'web_forecast_cards.dart';
+import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 /// Opens the device detail screen for a device.
 typedef OpenDeviceCallback = void Function(
@@ -37,7 +40,10 @@ class HistoryScreenWeb extends StatefulWidget {
   /// Opens a device from the breakdown drawer / top-devices list.
   final OpenDeviceCallback? onOpenDevice;
 
-  const HistoryScreenWeb({super.key, this.onOpenDevice});
+  /// Set by a link (e.g. on the dashboard) to scroll to one section.
+  final AnalyticsFocus? focus;
+
+  const HistoryScreenWeb({super.key, this.onOpenDevice, this.focus});
 
   @override
   State<HistoryScreenWeb> createState() => _HistoryScreenWebState();
@@ -139,10 +145,62 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _listenAll();
     _listenBuildings();
     _listenRange();
+    widget.focus?.addListener(_scrollToFocus);
+    // A link may have asked for a section before this page existed.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFocus());
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryScreenWeb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focus != widget.focus) {
+      oldWidget.focus?.removeListener(_scrollToFocus);
+      widget.focus?.addListener(_scrollToFocus);
+    }
+  }
+
+  // ── Jump to a section (links from the dashboard) ─────────────────────
+
+  final _sectionKeys = {
+    for (final s in AnalyticsSection.values) s: GlobalKey(),
+  };
+
+  /// Utilities and Top Consuming share one row, so they share its key.
+  GlobalKey _keyFor(AnalyticsSection s) => _sectionKeys[
+      s == AnalyticsSection.institutes ? AnalyticsSection.utilities : s]!;
+
+  bool _scrolling = false;
+
+  /// Scrolls to [HistoryScreenWeb.focus]'s section once it has been laid
+  /// out (data may still be loading, so it waits up to ~3s), then clears
+  /// the request.
+  Future<void> _scrollToFocus() async {
+    final focus = widget.focus;
+    final section = focus?.value;
+    if (section == null || _scrolling) return;
+    _scrolling = true;
+    try {
+      for (var i = 0; i < 180 && mounted; i++) {
+        await WidgetsBinding.instance.endOfFrame;
+        final ctx = _keyFor(section).currentContext;
+        if (ctx != null && ctx.mounted) {
+          await Scrollable.ensureVisible(
+            ctx,
+            duration: const Duration(milliseconds: 450),
+            curve: Curves.easeInOutCubic,
+          );
+          break;
+        }
+      }
+    } finally {
+      _scrolling = false;
+      if (focus?.value == section) focus?.value = null;
+    }
   }
 
   @override
   void dispose() {
+    widget.focus?.removeListener(_scrollToFocus);
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
     _rangeSub?.cancel();
@@ -185,7 +243,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   /// Queries only the selected dates of `history/daily` (and the compare
   /// period, if any). Re-subscribes only when those dates change.
   void _listenRange() {
-    final today = DateTime.now();
+    final today = HistoryClock.instance.now();
     final span = _filter.span(today);
     final key = '${dayKey(span.start)}..${dayKey(span.end)}';
     if (key != _rangeKey) {
@@ -976,7 +1034,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   @override
   Widget build(BuildContext context) {
     final f = _filter;
-    final today = dateOnly(DateTime.now());
+    final today = dateOnly(HistoryClock.instance.now());
     final span = f.span(today);
     final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
     final rows =
@@ -1043,14 +1101,28 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                   else ...[
                     _statGrid(rows, cmpRows, span, cmpSpan),
                     const SizedBox(height: 22),
-                    _trendCard(rows, cmpRows, span, cmpSpan),
+                    KeyedSubtree(
+                      key: _keyFor(AnalyticsSection.trend),
+                      child: _trendCard(rows, cmpRows, span, cmpSpan),
+                    ),
                   ],
                   const SizedBox(height: 22),
-                  _buildForecasts(today),
+                  KeyedSubtree(
+                    key: _keyFor(AnalyticsSection.forecast),
+                    child: _buildForecasts(today),
+                  ),
                   if (!empty) ...[
                     const SizedBox(height: 22),
-                    _bottomRow(context, rows, span),
+                    KeyedSubtree(
+                      key: _keyFor(AnalyticsSection.utilities),
+                      child: _bottomRow(context, rows, span),
+                    ),
                   ],
+                  const SizedBox(height: 22),
+                  KeyedSubtree(
+                    key: _keyFor(AnalyticsSection.history),
+                    child: HistoryTrendPanel(palette: _palette),
+                  ),
                 ],
               ],
             ),

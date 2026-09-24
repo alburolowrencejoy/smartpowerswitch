@@ -16,6 +16,8 @@ import 'building_floor_screen.dart';
 import '../shared/campus_map_screen.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
+import '../../widgets/history_fallback_notice.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -463,7 +465,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (code == null || code.isEmpty) return;
 
     _instituteSub?.cancel();
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     _instituteSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
@@ -528,7 +530,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Map<String, double> _currentMonthBuildingEnergy(Map<String, dynamic> root) {
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     final monthlyNode = root['monthly'];
 
     if (monthlyNode is! Map) return {};
@@ -558,7 +560,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _updateMonthlyTotals(Map<String, dynamic> root) {
     try {
-      final monthKey = _monthKey(DateTime.now());
+      final monthKey = _monthKey(HistoryClock.instance.now());
       final monthlyNode = root['monthly'];
 
       if (monthlyNode is! Map) {
@@ -1714,6 +1716,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             _buildGreeting(compact: isCompact),
+            const HistoryFallbackNotice(padding: EdgeInsets.only(top: 10)),
             SizedBox(height: isCompact ? 14 : 20),
             _buildEnergyCards(compact: isCompact),
             SizedBox(height: isCompact ? 18 : 24),

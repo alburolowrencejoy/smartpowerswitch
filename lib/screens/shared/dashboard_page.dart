@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../mobile/dashboard_screen.dart';
 import '../web/dashboard_web.dart';
+import '../../services/history_clock.dart';
 
 /// Picks the phone UI or the desktop UI by available width, not by
 /// platform -- so a resized browser window, a native Windows/macOS/Linux
@@ -22,6 +23,21 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Screens pick their history keys (this month / week / day) when they
+    // start listening, so resolve the history date first -- a quick,
+    // one-key read. See HistoryClock.
+    return FutureBuilder<void>(
+      future: HistoryClock.instance.ensureReady(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(backgroundColor: Colors.white);
+        }
+        return _layout();
+      },
+    );
+  }
+
+  Widget _layout() {
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth >= desktopBreakpoint) {

@@ -1,55 +1,70 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter/material.dart';
+import 'dart:math' as math;
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../config/app_mode.dart';
 import '../../services/automation_scheduler_service.dart';
-import '../../theme/app_colors.dart';
-import '../../widgets/top_toast.dart';
-import '../../widgets/app_text_field.dart';
-import '../web/login_screen_web.dart';
 import '../../theme/app_fonts.dart';
+import '../../theme/sps_colors.dart';
+import '../../widgets/app_text_field.dart';
+import '../../widgets/login_intro_scope.dart';
+import '../../widgets/power_emblem.dart';
 
-/// Web builds get the redesigned [LoginScreenWeb]; native apps keep
-/// [_MobileLoginScreen].
-class LoginScreen extends StatelessWidget {
+/// Sign-in screen (web and app): power emblem on the left, green sign-in card
+/// on the right; stacks into a single column below [_breakpoint] (phones).
+///
+/// "Remember me" maps to Firebase Auth persistence on web (LOCAL keeps the
+/// session across browser restarts, SESSION ends it with the tab) and
+/// remembers the email address (on the phone app Firebase always keeps the
+/// session, so it only remembers the email). Unlike the old mobile login,
+/// the password is
+/// never written to device/browser storage.
+class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  Widget build(BuildContext context) =>
-      kIsWeb ? const LoginScreenWeb() : const _MobileLoginScreen();
+  State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _MobileLoginScreen extends StatefulWidget {
-  const _MobileLoginScreen();
+enum _BannerKind { error, success }
 
-  @override
-  State<_MobileLoginScreen> createState() => _LoginScreenState();
-}
+class _LoginScreenState extends State<LoginScreen> {
+  static const double _breakpoint = 800;
 
-class _LoginScreenState extends State<_MobileLoginScreen> {
+  // Same keys the old mobile login used, so the checkbox state carries over.
+  static const _rememberMeKey = 'login.rememberMe';
   static const _rememberEmailKey = 'login.rememberEmail';
   static const _rememberPasswordKey = 'login.rememberPassword';
-  static const _rememberMeKey = 'login.rememberMe';
   static const _rememberedAtKey = 'login.rememberedAt';
-  static const Duration _rememberMeDuration = Duration(days: 3);
+
+  static final _emailPattern =
+      RegExp(r'^[^\s@]+@dnsc\.edu\.ph$', caseSensitive: false);
 
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
+  final _emailFocus = FocusNode();
+  final _passwordFocus = FocusNode();
 
   bool _obscurePassword = true;
   bool _isLoading = false;
   bool _rememberMe = false;
-  String? _errorMessage;
-  String? _infoMessage;
+  String? _emailError;
+  String? _passwordError;
+  String? _bannerText;
+  _BannerKind _bannerKind = _BannerKind.error;
   bool _didReadRouteArgs = false;
+
+  /// Bumped on every failed attempt so a repeated error shakes again.
+  int _shake = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadRememberedCredentials();
+    _loadRemembered();
   }
 
   @override
@@ -59,7 +74,8 @@ class _LoginScreenState extends State<_MobileLoginScreen> {
     _didReadRouteArgs = true;
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is Map && args['forceLogoutReason'] == 'inactivity') {
-      _infoMessage = 'You were signed out after 20 minutes of inactivity.';
+      _bannerText = 'You were signed out after 20 minutes of inactivity.';
+      _bannerKind = _BannerKind.success;
     }
   }
 
@@ -67,625 +83,904 @@ class _LoginScreenState extends State<_MobileLoginScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _emailFocus.dispose();
+    _passwordFocus.dispose();
     super.dispose();
   }
 
-  Future<void> _loadRememberedCredentials() async {
+  // ── Remember me ───────────────────────────────────────────────
+
+  Future<void> _loadRemembered() async {
     final prefs = await SharedPreferences.getInstance();
+    // The old mobile login used to keep the password here; never leave it in
+    // storage.
+    await prefs.remove(_rememberPasswordKey);
     if (!mounted) return;
-
-    final rememberedAt = prefs.getInt(_rememberedAtKey);
-    final isExpired = rememberedAt != null &&
-        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(rememberedAt)) >
-            _rememberMeDuration;
-
-    if (isExpired) {
-      await prefs.remove(_rememberMeKey);
-      await prefs.remove(_rememberEmailKey);
-      await prefs.remove(_rememberPasswordKey);
-      await prefs.remove(_rememberedAtKey);
-    }
-
+    final remember = prefs.getBool(_rememberMeKey) ?? false;
     setState(() {
-      _rememberMe = (prefs.getBool(_rememberMeKey) ?? false) && !isExpired;
-      if (_rememberMe) {
+      _rememberMe = remember;
+      if (remember && _emailController.text.isEmpty) {
         _emailController.text = prefs.getString(_rememberEmailKey) ?? '';
-        _passwordController.text = prefs.getString(_rememberPasswordKey) ?? '';
       }
     });
   }
 
-  Future<void> _saveRememberedCredentials() async {
+  Future<void> _saveRemembered(String email) async {
     final prefs = await SharedPreferences.getInstance();
     if (_rememberMe) {
       await prefs.setBool(_rememberMeKey, true);
-      await prefs.setString(_rememberEmailKey, _emailController.text.trim());
-      await prefs.setString(_rememberPasswordKey, _passwordController.text.trim());
-      await prefs.setInt(_rememberedAtKey, DateTime.now().millisecondsSinceEpoch);
-      return;
+      await prefs.setString(_rememberEmailKey, email);
+      await prefs.setInt(
+          _rememberedAtKey, DateTime.now().millisecondsSinceEpoch);
+    } else {
+      await prefs.remove(_rememberMeKey);
+      await prefs.remove(_rememberEmailKey);
+      await prefs.remove(_rememberedAtKey);
     }
+  }
 
-    await prefs.remove(_rememberMeKey);
-    await prefs.remove(_rememberEmailKey);
-    await prefs.remove(_rememberPasswordKey);
-    await prefs.remove(_rememberedAtKey);
+  // ── Actions ───────────────────────────────────────────────────
+
+  void _showBanner(String text, _BannerKind kind) {
+    setState(() {
+      _bannerText = text;
+      _bannerKind = kind;
+      if (kind == _BannerKind.error) _shake++;
+    });
   }
 
   Future<void> _handleLogin() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_isLoading) return;
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final emailBad = !_emailPattern.hasMatch(email);
+    final passwordBad = password.isEmpty;
+
     setState(() {
-      _isLoading = true;
-      _errorMessage = null;
+      _emailError = emailBad ? 'Use your @dnsc.edu.ph email.' : null;
+      _passwordError = passwordBad ? 'Password is required.' : null;
+      if (emailBad || passwordBad) _shake++;
+      _bannerText = null;
     });
+    if (emailBad) {
+      _emailFocus.requestFocus();
+      return;
+    }
+    if (passwordBad) {
+      _passwordFocus.requestFocus();
+      return;
+    }
+
+    setState(() => _isLoading = true);
 
     if (kUseMockData) {
-      final email = _emailController.text.trim();
       final role = email.startsWith('admin') ? 'admin' : 'faculty';
-      final name = email.split('@').first;
       if (!mounted) return;
-      Navigator.pushReplacementNamed(
-        context,
-        '/dashboard',
-        arguments: {'role': role, 'name': name},
-      );
-      setState(() => _isLoading = false);
+      Navigator.pushReplacementNamed(context, '/dashboard',
+          arguments: {'role': role, 'name': email.split('@').first});
       return;
     }
 
     try {
-      final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-      );
-
+      final auth = FirebaseAuth.instance;
+      if (kIsWeb) {
+        await auth.setPersistence(
+            _rememberMe ? Persistence.LOCAL : Persistence.SESSION);
+      }
+      final cred = await auth.signInWithEmailAndPassword(
+          email: email, password: password);
       final uid = cred.user!.uid;
-
       final snap = await FirebaseDatabase.instance.ref('users/$uid').get();
 
-      String role = 'faculty';
-      String name = _emailController.text.trim().split('@').first;
-
+      var role = 'faculty';
+      var name = email.split('@').first;
       if (snap.exists) {
         final data = Map<String, dynamic>.from(snap.value as Map);
-        role = data['role'] as String? ?? 'faculty';
+        role = data['role'] as String? ?? role;
         name = data['name'] as String? ?? name;
       } else {
         await FirebaseDatabase.instance.ref('users/$uid').set({
-          'email': _emailController.text.trim(),
+          'email': email,
           'name': name,
           'role': 'faculty',
         });
       }
 
-      if (!mounted) return;
-
-      await _saveRememberedCredentials();
-
-      if (!mounted) return;
+      await _saveRemembered(email);
       await AutomationSchedulerService.startIfNeeded();
       if (!mounted) return;
-      Navigator.pushReplacementNamed(
-        context,
-        '/dashboard',
-        arguments: {'role': role, 'name': name},
-      );
+      Navigator.pushReplacementNamed(context, '/dashboard',
+          arguments: {'role': role, 'name': name});
     } on FirebaseAuthException catch (e) {
-      setState(() => _errorMessage = _friendlyError(e.code));
+      if (!mounted) return;
+      _showBanner(_authErrorText(e.code), _BannerKind.error);
+      _passwordFocus.requestFocus();
+      _passwordController.selection = TextSelection(
+          baseOffset: 0, extentOffset: _passwordController.text.length);
     } catch (_) {
-      setState(() => _errorMessage = 'Something went wrong. Please try again.');
+      if (!mounted) return;
+      _showBanner('Something went wrong. Please try again.', _BannerKind.error);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _handleForgotPassword() async {
-    if (kUseMockData) {
-      TopToast.error(context, 'Mock mode: password reset is disabled.');
-      return;
-    }
-
     final email = _emailController.text.trim();
-    if (email.isEmpty) {
-      setState(() => _errorMessage = 'Enter your email first.');
+    if (!_emailPattern.hasMatch(email)) {
+      setState(() {
+        _emailError = 'Use your @dnsc.edu.ph email.';
+        _shake++;
+        _bannerText = null;
+      });
+      _emailFocus.requestFocus();
       return;
     }
-    if (!email.endsWith('@dnsc.edu.ph')) {
-      setState(() => _errorMessage = 'Only @dnsc.edu.ph emails are allowed.');
+    if (kUseMockData) {
+      _showBanner('Reset link sent to your email.', _BannerKind.success);
       return;
     }
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-      if (!mounted) return;
-      TopToast.success(context, 'Password reset email sent.');
     } on FirebaseAuthException catch (e) {
-      setState(() => _errorMessage = _friendlyError(e.code));
+      // Don't reveal whether an account exists.
+      if (e.code != 'user-not-found' && e.code != 'invalid-credential') {
+        if (mounted) _showBanner(_authErrorText(e.code), _BannerKind.error);
+        return;
+      }
+    } catch (_) {
+      if (mounted) {
+        _showBanner(
+            'Something went wrong. Please try again.', _BannerKind.error);
+      }
+      return;
+    }
+    if (mounted) {
+      _showBanner('Reset link sent to your email.', _BannerKind.success);
     }
   }
 
-  String _friendlyError(String code) {
+  String _authErrorText(String code) {
     switch (code) {
-      case 'user-not-found':
-        return 'No account found with this email.';
-      case 'wrong-password':
-        return 'Incorrect password. Please try again.';
-      case 'invalid-email':
-        return 'Please enter a valid email address.';
-      case 'invalid-credential':
-        return 'Invalid email or password.';
       case 'too-many-requests':
         return 'Too many attempts. Please wait and try again.';
+      case 'network-request-failed':
+        return 'Network error. Check your connection and try again.';
+      case 'user-disabled':
+        return 'This account has been disabled.';
+      case 'invalid-credential':
+      case 'wrong-password':
+      case 'user-not-found':
+      case 'invalid-email':
+        return 'Wrong email or password.';
       default:
-        return 'Login failed. Please try again.';
+        return 'Something went wrong. Please try again.';
     }
   }
+
+  // ── Build ─────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.greenDark,
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final maxWidth = constraints.maxWidth;
-            final isDesktop = maxWidth >= 1100;
-            final isTablet = maxWidth >= 760 && maxWidth < 1100;
-            final isNarrow = maxWidth < 420;
-
-            if (!isDesktop) {
-              return Container(
-                color: AppColors.greenPale,
-                child: SingleChildScrollView(
-                  child: ConstrainedBox(
-                    constraints:
-                        BoxConstraints(minHeight: constraints.maxHeight),
-                    child: Column(
-                      children: [
-                        _buildHero(isTablet: isTablet, isNarrow: isNarrow),
-                        Center(
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxWidth: isTablet ? 700 : 560,
-                            ),
-                            child: _buildFormPane(
-                              padding: EdgeInsets.fromLTRB(
-                                isNarrow ? 16 : 24,
-                                isTablet ? 28 : 22,
-                                isNarrow ? 16 : 24,
-                                24,
-                              ),
-                              compact: isNarrow,
-                            ),
-                          ),
-                        ),
-                      ],
+    final base = Theme.of(context);
+    return Theme(
+      data: base.copyWith(
+        textTheme: base.textTheme.apply(fontFamily: AppFonts.family),
+        textSelectionTheme: TextSelectionThemeData(
+          cursorColor: SpsColors.brand,
+          selectionColor: SpsColors.energy.withValues(alpha: .35),
+        ),
+      ),
+      child: DefaultTextStyle.merge(
+        style: const TextStyle(fontFamily: AppFonts.family),
+        child: Scaffold(
+          backgroundColor: SpsColors.ground,
+          body: SafeArea(
+            child: LayoutBuilder(builder: (context, constraints) {
+              final wide = constraints.maxWidth >= _breakpoint;
+              return SingleChildScrollView(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 32),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      minHeight: (constraints.maxHeight - 64)
+                          .clamp(0, double.infinity)),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1080),
+                      child: wide ? _wideLayout() : _narrowLayout(),
                     ),
                   ),
                 ),
               );
-            }
-
-            return Container(
-              color: AppColors.greenPale,
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1160),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(30),
-                    child: SizedBox(
-                      height: constraints.maxHeight,
-                      child: Row(
-                        children: [
-                          Expanded(
-                            flex: 5,
-                            child: Container(
-                              color: AppColors.greenDark,
-                              padding:
-                                  const EdgeInsets.fromLTRB(48, 36, 48, 36),
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints:
-                                      const BoxConstraints(maxWidth: 460),
-                                  child: _buildHero(isDesktop: true),
-                                ),
-                              ),
-                            ),
-                          ),
-                          Expanded(
-                            flex: 6,
-                            child: Container(
-                              color: AppColors.greenPale,
-                              child: SingleChildScrollView(
-                                padding:
-                                    const EdgeInsets.fromLTRB(28, 24, 28, 24),
-                                child: Center(
-                                  child: ConstrainedBox(
-                                    constraints:
-                                        const BoxConstraints(maxWidth: 560),
-                                    child: _buildFormPane(
-                                      padding: const EdgeInsets.fromLTRB(
-                                          32, 36, 32, 32),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            );
-          },
+            }),
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildFormPane({
-    EdgeInsets padding = const EdgeInsets.fromLTRB(28, 36, 28, 32),
-    bool compact = false,
-  }) {
-    return SingleChildScrollView(
+  Widget _wideLayout() {
+    // Both columns share a 520 minimum height and are centered against each
+    // other, matching the design's equal-height grid cells.
+    const minHeight = BoxConstraints(minHeight: 520);
+    return Row(
+      children: [
+        Expanded(
+          child: Transform.translate(
+            offset: const Offset(-24, 0),
+            child: ConstrainedBox(
+              constraints: minHeight,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(48, 48, 48, 36),
+                child: _emblemPanel(maxEmblem: 360),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 88),
+        Expanded(
+          child: ConstrainedBox(
+            constraints: minHeight,
+            child: _card(padding: const EdgeInsets.all(48)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _narrowLayout() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+          child: _emblemPanel(maxEmblem: 260),
+        ),
+        const SizedBox(height: 24),
+        _card(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32)),
+      ],
+    );
+  }
+
+  Widget _emblemPanel({required double maxEmblem}) {
+    return Center(
+      child: LayoutBuilder(builder: (context, c) {
+        final size = c.maxWidth < maxEmblem ? c.maxWidth : maxEmblem;
+        final intro = LoginIntroScope.maybeOf(context);
+        final emblem = PowerEmblem(size: size, orbit: intro?.orbit);
+        if (intro == null) return emblem;
+        // During the splash the flying emblem stands in for this one; the
+        // splash measures this slot to know where to land.
+        return KeyedSubtree(
+          key: intro.emblemSlotKey,
+          child: ValueListenableBuilder<bool>(
+            valueListenable: intro.emblemHidden,
+            builder: (_, hidden, child) =>
+                Opacity(opacity: hidden ? 0 : 1, child: child),
+            child: emblem,
+          ),
+        );
+      }),
+    );
+  }
+
+  // ── Splash hand-off (see LoginIntroScope) ─────────────────────
+
+  static const _settleMs = LoginIntroScope.settleMs;
+
+  /// The sign-in card lands from the right with a tilt and a springy
+  /// settle, starting 0.55s into the splash's settle phase.
+  Widget _introCard(Widget card) {
+    final intro = LoginIntroScope.maybeOf(context);
+    if (intro == null) return card;
+    const move = Interval(550 / _settleMs, 1650 / _settleMs,
+        curve: Cubic(.2, 1.35, .35, 1));
+    const fade = Interval(550 / _settleMs, 1050 / _settleMs);
+    return AnimatedBuilder(
+      animation: intro.settle,
+      child: card,
+      builder: (context, child) {
+        final v = intro.settle.value;
+        final t = move.transform(v);
+        return IgnorePointer(
+          ignoring: v < 1,
+          child: Opacity(
+            opacity: fade.transform(v),
+            child: Transform.translate(
+              offset: Offset(140 * (1 - t), 0),
+              child: Transform.rotate(
+                angle: 4 * math.pi / 180 * (1 - t),
+                child: Transform.scale(scale: .94 + .06 * t, child: child),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Form contents rise in one after another once the card has landed.
+  Widget _introItem(int k, Widget child) {
+    final intro = LoginIntroScope.maybeOf(context);
+    if (intro == null) return child;
+    final start = (950 + 70 * k) / _settleMs;
+    final move = Interval(start, (start * _settleMs + 600) / _settleMs,
+        curve: const Cubic(.2, 1.4, .4, 1));
+    final fade = Interval(start, (start * _settleMs + 450) / _settleMs);
+    return AnimatedBuilder(
+      animation: intro.settle,
+      child: child,
+      builder: (context, child) {
+        final v = intro.settle.value;
+        return Opacity(
+          opacity: fade.transform(v),
+          child: Transform.translate(
+            offset: Offset(0, 18 * (1 - move.transform(v))),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _card({required EdgeInsets padding}) {
+    return _introCard(Container(
       padding: padding,
-      child: Form(
-        key: _formKey,
-        child: Column(
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: SpsColors.brand,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+              color: SpsColors.ink.withValues(alpha: .06),
+              offset: const Offset(0, 1),
+              blurRadius: 2),
+          BoxShadow(
+              color: SpsColors.ink.withValues(alpha: .12),
+              offset: const Offset(0, 24),
+              blurRadius: 64),
+        ],
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 380),
+        child: AutofillGroup(child: _form()),
+      ),
+    ));
+  }
+
+  Widget _form() {
+    var k = 0;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Every non-spacer item rises in turn during the splash hand-off.
+        for (final item in _formItems())
+          item is SizedBox ? item : _introItem(k++, item),
+      ],
+    );
+  }
+
+  List<Widget> _formItems() {
+    return [
+      Semantics(
+        header: true,
+        child: const Text(
+          'Sign in',
+          style: TextStyle(
+            fontSize: 28,
+            height: 34 / 28,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -.015 * 28,
+            color: Colors.white,
+          ),
+        ),
+      ),
+      const SizedBox(height: 28),
+      if (_bannerText != null) ...[
+        ShakeOnError(
+          error: _bannerKind == _BannerKind.error ? _bannerText : null,
+          trigger: _shake,
+          child: _Banner(text: _bannerText!, kind: _bannerKind),
+        ),
+        const SizedBox(height: 16),
+      ],
+      _SpsField(
+        label: 'Email address',
+        hint: 'you@dnsc.edu.ph',
+        icon: Icons.mail_outline,
+        controller: _emailController,
+        focusNode: _emailFocus,
+        error: _emailError,
+        shakeTrigger: _shake,
+        keyboardType: TextInputType.emailAddress,
+        autofillHints: const [AutofillHints.username, AutofillHints.email],
+        textInputAction: TextInputAction.next,
+        onSubmitted: (_) => _passwordFocus.requestFocus(),
+        onChanged: (_) {
+          if (_emailError != null || _bannerText != null) {
+            setState(() {
+              _emailError = null;
+              _bannerText = null;
+            });
+          }
+        },
+      ),
+      const SizedBox(height: 16),
+      _SpsField(
+        label: 'Password',
+        hint: 'Password',
+        icon: Icons.lock_outline,
+        controller: _passwordController,
+        focusNode: _passwordFocus,
+        error: _passwordError,
+        shakeTrigger: _shake,
+        obscureText: _obscurePassword,
+        autofillHints: const [AutofillHints.password],
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _handleLogin(),
+        onChanged: (_) {
+          if (_passwordError != null || _bannerText != null) {
+            setState(() {
+              _passwordError = null;
+              _bannerText = null;
+            });
+          }
+        },
+        suffix: _EyeButton(
+          obscured: _obscurePassword,
+          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+        ),
+      ),
+      const SizedBox(height: 6),
+      Wrap(
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 12,
+        runSpacing: 4,
+        children: [
+          _RememberCheckbox(
+            value: _rememberMe,
+            onChanged:
+                _isLoading ? null : (v) => setState(() => _rememberMe = v),
+          ),
+          _LinkButton(
+            text: 'Forgot password?',
+            onPressed: _isLoading ? null : _handleForgotPassword,
+          ),
+        ],
+      ),
+      const SizedBox(height: 24),
+      _PrimaryButton(loading: _isLoading, onPressed: _handleLogin),
+      const SizedBox(height: 20),
+      const _CampusLine(),
+    ];
+  }
+}
+
+// ── Components ──────────────────────────────────────────────────
+
+class _SpsField extends StatefulWidget {
+  const _SpsField({
+    required this.label,
+    required this.hint,
+    required this.icon,
+    required this.controller,
+    required this.focusNode,
+    this.error,
+    this.obscureText = false,
+    this.keyboardType,
+    this.autofillHints,
+    this.textInputAction,
+    this.onSubmitted,
+    this.onChanged,
+    this.suffix,
+    this.shakeTrigger = 0,
+  });
+
+  final String label;
+  final String hint;
+  final IconData icon;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final String? error;
+  final bool obscureText;
+  final TextInputType? keyboardType;
+  final Iterable<String>? autofillHints;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+  final ValueChanged<String>? onChanged;
+  final Widget? suffix;
+  final int shakeTrigger;
+
+  @override
+  State<_SpsField> createState() => _SpsFieldState();
+}
+
+class _SpsFieldState extends State<_SpsField> {
+  bool _hovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.focusNode.addListener(_onFocus);
+  }
+
+  @override
+  void dispose() {
+    widget.focusNode.removeListener(_onFocus);
+    super.dispose();
+  }
+
+  void _onFocus() => setState(() {});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = widget.error != null;
+    final focused = widget.focusNode.hasFocus;
+    final borderColor = hasError
+        ? SpsColors.errorBorder
+        : focused
+            ? SpsColors.energy
+            : _hovered
+                ? SpsColors.fieldHover
+                : Colors.transparent;
+    final ring = focused
+        ? (hasError
+            ? SpsColors.errorBannerBg
+            : SpsColors.energy.withValues(alpha: .35))
+        : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          widget.label,
+          style: const TextStyle(
+            fontSize: 13,
+            height: 18 / 13,
+            fontWeight: FontWeight.w500,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 6),
+        // The error is drawn outside the inner field's decoration, so the
+        // whole box is shaken here instead of by AppTextField itself.
+        ShakeOnError(
+          error: widget.error,
+          trigger: widget.shakeTrigger,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.text,
+            onEnter: (_) => setState(() => _hovered = true),
+            onExit: (_) => setState(() => _hovered = false),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              height: 48,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: borderColor, width: 1.5),
+                boxShadow: [
+                  if (ring != null) BoxShadow(color: ring, spreadRadius: 3),
+                ],
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 12.5),
+                  Icon(widget.icon, size: 18, color: SpsColors.muted),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: AppTextField(
+                      controller: widget.controller,
+                      focusNode: widget.focusNode,
+                      obscureText: widget.obscureText,
+                      keyboardType: widget.keyboardType,
+                      autofillHints: widget.autofillHints,
+                      textInputAction: widget.textInputAction,
+                      onSubmitted: widget.onSubmitted,
+                      onChanged: widget.onChanged,
+                      autocorrect: false,
+                      enableSuggestions: !widget.obscureText,
+                      style:
+                          const TextStyle(fontSize: 15, color: SpsColors.ink),
+                      decoration: InputDecoration(
+                        isCollapsed: true,
+                        border: InputBorder.none,
+                        hintText: widget.hint,
+                        hintStyle: TextStyle(
+                          fontSize: 15,
+                          color: SpsColors.muted.withValues(alpha: .85),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (widget.suffix != null) ...[
+                    const SizedBox(width: 4),
+                    widget.suffix!,
+                    const SizedBox(width: 4.5),
+                  ] else
+                    const SizedBox(width: 42.5),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (hasError)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Semantics(
+              liveRegion: true,
+              child: Text(
+                widget.error!,
+                style:
+                    const TextStyle(fontSize: 12, color: SpsColors.errorText),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _EyeButton extends StatelessWidget {
+  const _EyeButton({required this.obscured, required this.onPressed});
+
+  final bool obscured;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = obscured ? 'Show password' : 'Hide password';
+    return Semantics(
+      toggled: !obscured,
+      child: IconButton(
+        tooltip: label,
+        onPressed: onPressed,
+        iconSize: 20,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+        style: IconButton.styleFrom(
+          foregroundColor: SpsColors.muted,
+          hoverColor: SpsColors.successBannerBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        icon: Icon(obscured
+            ? Icons.visibility_outlined
+            : Icons.visibility_off_outlined),
+      ),
+    );
+  }
+}
+
+class _RememberCheckbox extends StatelessWidget {
+  const _RememberCheckbox({required this.value, required this.onChanged});
+
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return MergeSemantics(
+      child: InkWell(
+        onTap: onChanged == null ? null : () => onChanged!(!value),
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: Checkbox(
+                  value: value,
+                  onChanged:
+                      onChanged == null ? null : (v) => onChanged!(v ?? false),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6)),
+                  side: WidgetStateBorderSide.resolveWith((states) => states
+                          .contains(WidgetState.selected)
+                      ? const BorderSide(color: SpsColors.energy, width: 1.5)
+                      : const BorderSide(
+                          color: SpsColors.onCardMuted, width: 1.5)),
+                  fillColor: WidgetStateProperty.resolveWith((states) =>
+                      states.contains(WidgetState.selected)
+                          ? SpsColors.energy
+                          : Colors.transparent),
+                  checkColor: SpsColors.brand,
+                  focusColor: SpsColors.energy.withValues(alpha: .35),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text('Remember me',
+                  style: TextStyle(fontSize: 13, color: Colors.white)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LinkButton extends StatefulWidget {
+  const _LinkButton({required this.text, required this.onPressed});
+
+  final String text;
+  final VoidCallback? onPressed;
+
+  @override
+  State<_LinkButton> createState() => _LinkButtonState();
+}
+
+class _LinkButtonState extends State<_LinkButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: TextButton(
+        onPressed: widget.onPressed,
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          foregroundColor: SpsColors.energy,
+          overlayColor: Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        ),
+        child: Text(
+          widget.text,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+            decoration:
+                _hovered ? TextDecoration.underline : TextDecoration.none,
+            decorationColor: SpsColors.energy,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PrimaryButton extends StatelessWidget {
+  const _PrimaryButton({required this.loading, required this.onPressed});
+
+  final bool loading;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: loading ? .85 : 1,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x2E000000), offset: Offset(0, 6), blurRadius: 16),
+          ],
+        ),
+        child: FilledButton(
+          onPressed: loading ? null : onPressed,
+          style: ButtonStyle(
+            minimumSize: const WidgetStatePropertyAll(Size.fromHeight(50)),
+            elevation: const WidgetStatePropertyAll(0),
+            shape: WidgetStatePropertyAll(RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12))),
+            backgroundColor: WidgetStateProperty.resolveWith((states) =>
+                states.contains(WidgetState.hovered) &&
+                        !states.contains(WidgetState.disabled)
+                    ? SpsColors.energyHover
+                    : SpsColors.energy),
+            foregroundColor: const WidgetStatePropertyAll(SpsColors.onEnergy),
+            overlayColor: WidgetStatePropertyAll(
+                SpsColors.onEnergy.withValues(alpha: .06)),
+            side: WidgetStateProperty.resolveWith((states) =>
+                states.contains(WidgetState.focused)
+                    ? BorderSide(
+                        color: Colors.white.withValues(alpha: .6), width: 3)
+                    : BorderSide.none),
+            mouseCursor: WidgetStateProperty.resolveWith((states) =>
+                states.contains(WidgetState.disabled)
+                    ? SystemMouseCursors.progress
+                    : SystemMouseCursors.click),
+            textStyle: const WidgetStatePropertyAll(
+                TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (loading) ...[
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: SpsColors.onEnergy),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Text(loading ? 'Signing in…' : 'Sign in'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Banner extends StatelessWidget {
+  const _Banner({required this.text, required this.kind});
+
+  final String text;
+  final _BannerKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final ok = kind == _BannerKind.success;
+    final fg = ok ? SpsColors.brand : SpsColors.errorBannerText;
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: ok ? SpsColors.successBannerBg : SpsColors.errorBannerBg,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (_infoMessage != null) ...[
-              _buildInfoBox(),
-              SizedBox(height: compact ? 14 : 18),
-            ],
-            _buildField(
-              'EMAIL ADDRESS',
-              Icons.email_outlined,
-              _emailController,
-              hint: 'you@dnsc.edu.ph',
-              keyboard: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              onSubmitted: (_) => FocusScope.of(context).nextFocus(),
-              validator: (v) {
-                if (v == null || v.isEmpty) return 'Email is required';
-                if (!v.contains('@')) return 'Enter a valid email';
-                if (!v.endsWith('@dnsc.edu.ph')) {
-                  return 'Only @dnsc.edu.ph emails are allowed';
-                }
-                return null;
-              },
-            ),
-            SizedBox(height: compact ? 14 : 18),
-            _buildPasswordField(),
-            SizedBox(height: compact ? 8 : 10),
-            Row(
-              children: [
-                Checkbox(
-                  value: _rememberMe,
-                  activeColor: AppColors.greenDark,
-                  onChanged: _isLoading
-                      ? null
-                      : (value) {
-                          setState(() => _rememberMe = value ?? false);
-                          _saveRememberedCredentials();
-                        },
-                ),
-                const Expanded(
-                  child: Text(
-                    'Remember me on this device',
-                    style: TextStyle(fontSize: 12, color: AppColors.textMid),
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: compact ? 6 : 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: _handleForgotPassword,
-                style: TextButton.styleFrom(
-                    padding: EdgeInsets.zero, minimumSize: Size.zero),
-                child: Text(
-                  'Forgot password?',
-                  style: TextStyle(
-                      fontSize: compact ? 11 : 12,
-                      color: AppColors.greenMid,
-                      fontWeight: FontWeight.w500),
-                ),
-              ),
-            ),
-            if (_errorMessage != null) ...[
-              SizedBox(height: compact ? 6 : 8),
-              _buildErrorBox(),
-            ],
-            SizedBox(height: compact ? 14 : 16),
-            _buildLoginButton(),
-            SizedBox(height: compact ? 22 : 28),
-            const Center(
-              child: Text.rich(
-                TextSpan(
-                  style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-                  children: [
-                    TextSpan(text: 'DNSC Campus · '),
-                    TextSpan(
-                      text: 'Davao del Norte State College',
-                      style: TextStyle(
-                          color: AppColors.textMid,
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ],
-                ),
-                textAlign: TextAlign.center,
-              ),
+            Icon(ok ? Icons.check_circle_outline : Icons.error_outline,
+                size: 18, color: fg),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(text,
+                  style: TextStyle(fontSize: 13, height: 18 / 13, color: fg)),
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildHero({
-    bool isDesktop = false,
-    bool isTablet = false,
-    bool isNarrow = false,
-  }) {
-    final titleSize = isNarrow ? 24.0 : (isTablet ? 30.0 : 28.0);
-    final subtitleSize = isNarrow ? 17.0 : 20.0;
-    final logoSize = isNarrow ? 34.0 : 38.0;
-    final horizontalPadding = isNarrow ? 20.0 : 36.0;
-    final topPadding = isNarrow ? 20.0 : 24.0;
-    final bottomPadding = isNarrow ? 30.0 : 40.0;
+class _CampusLine extends StatelessWidget {
+  const _CampusLine();
 
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.fromLTRB(
-        horizontalPadding,
-        topPadding,
-        horizontalPadding,
-        bottomPadding,
-      ),
-      decoration: BoxDecoration(
-        color: AppColors.greenDark,
-        borderRadius: isDesktop
-            ? null
-            : const BorderRadius.only(
-                bottomLeft: Radius.circular(40),
-                bottomRight: Radius.circular(40),
-              ),
-      ),
-      child: Column(
-        mainAxisAlignment:
-            isDesktop ? MainAxisAlignment.center : MainAxisAlignment.start,
-        crossAxisAlignment:
-            isDesktop ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-        children: [
-          Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: logoSize,
-              height: logoSize,
-              padding: const EdgeInsets.all(5),
-              child: Image.asset(
-                'promo/img/logo.png',
-                fit: BoxFit.contain,
-              ),
-            ),
-            SizedBox(width: isNarrow ? 8 : 10),
-            Flexible(
-              child: RichText(
-                overflow: TextOverflow.ellipsis,
-                text: const TextSpan(
-                  style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                  children: [
-                    TextSpan(text: 'Smart'),
-                    TextSpan(
-                      text: 'Power',
-                      style: TextStyle(color: AppColors.greenLight),
-                    ),
-                    TextSpan(text: 'Switch'),
-                  ],
-                ),
-              ),
-            ),
-          ]),
-          SizedBox(height: isNarrow ? 22 : 28),
-          Text('Welcome back,',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: titleSize,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  height: 1.2),
-              textAlign: isDesktop ? TextAlign.center : TextAlign.start),
-          Text('Sign in to continue.',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: subtitleSize,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.greenLight),
-              textAlign: isDesktop ? TextAlign.center : TextAlign.start),
-          SizedBox(height: isNarrow ? 6 : 8),
-          Text('DNSC Campus Energy Control',
-              style: TextStyle(
-                  fontSize: isNarrow ? 12 : 13, color: const Color(0xB3C2EDD0)),
-              textAlign: isDesktop ? TextAlign.center : TextAlign.start),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildField(
-    String label,
-    IconData icon,
-    TextEditingController controller, {
-    String hint = '',
-    TextInputType keyboard = TextInputType.text,
-    TextInputAction? textInputAction,
-    ValueChanged<String>? onSubmitted,
-    String? Function(String?)? validator,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Text(label,
-            style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textMid,
-                letterSpacing: 0.8)),
-        const SizedBox(height: 6),
-        AppTextFormField(
-          controller: controller,
-          keyboardType: keyboard,
-          textInputAction: textInputAction,
-          onFieldSubmitted: onSubmitted,
-          style: const TextStyle(color: AppColors.textDark, fontSize: 14),
-          decoration: _inputDeco(hint: hint, icon: icon),
-          validator: validator,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPasswordField() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('PASSWORD',
-            style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textMid,
-                letterSpacing: 0.8)),
-        const SizedBox(height: 6),
-        AppTextFormField(
-          controller: _passwordController,
-          obscureText: _obscurePassword,
-          textInputAction: TextInputAction.done,
-          onFieldSubmitted: (_) => _isLoading ? null : _handleLogin(),
-          style: const TextStyle(color: AppColors.textDark, fontSize: 14),
-          decoration: _inputDeco(
-            hint: '••••••••',
-            icon: Icons.lock_outline,
-            suffix: IconButton(
-              icon: Icon(
-                  _obscurePassword
-                      ? Icons.visibility_outlined
-                      : Icons.visibility_off_outlined,
-                  color: AppColors.textMuted,
-                  size: 20),
-              onPressed: () =>
-                  setState(() => _obscurePassword = !_obscurePassword),
-            ),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: SpsColors.energy,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                  color: SpsColors.energy.withValues(alpha: .25),
+                  spreadRadius: 3),
+            ],
           ),
-          validator: (v) {
-            if (v == null || v.isEmpty) return 'Password is required';
-            if (v.length < 6) return 'Minimum 6 characters';
-            return null;
-          },
+        ),
+        const SizedBox(width: 8),
+        const Flexible(
+          child: Text(
+            'DNSC · Davao del Norte State College',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: SpsColors.onCardMuted),
+          ),
         ),
       ],
-    );
-  }
-
-  Widget _buildInfoBox() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.greenMid.withAlpha(20),
-        border: Border.all(color: AppColors.greenMid.withAlpha(51)),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(children: [
-        const Icon(Icons.info_outline, size: 16, color: AppColors.greenDark),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(_infoMessage!,
-              style: const TextStyle(fontSize: 12, color: AppColors.greenDark)),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildErrorBox() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.error.withAlpha(20),
-        border: Border.all(color: AppColors.error.withAlpha(51)),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(_errorMessage!,
-          style: const TextStyle(fontSize: 12, color: AppColors.error)),
-    );
-  }
-
-  Widget _buildLoginButton() {
-    return SizedBox(
-      width: double.infinity,
-      height: 54,
-      child: ElevatedButton(
-        onPressed: _isLoading ? null : _handleLogin,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.greenDark,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          elevation: 4,
-          shadowColor: AppColors.greenDark.withAlpha(102),
-        ),
-        child: _isLoading
-            ? const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                    color: Colors.white, strokeWidth: 2.5))
-            : const Text('Sign In',
-                style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white)),
-      ),
-    );
-  }
-
-  InputDecoration _inputDeco({
-    required String hint,
-    required IconData icon,
-    Widget? suffix,
-  }) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
-      prefixIcon: Icon(icon, color: AppColors.textMuted, size: 20),
-      suffixIcon: suffix,
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              BorderSide(color: AppColors.greenMid.withAlpha(51), width: 1.5)),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              BorderSide(color: AppColors.greenMid.withAlpha(51), width: 1.5)),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: AppColors.greenMid, width: 1.5)),
-      errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: AppColors.error, width: 1.5)),
-      focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: AppColors.error, width: 1.5)),
     );
   }
 }

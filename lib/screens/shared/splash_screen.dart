@@ -1,630 +1,466 @@
-// lib/screens/splash_screen.dart
+// SmartSwitch "power-on" splash (mobile + web startup path, see main.dart).
 //
-// SmartPowerSwitch preloader — native Flutter port of the HTML animation.
-// No packages required: AnimationController + CustomPainter only.
+// The emblem charges up in the middle of a white screen, slams on with a
+// shockwave, then (signed out) swoops into its spot on the sign-in
+// page while the sign-in card lands -- there's no separate splash page to
+// leave. Signed in, the splash fades into the dashboard
+// screen instead. Firebase starts at the same time as the intro and the
+// splash only settles once both are done. Reduce-motion skips the intro.
+//
+// Timeline (ms) follows the login handoff spec: track 0–900, arc 500–1100,
+// bar slam 950–1450, impact 1450, letters 1550+45/letter, nodes 2000/2120/
+// 2240, charging footer 1700–3300, spark 2300; settle 3500–5600.
 
+import 'dart:async';
 import 'dart:math' as math;
-import 'package:flutter/material.dart';
-import '../../theme/app_fonts.dart';
 
-import '../../theme/app_colors.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../config/app_mode.dart';
+import '../../theme/app_fonts.dart';
+import '../../theme/sps_colors.dart';
+import '../../widgets/login_intro_scope.dart';
+import '../../widgets/power_emblem.dart';
 import 'auth_gate.dart';
 
-/// The four brand colours, sourced from the shared app theme.
-class Sps {
-  static const p1 = AppColors.greenDark; // deep green  — ground / unlit
-  static const p2 = AppColors.greenMid; // green       — active surfaces
-  static const p3 = AppColors.greenLight; // mint        — signal / edges
-  static const p4 = AppColors.greenPale; // pale mint   — light / type
-}
-
-const int _kTotalMs = 5800; // full timeline, matches --seq in the HTML
-const int _kPulseMs = 2000; // sonar + breathe loop
-const String _kWordmark = 'SmartPowerSwitch';
-const int _kAccentStart = 5; // "Power" starts at index 5
-const int _kAccentEnd = 10;
+const int _kIntroMs = 3500;
+const int _kSwoopMs = 1150;
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({
-    super.key,
-    required this.onInitialize,
-  });
+  const SplashScreen({super.key, required this.onInitialize});
 
-  /// Real startup work. The splash waits for both this future and the
-  /// animation, so the bulb moment is never cut off by a fast boot.
+  /// Real startup work (Firebase etc.). The splash waits for both this and
+  /// the intro before it settles.
   final Future<void> Function() onInitialize;
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
+enum _Phase { intro, settle, fade, done }
+
 class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
-  late final AnimationController _timeline = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: _kTotalMs),
-  );
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: _kPulseMs),
-  )..repeat();
+  late final AnimationController _intro = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: _kIntroMs));
+  late final AnimationController _settle = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: LoginIntroScope.settleMs));
+  late final AnimationController _exit = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 500));
 
-  bool _exiting = false;
+  /// Spark orbit: fast (1.4s/turn) during the intro, 9s/turn afterwards.
+  /// The slow one is shared with the login emblem so the spark doesn't jump
+  /// at hand-over.
+  late final AnimationController _fastOrbit = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1400));
+  late final AnimationController _orbit =
+      AnimationController(vsync: this, duration: const Duration(seconds: 9));
+
+  final _slotKey = GlobalKey();
+  final _overlayKey = GlobalKey();
+  final _emblemHidden = ValueNotifier<bool>(true);
+
+  _Phase _phase = _Phase.intro;
+  bool _ready = false; // startup done -> AuthGate can be built
+  bool _started = false;
+  Rect? _from, _to; // emblem swoop, in overlay coordinates
 
   @override
-  void initState() {
-    super.initState();
-    _boot();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    _boot(MediaQuery.disableAnimationsOf(context));
   }
 
-  Future<void> _boot() async {
-    await Future.wait<void>([
-      _timeline.forward(),
-      widget.onInitialize(),
-    ]);
-    if (!mounted) return;
-    setState(() => _exiting = true);
-    await Future<void>.delayed(const Duration(milliseconds: 620));
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const AuthGate()),
-      );
+  Future<bool> _startup() async {
+    await widget.onInitialize();
+    if (mounted) setState(() => _ready = true);
+    if (kUseMockData) return true;
+    try {
+      // Wait for Firebase to restore any persisted session.
+      final user = await FirebaseAuth.instance.authStateChanges().first.timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => FirebaseAuth.instance.currentUser);
+      return user != null;
+    } catch (_) {
+      return false;
     }
+  }
+
+  Future<void> _boot(bool reduceMotion) async {
+    final startup = _startup();
+
+    if (reduceMotion) {
+      await startup;
+      _finish();
+      return;
+    }
+
+    _fastOrbit.repeat();
+    // Running from the start so the login emblem (built underneath during
+    // the intro) follows it.
+    _orbit.repeat();
+    final results = await Future.wait<Object?>([_intro.forward(), startup]);
+    final signedIn = results[1] as bool;
+    if (!mounted) return;
+
+    // Hand the spark over to the slow orbit where it is now.
+    _orbit.value = _fastOrbit.value;
+    _fastOrbit.stop();
+    _orbit.repeat();
+
+    if (!signedIn && await _measureSwoop()) {
+      if (!mounted) return;
+      setState(() => _phase = _Phase.settle);
+      await _settle.forward();
+      _finish();
+    } else {
+      // Nothing to swoop into (signed in -> dashboard):
+      // fade out onto the next screen.
+      _settle.value = 1;
+      _emblemHidden.value = false;
+      setState(() => _phase = _Phase.fade);
+      await _exit.forward();
+      // No login emblem is following the orbit; don't keep it ticking
+      // under the dashboard.
+      _orbit.reset();
+      _finish();
+    }
+  }
+
+  /// Finds where the login screen put its emblem. The login may still be
+  /// building (AuthGate resolving the session), so this waits up to ~1s of
+  /// frames before giving up -- false means there is no login to land on.
+  Future<bool> _measureSwoop() async {
+    for (var i = 0; i < 60; i++) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return false;
+      final slot = _slotKey.currentContext?.findRenderObject() as RenderBox?;
+      final overlay =
+          _overlayKey.currentContext?.findRenderObject() as RenderBox?;
+      if (slot != null &&
+          overlay != null &&
+          slot.attached &&
+          slot.hasSize &&
+          overlay.hasSize) {
+        final topLeft = slot.localToGlobal(Offset.zero, ancestor: overlay);
+        _to = topLeft & slot.size;
+        _from = _introRect(overlay.size);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _finish() {
+    if (!mounted) return;
+    _settle.value = 1;
+    _emblemHidden.value = false;
+    setState(() => _phase = _Phase.done);
+  }
+
+  /// Emblem rect during the intro: centered (40 above middle), 60% of the
+  /// short side, at most 1.25 × its size on the login page.
+  Rect _introRect(Size screen) {
+    final loginSize =
+        screen.width >= 800 ? 360.0 : math.min(260.0, screen.width - 80);
+    final size =
+        math.min(1.25 * loginSize, .6 * math.min(screen.width, screen.height));
+    return Rect.fromCenter(
+      center: Offset(screen.width / 2, screen.height / 2 - 40),
+      width: size,
+      height: size,
+    );
   }
 
   @override
   void dispose() {
-    _timeline.dispose();
-    _pulse.dispose();
+    _intro.dispose();
+    _settle.dispose();
+    _exit.dispose();
+    _fastOrbit.dispose();
+    _orbit.dispose();
+    _emblemHidden.dispose();
     super.dispose();
   }
 
-  double get _t => _timeline.value * _kTotalMs;
-
-  String get _status {
-    if (_t >= 5400) return 'Ready';
-    if (_t >= 4700) return 'Reading device meters';
-    if (_t >= 4000) return 'Connecting to the network';
-    return '';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final w = MediaQuery.sizeOf(context).width;
-    final sceneWidth = math.min(340.0, w * 0.88);
-
-    return Scaffold(
-      body: AnimatedOpacity(
-        opacity: _exiting ? 0 : 1,
-        duration: const Duration(milliseconds: 600),
-        curve: Curves.easeOut,
-        child: AnimatedScale(
-          scale: _exiting ? 1.06 : 1.0,
-          duration: const Duration(milliseconds: 600),
-          curve: Curves.easeInOut,
-          child: DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: RadialGradient(
-                center: Alignment(0, -0.28),
-                radius: 0.95,
-                colors: [Sps.p2, Sps.p1],
-                stops: [0.0, 0.72],
-              ),
-            ),
-            child: Stack(
-              children: [
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: sceneWidth,
-                        child: AspectRatio(
-                          aspectRatio: 360 / 316,
-                          child: AnimatedBuilder(
-                            animation: Listenable.merge([_timeline, _pulse]),
-                            builder: (_, __) => CustomPaint(
-                              painter: _ScenePainter(
-                                t: _t,
-                                pulse: _pulse.value,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 22),
-                      _Wordmark(timeline: _timeline),
-                    ],
-                  ),
-                ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: math.max(44, MediaQuery.sizeOf(context).height * .07),
-                  child: Center(
-                    child: SizedBox(
-                      width: math.min(240.0, w * .72),
-                      child: AnimatedBuilder(
-                        animation: _timeline,
-                        builder: (_, __) => _LoadingBar(
-                          t: _t,
-                          status: _status,
-                        ),
-                      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (_ready)
+          LoginIntroScope(
+            settle: _settle,
+            emblemSlotKey: _slotKey,
+            emblemHidden: _emblemHidden,
+            orbit: _orbit,
+            child: const AuthGate(),
+          )
+        else
+          const ColoredBox(color: SpsColors.ground),
+        if (_phase != _Phase.done)
+          AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle.dark,
+            child: IgnorePointer(
+              ignoring: _phase == _Phase.settle,
+              child: Material(
+                key: _overlayKey,
+                type: MaterialType.transparency,
+                child: DefaultTextStyle(
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family, color: SpsColors.ink),
+                  child: AnimatedBuilder(
+                    animation: Listenable.merge(
+                        [_intro, _settle, _exit, _fastOrbit, _orbit]),
+                    builder: (context, _) => LayoutBuilder(
+                      builder: (context, c) => _overlay(c.biggest),
                     ),
                   ),
                 ),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-double _seg(double t, double startMs, double durMs,
-    {Curve curve = Curves.easeOut}) {
-  final x = ((t - startMs) / durMs).clamp(0.0, 1.0);
-  return curve.transform(x);
-}
-
-class _ScenePainter extends CustomPainter {
-  _ScenePainter({required this.t, required this.pulse});
-
-  final double t;
-  final double pulse;
-
-  static const double _vw = 360, _vh = 316;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.save();
-    canvas.scale(size.width / _vw);
-
-    _bulb(canvas, const Offset(66, 86), 250, 'IC');
-    _bulb(canvas, const Offset(180, 58), 0, 'ILEGG');
-    _bulb(canvas, const Offset(294, 86), 360, 'ADMIN');
-
-    _sonar(canvas);
-    _phone(canvas);
-
-    canvas.restore();
-  }
-
-  void _bulb(Canvas canvas, Offset at, double delay, String tag) {
-    final lit = _seg(t, 2300 + delay, 700);
-    final fil = _seg(t, 2280 + delay, 560);
-    final rays = _seg(t, 2340 + delay, 1100, curve: Curves.easeOutCubic);
-    final tagP = _seg(t, 2600 + delay, 600);
-
-    final breathe = lit >= 1
-        ? 1 - 0.16 * (0.5 - 0.5 * math.cos(pulse * 2 * math.pi)).abs()
-        : 1.0;
-
-    canvas.save();
-    canvas.translate(at.dx, at.dy);
-
-    if (rays > 0 && rays < 1) {
-      final double sc, op;
-      if (rays < .35) {
-        final k = rays / .35;
-        sc = .5 + .5 * k;
-        op = k;
-      } else {
-        final k = (rays - .35) / .65;
-        sc = 1 + .32 * k;
-        op = 1 - k;
-      }
-      final p = Paint()
-        ..color = Sps.p3.withValues(alpha: op)
-        ..strokeWidth = 2.6
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
-      canvas.save();
-      canvas.scale(sc);
-      for (var i = 0; i < 6; i++) {
-        final a = i * math.pi / 3;
-        canvas.drawLine(
-          Offset(math.cos(a) * 26, math.sin(a) * 26),
-          Offset(math.cos(a) * 35, math.sin(a) * 35),
-          p,
-        );
-      }
-      canvas.restore();
-    }
-
-    canvas.saveLayer(
-      Rect.fromCircle(center: Offset.zero, radius: 44),
-      Paint()..color = Colors.white.withValues(alpha: breathe),
-    );
-
-    const glass = Rect.fromLTRB(-19, -19, 19, 19);
-    canvas.drawCircle(
-      Offset.zero,
-      19,
-      Paint()..color = Sps.p1.withValues(alpha: .8),
-    );
-    if (lit > 0) {
-      canvas.saveLayer(
-        glass.inflate(6),
-        Paint()..color = Colors.white.withValues(alpha: lit),
-      );
-      canvas.drawCircle(
-        Offset.zero,
-        19,
-        Paint()
-          ..shader = const RadialGradient(
-            center: Alignment(0, -0.16),
-            radius: .62,
-            colors: [Sps.p4, Sps.p3, Sps.p2],
-            stops: [0, .45, 1],
-          ).createShader(glass),
-      );
-      canvas.restore();
-    }
-    canvas.drawCircle(
-      Offset.zero,
-      19,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
-        ..color = Color.lerp(Sps.p3.withValues(alpha: .4), Sps.p4, lit)!,
-    );
-
-    final filament = Path()
-      ..moveTo(-5, 11)
-      ..lineTo(-5, 4)
-      ..lineTo(0, -4)
-      ..lineTo(5, 4)
-      ..lineTo(5, 11);
-    canvas.drawPath(
-      filament,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.6
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..color = Color.lerp(Sps.p3.withValues(alpha: .5), Sps.p4, fil)!
-        ..maskFilter =
-            fil > .5 ? const MaskFilter.blur(BlurStyle.solid, 2.5) : null,
-    );
-
-    final capStroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = Color.lerp(Sps.p3.withValues(alpha: .4), Sps.p2, lit)!;
-    final capFill = Paint()..color = Sps.p2.withValues(alpha: .35);
-    for (final r in const [
-      Rect.fromLTWH(-8, 9, 16, 11),
-      Rect.fromLTWH(-5, 20, 10, 5),
-    ]) {
-      final rr = RRect.fromRectAndRadius(r, const Radius.circular(2.5));
-      canvas.drawRRect(rr, capFill);
-      canvas.drawRRect(rr, capStroke);
-    }
-    final thread = Paint()
-      ..color = Sps.p3.withValues(alpha: .45)
-      ..strokeWidth = 1.4
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(const Offset(-6, 13), const Offset(6, 13), thread);
-    canvas.drawLine(const Offset(-6, 17), const Offset(6, 17), thread);
-
-    canvas.restore();
-
-    if (tagP > 0) {
-      final tp = TextPainter(
-        text: TextSpan(
-          text: tag,
-          style: TextStyle(
-            fontFamily: AppFonts.family,
-            fontSize: 10,
-            letterSpacing: .6,
-            color: Sps.p4.withValues(alpha: .55 * tagP),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, Offset(-tp.width / 2, 38));
-    }
-
-    canvas.restore();
-  }
-
-  void _sonar(Canvas canvas) {
-    if (t < 1600) return;
-    const origin = Offset(180, 192);
-
-    final arc = Path()
-      ..moveTo(164.5, 186.5)
-      ..arcToPoint(const Offset(195.5, 186.5),
-          radius: const Radius.circular(16), clockwise: true);
-
-    for (final offset in const [0.0, .335, .67]) {
-      final phase = ((pulse + offset) % 1.0);
-      final k = 0.3 + 1.9 * Curves.easeOutCubic.transform(phase);
-      double op;
-      if (phase < .16) {
-        op = .9 * (phase / .16);
-      } else if (phase < .6) {
-        op = .9 - .48 * ((phase - .16) / .44);
-      } else {
-        op = .42 * (1 - (phase - .6) / .4);
-      }
-      canvas.save();
-      canvas.translate(origin.dx, origin.dy);
-      canvas.scale(k);
-      canvas.translate(-origin.dx, -origin.dy);
-      canvas.drawPath(
-        arc,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round
-          ..strokeWidth = 2.2 / k
-          ..color = Sps.p3.withValues(alpha: op.clamp(0, 1)),
-      );
-      canvas.restore();
-    }
-
-    final e = 0.5 - 0.5 * math.cos(pulse * 2 * math.pi);
-    canvas.drawCircle(
-      const Offset(180, 190),
-      3.6 * (0.8 + 0.5 * e),
-      Paint()..color = Sps.p3.withValues(alpha: .35 + .65 * e),
-    );
-  }
-
-  void _phone(Canvas canvas) {
-    final rise = _seg(t, 200, 820, curve: Curves.easeOutCubic);
-    if (rise <= 0) return;
-
-    canvas.saveLayer(
-      const Rect.fromLTWH(120, 180, 120, 140),
-      Paint()..color = Colors.white.withValues(alpha: rise),
-    );
-    canvas.translate(0, 16 * (1 - rise));
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          const Rect.fromLTWH(138, 196, 84, 112), const Radius.circular(15)),
-      Paint()..color = Sps.p2.withValues(alpha: .22),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          const Rect.fromLTWH(138, 196, 84, 112), const Radius.circular(15)),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
-        ..color = Sps.p3.withValues(alpha: .5),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          const Rect.fromLTWH(146, 205, 68, 94), const Radius.circular(9)),
-      Paint()..color = Sps.p1.withValues(alpha: .92),
-    );
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          const Rect.fromLTWH(156, 217, 28, 4), const Radius.circular(2)),
-      Paint()..color = Sps.p3.withValues(alpha: .35),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          const Rect.fromLTWH(156, 226, 44, 4), const Radius.circular(2)),
-      Paint()..color = Sps.p3.withValues(alpha: .19),
-    );
-
-    final track = _seg(t, 1480, 420);
-    final knob = _seg(t, 1450, 500, curve: Curves.easeOutBack);
-    final trackRect = RRect.fromRectAndRadius(
-        const Rect.fromLTWH(160, 244, 40, 20), const Radius.circular(10));
-    canvas.drawRRect(
-      trackRect,
-      Paint()
-        ..color = Color.lerp(Sps.p1.withValues(alpha: .95), Sps.p2, track)!,
-    );
-    canvas.drawRRect(
-      trackRect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = Color.lerp(Sps.p3.withValues(alpha: .4), Sps.p3, track)!,
-    );
-    canvas.drawCircle(
-      Offset(170 + 20 * knob, 254),
-      7,
-      Paint()..color = Color.lerp(Sps.p3.withValues(alpha: .55), Sps.p4, knob)!,
-    );
-
-    final rp = _seg(t, 1480, 820);
-    if (rp > 0 && rp < 1) {
-      canvas.drawCircle(
-        const Offset(190, 254),
-        10 * (0.4 + 3.0 * rp),
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = Sps.p3.withValues(alpha: .9 * (1 - rp)),
-      );
-    }
-
-    final tap = ((t - 850) / 1000).clamp(0.0, 1.0);
-    if (tap > 0 && tap < 1) {
-      double sc, op;
-      if (tap < .45) {
-        final k = tap / .45;
-        sc = 2.4 - 1.4 * Curves.easeOutCubic.transform(k);
-        op = k;
-      } else if (tap < .72) {
-        sc = 1 - .14 * ((tap - .45) / .27);
-        op = 1;
-      } else {
-        final k = (tap - .72) / .28;
-        sc = .86 + .24 * k;
-        op = 1 - k;
-      }
-      const c = Offset(190, 254);
-      canvas.drawCircle(
-          c, 11 * sc, Paint()..color = Sps.p4.withValues(alpha: .3 * op));
-      canvas.drawCircle(
-        c,
-        11 * sc,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..color = Sps.p4.withValues(alpha: .6 * op),
-      );
-    }
-
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(_ScenePainter old) => old.t != t || old.pulse != pulse;
-}
-
-class _Wordmark extends StatelessWidget {
-  const _Wordmark({required this.timeline});
-
-  final AnimationController timeline;
-
-  @override
-  Widget build(BuildContext context) {
-    final letters = _kWordmark.split('');
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AnimatedBuilder(
-          animation: timeline,
-          builder: (_, __) {
-            final t = timeline.value * _kTotalMs;
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (var i = 0; i < letters.length; i++)
-                  _Letter(
-                    char: letters[i],
-                    progress: ((t - (3150 + i * 34)) / 760).clamp(0.0, 1.0),
-                    accent: i >= _kAccentStart && i < _kAccentEnd,
-                  ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 9),
-        AnimatedBuilder(
-          animation: timeline,
-          builder: (_, __) {
-            final p = _seg(timeline.value * _kTotalMs, 3900, 800);
-            return Opacity(
-              opacity: p,
-              child: Transform.translate(
-                offset: Offset(0, 16 * (1 - p)),
-                child: Text(
-                  'Campus energy monitoring · DNSC',
-                  style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 12,
-                    color: Sps.p4.withValues(alpha: .7),
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
       ],
     );
   }
-}
 
-class _Letter extends StatelessWidget {
-  const _Letter({
-    required this.char,
-    required this.progress,
-    required this.accent,
-  });
+  // ── Overlay ──────────────────────────────────────────────────
 
-  final String char;
-  final double progress;
-  final bool accent;
+  double get _ms => _intro.value * _kIntroMs;
+  double get _settleMs => _settle.value * LoginIntroScope.settleMs;
 
-  @override
-  Widget build(BuildContext context) {
-    final p = Curves.easeOutBack.transform(progress);
-    final opacity = (progress / .5).clamp(0.0, 1.0);
+  /// Progress of a [dur]-long step starting at [start] ms into the intro.
+  double _seg(double start, double dur, [Curve curve = Curves.linear]) =>
+      curve.transform(((_ms - start) / dur).clamp(0.0, 1.0));
 
-    return Opacity(
-      opacity: opacity,
-      child: Transform.translate(
-        offset: Offset(0, -22 * (1 - p)),
-        child: Transform.scale(
-          scale: 1 + 0.9 * (1 - p),
-          child: Text(
-            char,
-            style: TextStyle(
-              fontFamily: AppFonts.family,
-              fontWeight: FontWeight.w800,
-              fontSize: 22,
-              height: 1,
-              color: accent ? Sps.p3 : Sps.p4,
+  Widget _overlay(Size screen) {
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    final fade = Curves.easeOut.transform(_exit.value);
+    final background = switch (_phase) {
+      _Phase.settle => 0.0,
+      _Phase.fade => 1 - fade,
+      _ => 1.0,
+    };
+
+    // Emblem position and size.
+    Rect rect = _introRect(screen);
+    if (_phase == _Phase.settle && _from != null && _to != null) {
+      final t = const Cubic(.75, -.3, .25, 1.25)
+          .transform((_settleMs / _kSwoopMs).clamp(0.0, 1.0));
+      rect = Rect.lerp(_from, _to, t)!;
+    }
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fill(
+          child:
+              ColoredBox(color: SpsColors.ground.withValues(alpha: background)),
+        ),
+        if (!reduce) _flash(),
+        Positioned.fromRect(
+          rect: rect,
+          child: Opacity(
+            opacity: 1 - fade,
+            child: Transform.scale(
+              scale: 1 + .06 * fade,
+              child: PowerEmblemView(
+                size: rect.width,
+                pose: reduce ? const EmblemPose(spark: 0) : _pose(),
+              ),
+            ),
+          ),
+        ),
+        if (!reduce)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: screen.height * .07,
+            child: Opacity(opacity: 1 - fade, child: _footer()),
+          ),
+      ],
+    );
+  }
+
+  EmblemPose _pose() {
+    if (_phase != _Phase.intro) {
+      return EmblemPose(sparkTurn: _orbit.value);
+    }
+    // Arc charge: glows in energy green, peaks at 35%, back to brand at 100%.
+    final c = _seg(500, 1800, Curves.easeOut);
+    final charge = c <= 0
+        ? 0.0
+        : c < .35
+            ? .6 + .4 * c / .35
+            : c < .7
+                ? 1 - .4 * (c - .35) / .35
+                : .6 * (1 - (c - .7) / .3);
+
+    return EmblemPose(
+      track: _seg(0, 900, const Cubic(.7, 0, .2, 1)),
+      arc: _seg(500, 600, const Cubic(.5, 0, .2, 1)),
+      arcCharge: charge,
+      bar: _seg(950, 500, const Cubic(.5, 0, .75, 0)),
+      shake: _shake(_seg(1450, 450, const Cubic(.36, .07, .19, .97))),
+      wave1: _ms < 1450 ? -1 : _seg(1450, 1000, const Cubic(.1, .6, .3, 1)),
+      wave2: _ms < 1600 ? -1 : _seg(1600, 1000, const Cubic(.1, .6, .3, 1)),
+      letters: [
+        for (var i = 0; i < 11; i++)
+          _seg(1550 + 45.0 * i, 600, const Cubic(.2, 1.5, .4, 1)),
+      ],
+      switchGlow: _seg(2200, 1200, Curves.easeOut),
+      nodes: [
+        for (var i = 0; i < 3; i++)
+          _seg(2000 + 120.0 * i, 550, const Cubic(.3, 1.7, .5, 1)),
+      ],
+      ripples: [
+        for (var i = 0; i < 3; i++)
+          _ms < 2300 + 120 * i
+              ? -1
+              : _seg(2300 + 120.0 * i, 800, Curves.easeOut),
+      ],
+      spark: _seg(2300, 300),
+      sparkTurn: _fastOrbit.value,
+    );
+  }
+
+  /// Impact shake keyframes (10% steps), ±6 units at the peak.
+  static const _shakeKeys = [
+    Offset.zero,
+    Offset(-2, 1),
+    Offset(4, -2),
+    Offset(-6, 3),
+    Offset(6, -3),
+    Offset(-6, 3),
+    Offset(6, -3),
+    Offset(-6, 3),
+    Offset(4, -2),
+    Offset(-2, 1),
+    Offset.zero,
+  ];
+
+  Offset _shake(double p) {
+    if (p <= 0 || p >= 1) return Offset.zero;
+    final x = p * 10;
+    final i = x.floor();
+    return Offset.lerp(_shakeKeys[i], _shakeKeys[i + 1], x - i)!;
+  }
+
+  /// Radial green flash behind the emblem at impact.
+  Widget _flash() {
+    if (_ms < 1450) return const SizedBox.shrink();
+    final p = _seg(1450, 700, Curves.easeOut);
+    if (p >= 1) return const SizedBox.shrink();
+    final opacity = p < .25 ? p / .25 : 1 - (p - .25) / .75;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Opacity(
+          opacity: opacity.clamp(0.0, 1.0),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: const Alignment(0, -.08),
+                radius: .6,
+                colors: [
+                  SpsColors.energy.withValues(alpha: .55),
+                  SpsColors.energy.withValues(alpha: 0),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
   }
-}
 
-class _LoadingBar extends StatelessWidget {
-  const _LoadingBar({required this.t, required this.status});
-
-  final double t;
-  final String status;
-
-  @override
-  Widget build(BuildContext context) {
-    final show = _seg(t, 4000, 700);
-    final fill = _seg(t, 4000, 1800, curve: Curves.easeInOutCubic);
-
+  /// Charging counter + bar + DNSC line along the bottom.
+  Widget _footer() {
+    final rise = _seg(1700, 500, Curves.easeOut);
+    final leave = (_settleMs / 350).clamp(0.0, 1.0);
+    final load = _seg(1800, 1500, const Cubic(.7, 0, .2, 1));
     return Opacity(
-      opacity: show,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: Container(
-              height: 2,
-              color: Sps.p4.withValues(alpha: .2),
-              alignment: Alignment.centerLeft,
-              child: FractionallySizedBox(
-                widthFactor: fill,
-                child: Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(colors: [Sps.p3, Sps.p4]),
+      opacity: rise * (1 - leave),
+      child: Transform.translate(
+        offset: Offset(0, 10 * (1 - rise) + 20 * leave),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '${(load * 100).round()}%',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: SpsColors.brand,
+                letterSpacing: .06 * 13,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: 200,
+              height: 6,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: SpsColors.brand.withValues(alpha: .12),
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                    ),
+                  ),
+                  FractionallySizedBox(
+                    widthFactor: load,
+                    heightFactor: 1,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(99),
+                        gradient: const LinearGradient(
+                            colors: [SpsColors.brand, SpsColors.energy]),
+                        boxShadow: [
+                          BoxShadow(
+                            color: SpsColors.energy.withValues(alpha: .8),
+                            blurRadius: 12,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: SpsColors.energy,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: SpsColors.energy.withValues(alpha: .25),
+                        spreadRadius: 3,
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 13),
-          SizedBox(
-            height: 16,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 260),
-              child: Text(
-                status,
-                key: ValueKey(status),
-                style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 12.5,
-                  color: Sps.p4.withValues(alpha: .72),
+                const SizedBox(width: 8),
+                const Text(
+                  'DNSC · Davao del Norte State College',
+                  style: TextStyle(fontSize: 12, color: SpsColors.muted),
                 ),
-              ),
+              ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

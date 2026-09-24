@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/history_clock.dart';
 
 class DashboardViewModel extends ChangeNotifier {
   // Data fields
@@ -312,7 +313,7 @@ class DashboardViewModel extends ChangeNotifier {
     try {
       final root = Map<String, dynamic>.from(raw as Map);
       buildingEnergy = _currentMonthBuildingEnergy(root);
-      final monthKey = _monthKey(DateTime.now());
+      final monthKey = _monthKey(HistoryClock.instance.now());
       final monthlyNode = root['monthly'];
       if (monthlyNode is Map) {
         final monthlyMap = Map<String, dynamic>.from(monthlyNode);
@@ -336,7 +337,7 @@ class DashboardViewModel extends ChangeNotifier {
   }
 
   Map<String, double> _currentMonthBuildingEnergy(Map<String, dynamic> root) {
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     final monthlyNode = root['monthly'];
     if (monthlyNode is! Map) return {};
     final monthlyMap = Map<String, dynamic>.from(monthlyNode);

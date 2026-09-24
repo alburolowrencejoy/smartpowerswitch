@@ -17,6 +17,7 @@ import 'automation_screen_web.dart';
 import 'building_floor_screen_web.dart';
 import 'campus_map_screen_web.dart';
 import 'device_detail_screen_web.dart';
+import 'analytics/analytics_focus.dart';
 import 'history_screen_web.dart';
 import 'manage_users_screen_web.dart';
 import 'notifications_screen_web.dart';
@@ -25,6 +26,7 @@ import 'web_overview_tab.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 /// The desktop/wide-window dashboard shell: a floating side nav plus a
 /// content area, chosen over [DashboardScreen] by `DashboardPage` once the
@@ -156,6 +158,17 @@ class _SideNavButtonState extends State<_SideNavButton> {
 
 class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   late final DashboardViewModel vm;
+
+  /// Which Analytics section a dashboard link asked for (see
+  /// [HistoryScreenWeb.focus]).
+  final AnalyticsFocus _analyticsFocus = AnalyticsFocus(null);
+
+  /// Switches to Analytics and scrolls to [section].
+  void _openAnalytics(AnalyticsSection section) {
+    _analyticsFocus.value = null; // re-trigger even for the same section
+    _selectTab(_tabAnalytics);
+    _analyticsFocus.value = section;
+  }
   int _selectedIndex = _tabDashboard;
   String _role = 'faculty';
   String? _institute;
@@ -187,7 +200,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     if (code == null || code.isEmpty) return;
 
     _instituteSub?.cancel();
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     _instituteSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
@@ -489,6 +502,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   void dispose() {
     vm.disposeViewModel();
     _instituteSub?.cancel();
+    _analyticsFocus.dispose();
     super.dispose();
   }
 
@@ -765,7 +779,10 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           padding: const EdgeInsets.all(4.0),
           child: ResponsiveCenter(
             maxWidth: 1400,
-            child: HistoryScreenWeb(onOpenDevice: _openDevice),
+            child: HistoryScreenWeb(
+              onOpenDevice: _openDevice,
+              focus: _analyticsFocus,
+            ),
           ),
         ),
         // 3 Automation
@@ -816,7 +833,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           userName: widget.name,
           onOpenDevices: () => _selectTab(_tabDevices),
           onOpenAnalytics:
-              _isInstituteAdmin ? null : () => _selectTab(_tabAnalytics),
+              _isInstituteAdmin ? null : _openAnalytics,
           onBuildingTap: _openBuilding,
         );
       },
@@ -1109,76 +1126,12 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                         );
                       },
                     ),
-                  const SizedBox(height: 28),
-                  _buildRecentEntriesCard(),
                 ],
               ),
             ),
           ),
         );
       },
-    );
-  }
-
-  Widget _buildRecentEntriesCard() {
-    final historyEmpty = vm.historyData.isEmpty && vm.isLoading;
-    final displayHistory =
-        historyEmpty ? placeholderHistoryList() : vm.historyData;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: displayHistory.isEmpty
-          ? const Padding(
-              padding: EdgeInsets.symmetric(vertical: 20),
-              child: Center(
-                child: Text('No data yet',
-                    style: TextStyle(color: WebColors.muted)),
-              ),
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Recent entries',
-                        style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 15,
-                            color: AppColors.textDark)),
-                    TextButton(
-                      onPressed: () => _selectTab(_tabAnalytics),
-                      child: Text('View full analytics',
-                          style: TextStyle(color: _palette.dark)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                ...displayHistory.reversed.take(5).map(
-                      (e) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Expanded(
-                                child: Text(e['label'],
-                                    style: const TextStyle(
-                                        color: AppColors.textDark))),
-                            Text(
-                              '${(e['kwh'] as num).toDouble().toStringAsFixed(2)} kWh',
-                              style:
-                                  const TextStyle(color: WebColors.muted),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-              ],
-            ),
     );
   }
 

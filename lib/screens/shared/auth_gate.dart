@@ -2,7 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../config/app_mode.dart';
-import '../../theme/app_colors.dart';
+import '../../theme/sps_colors.dart';
 import 'dashboard_page.dart';
 import 'login_screen.dart';
 
@@ -28,12 +28,9 @@ class AuthGate extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: AppColors.greenDark,
-            body: Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
-          );
+          // Plain white, matching the splash and the sign-in page, so the
+          // one-frame wait while the session restores doesn't flash.
+          return const Scaffold(backgroundColor: SpsColors.ground);
         }
         if (snapshot.data == null) {
           return const LoginScreen();

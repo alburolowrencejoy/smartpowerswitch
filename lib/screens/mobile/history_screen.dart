@@ -13,6 +13,7 @@ import '../../utils/placeholder_data.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -526,7 +527,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     if (entries.isEmpty) return {'kwh': 0.0, 'cost': 0.0};
 
-    final now = DateTime.now();
+    final now = HistoryClock.instance.now();
     final currentLabel = _rangeLabel(now, _range);
 
     final filtered = entries.where((e) {

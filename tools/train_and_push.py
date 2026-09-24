@@ -97,28 +97,6 @@ def train_and_forecast(df, window=14, epochs=50, horizon=30):
     preds = np.array(preds) * std + mean
     preds = np.where(preds < 0, 0.0, preds)
 
-    # convert model to tflite
-    tflite_path = os.path.join('models', 'forecast.tflite')
-    os.makedirs('models', exist_ok=True)
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    tflite_model = converter.convert()
-    with open(tflite_path, 'wb') as f:
-        f.write(tflite_model)
-
-    # Upload tflite to Firebase Storage (if available) and publish model URL
-    try:
-        bucket = storage.bucket()
-        blob = bucket.blob('models/forecast.tflite')
-        blob.upload_from_filename(tflite_path)
-        try:
-            blob.make_public()
-            model_url = blob.public_url
-        except Exception:
-            # make_public may fail depending on bucket IAM; fallback to gs:// path
-            model_url = f'gs://{bucket.name}/models/forecast.tflite'
-    except Exception:
-        model_url = None
-
     # labels: dates after last label (assume daily)
     last_label = df['label'].iloc[-1]
     try:
@@ -131,10 +109,47 @@ def train_and_forecast(df, window=14, epochs=50, horizon=30):
     return {
         'labels': labels,
         'values': preds.tolist(),
-        'tflite_path': tflite_path,
-        'model_url': model_url,
         'predicted_kwh_total': float(np.sum(preds)),
+        'model': model,
     }
+
+
+def export_tflite(model):
+    """Optional: converts the LSTM to TFLite and uploads it to Storage.
+
+    Nothing in the app reads this file yet, so it runs last and any failure
+    is only a warning. (With TensorFlow 2.16+ / Keras 3,
+    `TFLiteConverter.from_keras_model` no longer works on these models and
+    used to crash the whole job before any forecast was saved -- the
+    SavedModel route below is the supported one.)"""
+    tflite_path = os.path.join('models', 'forecast.tflite')
+    os.makedirs('models', exist_ok=True)
+    saved_dir = os.path.join('models', 'saved')
+    model.export(saved_dir)
+    converter = tf.lite.TFLiteConverter.from_saved_model(saved_dir)
+    # LSTMs need a few TensorFlow ops that plain TFLite doesn't have.
+    converter.target_spec.supported_ops = [
+        tf.lite.OpsSet.TFLITE_BUILTINS,
+        tf.lite.OpsSet.SELECT_TF_OPS,
+    ]
+    converter._experimental_lower_tensor_list_ops = False
+    with open(tflite_path, 'wb') as f:
+        f.write(converter.convert())
+    print('TFLite model written to', tflite_path)
+
+    try:
+        bucket = storage.bucket()
+        blob = bucket.blob('models/forecast.tflite')
+        blob.upload_from_filename(tflite_path)
+        try:
+            blob.make_public()
+            model_url = blob.public_url
+        except Exception:
+            model_url = f'gs://{bucket.name}/models/forecast.tflite'
+        db.reference('history/predictions/model_url').set(model_url)
+        print('TFLite model uploaded:', model_url)
+    except Exception as exc:
+        print('TFLite upload skipped:', exc)
 
 
 BACKTEST_DAYS = 14
@@ -254,19 +269,14 @@ def push_forecast(payload):
         'predicted_kwh_total': payload['predicted_kwh_total'],
     }
     ref.set(data)
-    # also set model URL if provided
-    try:
-        model_url = payload.get('model_url')
-        if model_url:
-            db.reference('history/predictions/model_url').set(model_url)
-    except Exception:
-        pass
 
 
 def main():
     init_firebase()
     df = fetch_daily_history()
     print('Fetched', len(df), 'daily points')
+    if not df.empty:
+        print('History runs', df['label'].iloc[0], '->', df['label'].iloc[-1])
     result = train_and_forecast(df)
     if not result:
         print('Not enough data to train')
@@ -275,6 +285,12 @@ def main():
     push_forecast(result)
     print('Forecast pushed to RTDB at history/predictions/daily')
     push_models(df)
+
+    # Last, and never fatal: the forecasts above are already saved.
+    try:
+        export_tflite(result['model'])
+    except Exception as exc:
+        print('TFLite export skipped:', exc)
 
 
 if __name__ == '__main__':

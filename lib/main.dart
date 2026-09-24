@@ -27,6 +27,7 @@ import 'services/prediction_service.dart';
 import 'theme/app_colors.dart';
 import 'widgets/idle_timeout_wrapper.dart';
 import 'theme/app_fonts.dart';
+import 'services/web_version_service.dart';
 
 void main() async {
   // Splash is mobile (Android/iOS) + web only -- desktop native builds are
@@ -87,6 +88,9 @@ void main() async {
 /// instead of hanging), and only then the same four fire-and-forget
 /// service kickoffs as before, in the same relative order.
 Future<void> _initializeMobileWeb() async {
+  // Remember the website version this tab loaded with (Settings compares it
+  // with the deployed one). Cheap, and never blocks start-up.
+  unawaited(WebVersionService.running().then((_) {}, onError: (_) {}));
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );

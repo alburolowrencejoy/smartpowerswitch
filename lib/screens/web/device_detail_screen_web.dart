@@ -13,6 +13,7 @@ import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 /// The desktop device page: live PZEM readings (voltage, current, power,
 /// energy today), a 7-day energy trend, and the relay Control panel.
@@ -358,7 +359,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   StreamSubscription<DatabaseEvent>? _monthSub;
 
   void _listenHistory() {
-    final now = DateTime.now();
+    final now = HistoryClock.instance.now();
     final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
     _weekSub = FirebaseDatabase.instance
         .ref('history/daily')

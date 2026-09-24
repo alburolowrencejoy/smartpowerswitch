@@ -162,8 +162,12 @@ class AppTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A custom `decoration.error` widget counts as an error too; bump
+    // [shakeTrigger] on each failure so repeats still shake.
+    final error = decoration?.errorText ??
+        (decoration?.error == null ? null : '\u0000custom-error');
     return ShakeOnError(
-      error: decoration?.errorText,
+      error: error,
       trigger: shakeTrigger,
       child: TextField(
         controller: controller,

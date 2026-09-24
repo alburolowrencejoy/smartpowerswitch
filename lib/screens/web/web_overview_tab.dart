@@ -9,16 +9,20 @@ import '../../theme/institute_colors.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
+import 'analytics/analytics_focus.dart';
+import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import '../../theme/app_fonts.dart';
+import '../../widgets/history_fallback_notice.dart';
 
 /// The web "Dashboard" tab: an at-a-glance overview modelled on a classic
 /// admin layout -- a row of stat cards, a device-status card with a
 /// utility donut, a per-building area chart, a building-load table and a
-/// recent-usage bar chart.
+/// recent-usage bar chart, and the History table (latest days with trend).
 ///
 /// The detailed view that used to live here (hero energy card, building
-/// grid, recent entries) now lives under the side nav's "Devices" item.
+/// grid) now lives under the side nav's "Devices" item. Links into
+/// Analytics open it scrolled to the matching section.
 ///
 /// Scope: when [instituteCode] is set (institute admins), every number and
 /// chart is filtered to that building only; otherwise it is campus-wide.
@@ -30,7 +34,9 @@ class WebOverviewTab extends StatefulWidget {
   final String? instituteCode;
   final String? userName;
   final VoidCallback onOpenDevices;
-  final VoidCallback? onOpenAnalytics;
+  /// Opens Analytics scrolled to [AnalyticsSection]; null hides the links
+  /// (institute admins have no Analytics tab).
+  final void Function(AnalyticsSection section)? onOpenAnalytics;
   final void Function(String code, String name, int floors) onBuildingTap;
 
   const WebOverviewTab({
@@ -254,6 +260,15 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                         6,
                         4,
                       ),
+                      const SizedBox(height: 22),
+                      HistoryTrendPanel(
+                        palette: p,
+                        instituteCode: code,
+                        onOpen: widget.onOpenAnalytics == null
+                            ? null
+                            : () => widget
+                                .onOpenAnalytics!(AnalyticsSection.history),
+                      ),
                     ],
                   );
                 },
@@ -294,6 +309,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
               : 'Welcome back, $first — here is your campus energy at a glance',
           style: const TextStyle(fontSize: 14, color: WebColors.muted),
         ),
+        const HistoryFallbackNotice(padding: EdgeInsets.only(top: 10)),
       ],
     );
   }
@@ -486,9 +502,19 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       palette: p,
       title: 'Consumption by Building',
       subtitle: 'kWh this month, per building',
-      trailing: _SoftChip(
-          palette: p,
-          text: '${rows.length} ${rows.length == 1 ? 'building' : 'buildings'}'),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        _SoftChip(
+            palette: p,
+            text:
+                '${rows.length} ${rows.length == 1 ? 'building' : 'buildings'}'),
+        if (widget.onOpenAnalytics != null)
+          IconButton(
+            tooltip: 'Open in analytics',
+            onPressed: () =>
+                widget.onOpenAnalytics!(AnalyticsSection.institutes),
+            icon: Icon(Icons.insights_rounded, color: p.dark),
+          ),
+      ]),
       child: SizedBox(
         height: 250,
         child: _AreaChart(
@@ -656,7 +682,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
           ? null
           : IconButton(
               tooltip: 'Open analytics',
-              onPressed: widget.onOpenAnalytics,
+              onPressed: () =>
+                  widget.onOpenAnalytics!(AnalyticsSection.trend),
               icon: Icon(Icons.insights_rounded, color: p.dark),
             ),
       child: values.isEmpty

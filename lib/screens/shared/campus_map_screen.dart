@@ -6,6 +6,7 @@ import '../../theme/app_colors.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 // ─── Energy Level ─────────────────────────────────────────────────────────────
 
@@ -180,7 +181,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       });
     });
 
-    final monthKey = _monthKey(DateTime.now());
+    final monthKey = _monthKey(HistoryClock.instance.now());
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance

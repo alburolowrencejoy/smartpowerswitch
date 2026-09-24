@@ -12,6 +12,7 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/history_clock.dart';
 
 /// Web campus map with two views over the real campus image:
 ///
@@ -142,7 +143,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
 
   void _listen() {
     _sub?.cancel();
-    final now = DateTime.now();
+    final now = HistoryClock.instance.now();
     final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
     _sub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,

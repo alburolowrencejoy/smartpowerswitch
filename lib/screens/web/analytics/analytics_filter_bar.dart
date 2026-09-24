@@ -9,6 +9,7 @@ import 'analytics_data.dart';
 import 'analytics_filter.dart';
 import 'analytics_ui.dart';
 import '../../../theme/app_fonts.dart';
+import '../../../services/history_clock.dart';
 
 /// A building offered in the Scope panel.
 @immutable
@@ -123,53 +124,58 @@ class _AnalyticsFilterBarState extends State<AnalyticsFilterBar> {
 
     // The overlay sits above the web shell's Theme; carry it (DM Sans,
     // institute palette) over to the panel.
-    return InheritedTheme.captureAll(context, Stack(children: [
-      // Click outside closes. Translucent, so the click still reaches what
-      // is underneath (e.g. another chunk, which then opens instead).
-      Positioned.fill(
-        child: Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerDown: (e) {
-            final r = _chunkRect(c);
-            if (r != null && r.contains(e.position)) return; // chunk toggles
-            _close();
-          },
-        ),
-      ),
-      Positioned(
-        left: 0,
-        top: 0,
-        child: CompositedTransformFollower(
-          link: _links[c]!,
-          targetAnchor: Alignment.bottomLeft,
-          showWhenUnlinked: false,
-          child: Builder(builder: (_) {
-            return _PanelHost(
-              key: ValueKey(c),
-              chunk: c,
-              filter: widget.filter,
-              buildings: widget.buildings,
-              devices: widget.devices,
-              palette: palette,
-              onApply: _apply,
-              onClose: _close,
-              layout: (customDraft) {
-                final want = _panelWidth(c, widget.filter, customDraft);
-                final w = math.min(want, screen.width - 32);
-                final left = rect == null
-                    ? 0.0
-                    : (rect.left.clamp(16.0, math.max(16.0, screen.width - w - 16)) -
-                        rect.left);
-                final maxH = rect == null
-                    ? 480.0
-                    : math.max(260.0, screen.height - rect.bottom - 24);
-                return (dx: left, width: w, maxHeight: maxH);
+    return InheritedTheme.captureAll(
+        context,
+        Stack(children: [
+          // Click outside closes. Translucent, so the click still reaches what
+          // is underneath (e.g. another chunk, which then opens instead).
+          Positioned.fill(
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (e) {
+                final r = _chunkRect(c);
+                if (r != null && r.contains(e.position)) {
+                  return; // chunk toggles
+                }
+                _close();
               },
-            );
-          }),
-        ),
-      ),
-    ]));
+            ),
+          ),
+          Positioned(
+            left: 0,
+            top: 0,
+            child: CompositedTransformFollower(
+              link: _links[c]!,
+              targetAnchor: Alignment.bottomLeft,
+              showWhenUnlinked: false,
+              child: Builder(builder: (_) {
+                return _PanelHost(
+                  key: ValueKey(c),
+                  chunk: c,
+                  filter: widget.filter,
+                  buildings: widget.buildings,
+                  devices: widget.devices,
+                  palette: palette,
+                  onApply: _apply,
+                  onClose: _close,
+                  layout: (customDraft) {
+                    final want = _panelWidth(c, widget.filter, customDraft);
+                    final w = math.min(want, screen.width - 32);
+                    final left = rect == null
+                        ? 0.0
+                        : (rect.left.clamp(
+                                16.0, math.max(16.0, screen.width - w - 16)) -
+                            rect.left);
+                    final maxH = rect == null
+                        ? 480.0
+                        : math.max(260.0, screen.height - rect.bottom - 24);
+                    return (dx: left, width: w, maxHeight: maxH);
+                  },
+                );
+              }),
+            ),
+          ),
+        ]));
   }
 
   @override
@@ -300,8 +306,8 @@ class _AnalyticsFilterBarState extends State<AnalyticsFilterBar> {
       chips.add((f.dayType.label, f.copyWith(dayType: DayType.all)));
     }
     if (f.timeOfDay != TimeOfDayFilter.all) {
-      chips.add(
-          (f.timeOfDay.label, f.copyWith(timeOfDay: TimeOfDayFilter.all)));
+      chips
+          .add((f.timeOfDay.label, f.copyWith(timeOfDay: TimeOfDayFilter.all)));
     }
     if (f.compare != CompareMode.off) {
       chips.add((
@@ -345,8 +351,7 @@ class _AnalyticsFilterBarState extends State<AnalyticsFilterBar> {
                     color: hovered ? p.dark.withAlpha(36) : Colors.transparent,
                   ),
                   child: Text('×',
-                      style: TextStyle(
-                          fontSize: 14, height: 1, color: p.dark)),
+                      style: TextStyle(fontSize: 14, height: 1, color: p.dark)),
                 ),
               ]),
             ),
@@ -432,7 +437,7 @@ class _PanelHostState extends State<_PanelHost> {
       _from = dateOnly(f.from!);
       _to = f.to == null ? null : dateOnly(f.to!);
     }
-    final shown = _from ?? DateTime.now();
+    final shown = _from ?? HistoryClock.instance.now();
     _month = DateTime(shown.year, shown.month, 1);
   }
 
@@ -513,7 +518,8 @@ class _PanelHostState extends State<_PanelHost> {
                     : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(title,
                 style: TextStyle(
                     fontSize: 14,
@@ -623,7 +629,7 @@ class _PanelHostState extends State<_PanelHost> {
   // ── Time range ───────────────────────────────────────────────────────
 
   Widget _rangePanel(double width) {
-    final today = DateTime.now();
+    final today = HistoryClock.instance.now();
     final list = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -648,10 +654,10 @@ class _PanelHostState extends State<_PanelHost> {
     );
     if (!_customDraft) return list;
 
-    final picked = _from == null
-        ? null
-        : DateTimeRange(start: _from!, end: _to ?? _from!);
-    final cal = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    final picked =
+        _from == null ? null : DateTimeRange(start: _from!, end: _to ?? _from!);
+    final cal =
+        Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _RangeCalendar(
         month: _month,
         from: _from,
@@ -736,8 +742,7 @@ class _PanelHostState extends State<_PanelHost> {
     final inBuilding = one == null
         ? const <DeviceMeta>[]
         : widget.devices.values.where((x) => x.building == one).toList();
-    final maxFloor = math.max(
-        b?.floors ?? 1,
+    final maxFloor = math.max(b?.floors ?? 1,
         inBuilding.fold<int>(1, (a, x) => math.max(a, x.floor)));
     final rooms = <String>{
       for (final x in inBuilding)
@@ -783,8 +788,8 @@ class _PanelHostState extends State<_PanelHost> {
             0: 'All floors',
             for (var i = 1; i <= maxFloor; i++) i: 'Floor $i',
           },
-          onChanged: (v) =>
-              setState(() => _draft = d.copyWith(floor: v, room: '', device: '')),
+          onChanged: (v) => setState(
+              () => _draft = d.copyWith(floor: v, room: '', device: '')),
         ),
         const SizedBox(height: 8),
         _select<String>(
@@ -801,7 +806,8 @@ class _PanelHostState extends State<_PanelHost> {
           items: {
             '': 'All devices',
             for (final x in devs)
-              x.id: '${x.id} · ${x.utility}${d.room.isEmpty ? ' · ${x.room}' : ''}',
+              x.id:
+                  '${x.id} · ${x.utility}${d.room.isEmpty ? ' · ${x.room}' : ''}',
           },
           onChanged: (v) => setState(() => _draft = d.copyWith(device: v)),
         ),
@@ -916,8 +922,8 @@ class _PanelHostState extends State<_PanelHost> {
     void set(AnalyticsFilter n) => widget.onApply(n, close: false);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _section('Day type', first: true),
-      _seg<DayType>(DayType.values, f.dayType, (v) => set(f.copyWith(dayType: v)),
-          (v) => v.label),
+      _seg<DayType>(DayType.values, f.dayType,
+          (v) => set(f.copyWith(dayType: v)), (v) => v.label),
       _section('Time of day'),
       _seg<TimeOfDayFilter>(
         TimeOfDayFilter.values,
@@ -1016,10 +1022,23 @@ class _RangeCalendar extends StatefulWidget {
   State<_RangeCalendar> createState() => _RangeCalendarState();
 }
 
+/// Days (the normal month grid), months of one year, or a year list -- so a
+/// range years apart doesn't mean clicking through every month.
+enum _CalView { days, months, years }
+
 class _RangeCalendarState extends State<_RangeCalendar> {
   static const _rowH = 37.0;
+
+  /// Oldest year offered in the year list (history goes back to 2006).
+  static const _firstYear = 2000;
+
+  /// Height of the month/year pickers (a 6-week day grid).
+  static const _pickerH = _rowH * 6;
+
   DateTime? _dragStart;
   bool _moved = false;
+  _CalView _view = _CalView.days;
+  int _year = DateTime.now().year; // year shown in the months view
 
   DateTime get _today => dateOnly(DateTime.now());
 
@@ -1053,8 +1072,8 @@ class _RangeCalendarState extends State<_RangeCalendar> {
   Widget build(BuildContext context) {
     final p = widget.palette;
     final m = widget.month;
-    final canNext = DateTime(m.year, m.month + 1, 1).isBefore(
-        DateTime(_today.year, _today.month + 1, 1));
+    final canNext = DateTime(m.year, m.month + 1, 1)
+        .isBefore(DateTime(_today.year, _today.month + 1, 1));
     final from = widget.from, to = widget.to ?? widget.from;
     final rows = ((_lead + _days) / 7).ceil();
 
@@ -1083,76 +1102,272 @@ class _RangeCalendarState extends State<_RangeCalendar> {
         border: Border.all(color: p.mid.withAlpha(64)),
       ),
       child: Column(children: [
-        Row(children: [
-          navBtn(Icons.chevron_left_rounded, 'Previous month',
-              () => widget.onMonth(DateTime(m.year, m.month - 1, 1))),
-          Expanded(
-            child: Text('${_monthLong[m.month - 1]} ${m.year}',
-                textAlign: TextAlign.center,
+        if (_view == _CalView.days)
+          Row(children: [
+            navBtn(Icons.chevron_left_rounded, 'Previous month',
+                () => widget.onMonth(DateTime(m.year, m.month - 1, 1))),
+            Expanded(
+              child: _titleButton('${_monthLong[m.month - 1]} ${m.year}',
+                  'Pick a year and month', () {
+                setState(() => _view = _CalView.years);
+              }),
+            ),
+            navBtn(
+                Icons.chevron_right_rounded,
+                'Next month',
+                canNext
+                    ? () => widget.onMonth(DateTime(m.year, m.month + 1, 1))
+                    : null),
+          ])
+        else if (_view == _CalView.months)
+          Row(children: [
+            navBtn(Icons.chevron_left_rounded, 'Previous year',
+                _year > _firstYear ? () => setState(() => _year--) : null),
+            Expanded(
+              child: _titleButton('$_year', 'Pick a year', () {
+                setState(() => _view = _CalView.years);
+              }),
+            ),
+            navBtn(Icons.chevron_right_rounded, 'Next year',
+                _year < _today.year ? () => setState(() => _year++) : null),
+          ])
+        else
+          Row(children: [
+            const SizedBox(width: 32),
+            const Expanded(
+              child: Text('Pick a year',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: WebColors.ink)),
+            ),
+            navBtn(Icons.close_rounded, 'Back to days',
+                () => setState(() => _view = _CalView.days)),
+          ]),
+        const SizedBox(height: 8),
+        if (_view == _CalView.months) _monthsView(),
+        if (_view == _CalView.years) _yearsView(),
+        if (_view == _CalView.days) ..._daysView(rows, from, to),
+      ]),
+    );
+  }
+
+  /// "September 2026 ▾": opens the year/month pickers.
+  Widget _titleButton(String text, String label, VoidCallback onTap) {
+    final p = widget.palette;
+    return Center(
+      child: HoverRegion(
+        semanticLabel: label,
+        onTap: onTap,
+        builder: (context, hovered) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: hovered ? p.pale.withAlpha(153) : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(text,
                 style: const TextStyle(
                     fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
+            const SizedBox(width: 2),
+            Icon(Icons.arrow_drop_down_rounded, size: 22, color: p.dark),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// A month/year chip for the pickers.
+  Widget _chip(String text,
+      {required bool enabled,
+      required bool selected,
+      bool current = false,
+      bool inRange = false,
+      required VoidCallback onTap,
+      required String label}) {
+    final p = widget.palette;
+    return Padding(
+      padding: const EdgeInsets.all(3),
+      child: Opacity(
+        opacity: enabled ? 1 : .4,
+        child: HoverRegion(
+          semanticLabel: label,
+          onTap: enabled ? onTap : null,
+          builder: (context, hovered) => Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected
+                  ? p.dark
+                  : inRange
+                      ? p.pale.withAlpha(191)
+                      : hovered && enabled
+                          ? p.pale.withAlpha(120)
+                          : Colors.transparent,
+              borderRadius: BorderRadius.circular(9),
+              border: current && !selected
+                  ? Border.all(color: p.mid, width: 1.5)
+                  : null,
+            ),
+            child: Text(text,
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? Colors.white : WebColors.ink)),
           ),
-          navBtn(Icons.chevron_right_rounded, 'Next month',
-              canNext ? () => widget.onMonth(DateTime(m.year, m.month + 1, 1)) : null),
-        ]),
-        const SizedBox(height: 8),
-        Row(children: [
-          for (final d in const ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'])
-            Expanded(
-              child: Text(d,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w700,
-                      color: WebColors.muted)),
+        ),
+      ),
+    );
+  }
+
+  bool _overlapsRange(DateTime start, DateTime end) {
+    final a = widget.from, b = widget.to ?? widget.from;
+    if (a == null || b == null) return false;
+    return !end.isBefore(a) && !start.isAfter(b);
+  }
+
+  /// The 12 months of [_year], plus a one-click "whole year" range.
+  Widget _monthsView() {
+    final y = _year;
+    final shown = widget.month;
+    return SizedBox(
+      height: _pickerH,
+      child: Column(children: [
+        Expanded(
+          child: GridView.count(
+            crossAxisCount: 4,
+            childAspectRatio: 1.9,
+            physics: const NeverScrollableScrollPhysics(),
+            children: [
+              for (var mo = 1; mo <= 12; mo++)
+                _chip(
+                  _monthLong[mo - 1].substring(0, 3),
+                  label: '${_monthLong[mo - 1]} $y',
+                  enabled: !DateTime(y, mo, 1).isAfter(_today),
+                  selected: shown.year == y && shown.month == mo,
+                  current: _today.year == y && _today.month == mo,
+                  inRange: _overlapsRange(
+                      DateTime(y, mo, 1), DateTime(y, mo + 1, 0)),
+                  onTap: () {
+                    widget.onMonth(DateTime(y, mo, 1));
+                    setState(() => _view = _CalView.days);
+                  },
+                ),
+            ],
+          ),
+        ),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () {
+              final end = DateTime(y, 12, 31);
+              widget.onPick(
+                  DateTime(y, 1, 1), end.isAfter(_today) ? _today : end);
+              widget.onMonth(DateTime(y, 1, 1));
+              setState(() => _view = _CalView.days);
+            },
+            icon: const Icon(Icons.date_range_rounded, size: 18),
+            label: Text('Select all of $y'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: widget.palette.dark,
+              side: BorderSide(color: widget.palette.mid.withAlpha(120)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(9)),
             ),
-        ]),
-        const SizedBox(height: 4),
-        LayoutBuilder(builder: (context, c) {
-          final w = c.maxWidth;
-          return MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: Listener(
-              onPointerDown: (e) {
-                final d = _dayAt(e.localPosition, w);
-                _dragStart = d;
-                _moved = false;
-              },
-              onPointerMove: (e) {
-                final s = _dragStart;
-                if (s == null) return;
-                final d = _dayAt(e.localPosition, w);
-                if (d == null || (d == s && !_moved)) return;
-                _moved = true;
-                widget.onPick(d.isBefore(s) ? d : s, d.isBefore(s) ? s : d);
-              },
-              onPointerUp: (e) {
-                final s = _dragStart;
-                _dragStart = null;
-                if (s == null || _moved) return;
-                if (_dayAt(e.localPosition, w) == s) _click(s);
-              },
-              child: SizedBox(
-                height: rows * _rowH,
-                child: Column(children: [
-                  for (var r = 0; r < rows; r++)
-                    SizedBox(
-                      height: _rowH,
-                      child: Row(children: [
-                        for (var col = 0; col < 7; col++)
-                          Expanded(child: _cell(r * 7 + col - _lead + 1, from, to)),
-                      ]),
-                    ),
-                ]),
-              ),
-            ),
-          );
-        }),
+          ),
+        ),
       ]),
     );
+  }
+
+  /// Every year from this one back to [_firstYear], newest first.
+  Widget _yearsView() {
+    final years = [for (var y = _today.year; y >= _firstYear; y--) y];
+    final shown = widget.month.year;
+    return SizedBox(
+      height: _pickerH,
+      child: GridView.count(
+        crossAxisCount: 4,
+        childAspectRatio: 1.9,
+        children: [
+          for (final y in years)
+            _chip(
+              '$y',
+              label: 'Year $y',
+              enabled: true,
+              selected: y == shown,
+              current: y == _today.year,
+              inRange: _overlapsRange(DateTime(y, 1, 1), DateTime(y, 12, 31)),
+              onTap: () => setState(() {
+                _year = y;
+                _view = _CalView.months;
+              }),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _daysView(int rows, DateTime? from, DateTime? to) {
+    return [
+      Row(children: [
+        for (final d in const ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'])
+          Expanded(
+            child: Text(d,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.muted)),
+          ),
+      ]),
+      const SizedBox(height: 4),
+      LayoutBuilder(builder: (context, c) {
+        final w = c.maxWidth;
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Listener(
+            onPointerDown: (e) {
+              final d = _dayAt(e.localPosition, w);
+              _dragStart = d;
+              _moved = false;
+            },
+            onPointerMove: (e) {
+              final s = _dragStart;
+              if (s == null) return;
+              final d = _dayAt(e.localPosition, w);
+              if (d == null || (d == s && !_moved)) return;
+              _moved = true;
+              widget.onPick(d.isBefore(s) ? d : s, d.isBefore(s) ? s : d);
+            },
+            onPointerUp: (e) {
+              final s = _dragStart;
+              _dragStart = null;
+              if (s == null || _moved) return;
+              if (_dayAt(e.localPosition, w) == s) _click(s);
+            },
+            child: SizedBox(
+              height: rows * _rowH,
+              child: Column(children: [
+                for (var r = 0; r < rows; r++)
+                  SizedBox(
+                    height: _rowH,
+                    child: Row(children: [
+                      for (var col = 0; col < 7; col++)
+                        Expanded(
+                            child: _cell(r * 7 + col - _lead + 1, from, to)),
+                    ]),
+                  ),
+              ]),
+            ),
+          ),
+        );
+      }),
+    ];
   }
 
   Widget _cell(int n, DateTime? from, DateTime? to) {
@@ -1179,9 +1394,8 @@ class _RangeCalendarState extends State<_RangeCalendar> {
                     ? p.pale.withAlpha(191)
                     : Colors.transparent,
             borderRadius: BorderRadius.circular(edge || !inRange ? 9 : 0),
-            border: isToday && !edge
-                ? Border.all(color: p.mid, width: 1.5)
-                : null,
+            border:
+                isToday && !edge ? Border.all(color: p.mid, width: 1.5) : null,
           ),
           child: Text('$n',
               style: TextStyle(
@@ -1199,6 +1413,16 @@ class _RangeCalendarState extends State<_RangeCalendar> {
 }
 
 const _monthLong = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
 ];
