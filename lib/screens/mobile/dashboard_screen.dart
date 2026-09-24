@@ -14,6 +14,8 @@ import '../../widgets/trend_chart_painters.dart';
 import 'automation_screen.dart';
 import 'building_floor_screen.dart';
 import '../shared/campus_map_screen.dart';
+import '../../widgets/app_text_field.dart';
+import '../../theme/app_fonts.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -325,8 +327,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 'floors': (b['floors'] ?? 1) as int,
               });
             });
-            list.sort((a, b) =>
-                (a['code'] as String).compareTo(b['code'] as String));
+            list.sort(
+                (a, b) => (a['code'] as String).compareTo(b['code'] as String));
             _buildings = list;
           } catch (e, st) {
             debugPrint('[Buildings] Exception: $e\n$st');
@@ -486,8 +488,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             final lastSeen = device['last_seen'];
             if (lastSeen != null && lastSeen != 0) {
-              final dt =
-                  DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
+              final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
               if (DateTime.now().difference(dt).inMinutes < 2) online++;
             }
           });
@@ -820,6 +821,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final nameCtrl = TextEditingController();
     final floorCtrl = TextEditingController(text: '1');
     String? error;
+    String? codeError;
+    String? nameError;
+    int shake = 0;
 
     await showDialog(
       context: context,
@@ -829,24 +833,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text(
             'Add Building',
-            style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(
+              AppTextField(
                 controller: codeCtrl,
+                shakeTrigger: shake,
                 textCapitalization: TextCapitalization.characters,
-                decoration: _inputDeco('Building Code (e.g. IC)', Icons.tag),
+                decoration: _inputDeco('Building Code (e.g. IC)', Icons.tag)
+                    .copyWith(errorText: codeError),
                 autofocus: true,
+                onChanged: (_) {
+                  if (codeError != null) setS(() => codeError = null);
+                },
               ),
               const SizedBox(height: 12),
-              TextField(
+              AppTextField(
                 controller: nameCtrl,
-                decoration: _inputDeco('Building Name', Icons.business),
+                shakeTrigger: shake,
+                decoration: _inputDeco('Building Name', Icons.business)
+                    .copyWith(errorText: nameError),
+                onChanged: (_) {
+                  if (nameError != null) setS(() => nameError = null);
+                },
               ),
               const SizedBox(height: 12),
-              TextField(
+              AppTextField(
                 controller: floorCtrl,
                 keyboardType: TextInputType.number,
                 decoration: _inputDeco('Building Floors', Icons.layers),
@@ -879,12 +894,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final name = nameCtrl.text.trim();
                 final floors = int.tryParse(floorCtrl.text.trim()) ?? 1;
 
-                if (code.isEmpty) {
-                  setS(() => error = 'Code is required');
-                  return;
-                }
-                if (name.isEmpty) {
-                  setS(() => error = 'Name is required');
+                if (code.isEmpty || name.isEmpty) {
+                  setS(() {
+                    codeError = code.isEmpty ? 'Code is required' : null;
+                    nameError = name.isEmpty ? 'Name is required' : null;
+                    error = null;
+                    shake++;
+                  });
                   return;
                 }
 
@@ -916,6 +932,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final currentName = (building['name'] ?? code).toString();
     final nameCtrl = TextEditingController(text: currentName);
     String? error;
+    String? nameError;
+    int shake = 0;
 
     await showDialog(
       context: context,
@@ -924,8 +942,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Edit Building Name',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -936,10 +954,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       color: AppColors.textMuted,
                       fontWeight: FontWeight.w600)),
               const SizedBox(height: 10),
-              TextField(
+              AppTextField(
                 controller: nameCtrl,
-                decoration: _inputDeco('Building Name', Icons.business),
+                shakeTrigger: shake,
+                decoration: _inputDeco('Building Name', Icons.business)
+                    .copyWith(errorText: nameError),
                 autofocus: true,
+                onChanged: (_) {
+                  if (nameError != null) setS(() => nameError = null);
+                },
               ),
               if (error != null) ...[
                 const SizedBox(height: 10),
@@ -962,7 +985,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onPressed: () async {
                 final newName = nameCtrl.text.trim();
                 if (newName.isEmpty) {
-                  setS(() => error = 'Name is required');
+                  setS(() {
+                    nameError = 'Name is required';
+                    error = null;
+                    shake++;
+                  });
                   return;
                 }
                 if (newName == currentName) {
@@ -1034,8 +1061,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Building',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1116,7 +1143,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Row(children: [
                 const Text('Manage Buildings',
                     style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textDark)),
@@ -1160,8 +1187,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.cardBg,
                             borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                                color: _palette.mid.withAlpha(31)),
+                            border:
+                                Border.all(color: _palette.mid.withAlpha(31)),
                           ),
                           child: Row(children: [
                             Container(
@@ -1173,7 +1200,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Center(
                                   child: Text(code,
                                       style: TextStyle(
-                                          fontFamily: 'Outfit',
+                                          fontFamily: AppFonts.family,
                                           fontSize: 9,
                                           fontWeight: FontWeight.w700,
                                           color: _palette.dark))),
@@ -1372,7 +1399,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Text(_safeFormatDouble(_instituteKwh, 2),
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 40,
                   fontWeight: FontWeight.w700,
                   color: Colors.white)),
@@ -1391,8 +1418,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: Colors.white.withAlpha(15),
               borderRadius: BorderRadius.circular(12)),
           child: Row(children: [
-            _miniStat(
-                'Month Cost', '₱ ${_safeFormatDouble(monthlyCost, 0)}'),
+            _miniStat('Month Cost', '₱ ${_safeFormatDouble(monthlyCost, 0)}'),
             _vertDivider(),
             _miniStat('Assigned', '$_instituteAssignedDevices devices'),
             _vertDivider(),
@@ -1414,12 +1440,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               decoration: BoxDecoration(
                   color: _palette.pale,
                   borderRadius: BorderRadius.circular(20)),
-              child: Icon(Icons.wifi_off_rounded,
-                  size: 34, color: _palette.mid)),
+              child:
+                  Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid)),
           const SizedBox(height: 16),
           const Text('Cannot load dashboard',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -1431,8 +1457,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ElevatedButton.icon(
             onPressed: _retryLoad,
             icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-            label:
-                const Text('Retry', style: TextStyle(color: Colors.white)),
+            label: const Text('Retry', style: TextStyle(color: Colors.white)),
             style: ElevatedButton.styleFrom(
                 backgroundColor: _palette.dark,
                 shape: RoundedRectangleBorder(
@@ -1500,174 +1525,171 @@ class _DashboardScreenState extends State<DashboardScreen> {
         color: _palette.dark,
       ),
       child: Row(children: [
-            Container(
-              width: 34,
-              height: 34,
-              padding: const EdgeInsets.all(4),
-              child: Image.asset(
-                'promo/img/logo.png',
-                fit: BoxFit.contain,
+        Container(
+          width: 34,
+          height: 34,
+          padding: const EdgeInsets.all(4),
+          child: Image.asset(
+            'promo/img/logo.png',
+            fit: BoxFit.contain,
+          ),
+        ),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Text('Smart Switch',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontFamily: AppFonts.family,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white)),
+        ),
+        // Always the compact burger menu (not just under the old 430px
+        // breakpoint) -- one menu button reading Notifications/Manage
+        // Users/Settings/Logout is cleaner than 4 separate icons, and
+        // the unread-notification badge still shows as an overlay dot
+        // on the menu icon itself (see below).
+        _roleBadge(),
+        PopupMenuButton<String>(
+          // Bug fix: this hardcoded the main-admin green (both the
+          // menu surface and its border) instead of following
+          // `_palette`, so an institute_admin viewing e.g. IC
+          // (violet) got a top bar that went violet everywhere
+          // except this popup, which silently stayed green.
+          color: _palette.dark,
+          surfaceTintColor: Colors.transparent,
+          elevation: 12,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: _palette.light.withAlpha(140))),
+          onOpened: () {
+            if (mounted) setState(() => _compactMenuOpen = true);
+          },
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOut,
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _compactMenuOpen
+                      ? _palette.light.withAlpha(46)
+                      : Colors.white.withAlpha(20),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withAlpha(60)),
+                ),
+                child: AnimatedRotation(
+                  turns: _compactMenuOpen ? 0.125 : 0,
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOut,
+                  child: Icon(
+                      _compactMenuOpen
+                          ? Icons.close_rounded
+                          : Icons.menu_rounded,
+                      color: Colors.white,
+                      size: 20),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text('Smart Switch',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontFamily: 'Outfit',
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white)),
-            ),
-            // Always the compact burger menu (not just under the old 430px
-            // breakpoint) -- one menu button reading Notifications/Manage
-            // Users/Settings/Logout is cleaner than 4 separate icons, and
-            // the unread-notification badge still shows as an overlay dot
-            // on the menu icon itself (see below).
-            _roleBadge(),
-            PopupMenuButton<String>(
-                // Bug fix: this hardcoded the main-admin green (both the
-                // menu surface and its border) instead of following
-                // `_palette`, so an institute_admin viewing e.g. IC
-                // (violet) got a top bar that went violet everywhere
-                // except this popup, which silently stayed green.
-                color: _palette.dark,
-                surfaceTintColor: Colors.transparent,
-                elevation: 12,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    side: BorderSide(color: _palette.light.withAlpha(140))),
-                onOpened: () {
-                  if (mounted) setState(() => _compactMenuOpen = true);
-                },
-                icon: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
-                      curve: Curves.easeOut,
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: _compactMenuOpen
-                            ? _palette.light.withAlpha(46)
-                            : Colors.white.withAlpha(20),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white.withAlpha(60)),
-                      ),
-                      child: AnimatedRotation(
-                        turns: _compactMenuOpen ? 0.125 : 0,
-                        duration: const Duration(milliseconds: 220),
-                        curve: Curves.easeOut,
-                        child: Icon(
-                            _compactMenuOpen
-                                ? Icons.close_rounded
-                                : Icons.menu_rounded,
-                            color: Colors.white,
-                            size: 20),
+              if (_unreadNotificationCount > 0)
+                Positioned(
+                  right: -4,
+                  top: -4,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    constraints: const BoxConstraints(minWidth: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning,
+                      borderRadius: BorderRadius.circular(99),
+                      // This border exists only to mask the badge's
+                      // corner against the top bar behind it, so it
+                      // must match the top bar's own background
+                      // (_palette.dark, set in _buildTopBar) rather
+                      // than a hardcoded green -- else a visible
+                      // green ring shows through on non-green
+                      // institutes.
+                      border: Border.all(color: _palette.dark, width: 1.2),
+                    ),
+                    child: Text(
+                      _unreadNotificationCount > 99
+                          ? '99+'
+                          : _unreadNotificationCount.toString(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                    if (_unreadNotificationCount > 0)
-                      Positioned(
-                        right: -4,
-                        top: -4,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 5, vertical: 1),
-                          constraints: const BoxConstraints(minWidth: 16),
-                          decoration: BoxDecoration(
-                            color: AppColors.warning,
-                            borderRadius: BorderRadius.circular(99),
-                            // This border exists only to mask the badge's
-                            // corner against the top bar behind it, so it
-                            // must match the top bar's own background
-                            // (_palette.dark, set in _buildTopBar) rather
-                            // than a hardcoded green -- else a visible
-                            // green ring shows through on non-green
-                            // institutes.
-                            border:
-                                Border.all(color: _palette.dark, width: 1.2),
-                          ),
-                          child: Text(
-                            _unreadNotificationCount > 99
-                                ? '99+'
-                                : _unreadNotificationCount.toString(),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 9,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
+                  ),
                 ),
-                onCanceled: () {
-                  if (mounted) setState(() => _compactMenuOpen = false);
-                },
-                onSelected: (value) {
-                  if (mounted) setState(() => _compactMenuOpen = false);
-                  if (value == 'notifications') {
-                    unawaited(_openNotifications());
-                  } else if (value == 'manage-users') {
-                    Navigator.pushNamed(context, '/manage-users', arguments: {
-                      'role': _role,
-                      'institute': _institute,
-                    });
-                  } else if (value == 'settings') {
-                    Navigator.pushNamed(context, '/settings');
-                  } else if (value == 'logout') {
-                    _logout();
-                  }
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem<String>(
-                      value: 'notifications',
-                      child: Row(children: [
-                        Icon(Icons.notifications_outlined,
-                            size: 18, color: Colors.white),
-                        SizedBox(width: 10),
-                        Text('Notifications',
-                            style: TextStyle(color: Colors.white))
-                      ])),
-                  if (_canAccessManagement)
-                    const PopupMenuItem<String>(
-                        value: 'manage-users',
-                        child: Row(children: [
-                          Icon(Icons.admin_panel_settings_outlined,
-                              size: 18, color: Colors.white),
-                          SizedBox(width: 10),
-                          Text('Manage Users',
-                              style: TextStyle(color: Colors.white))
-                        ])),
-                  if (_canAccessManagement)
-                    const PopupMenuItem<String>(
-                        value: 'settings',
-                        child: Row(children: [
-                          Icon(Icons.settings_outlined,
-                              size: 18, color: Colors.white),
-                          SizedBox(width: 10),
-                          Text('Settings',
-                              style: TextStyle(color: Colors.white))
-                        ])),
-                  const PopupMenuItem<String>(
-                      value: 'logout',
-                      child: Row(children: [
-                        Icon(Icons.logout, size: 18, color: Colors.white),
-                        SizedBox(width: 10),
-                        Text('Logout', style: TextStyle(color: Colors.white))
-                      ])),
-                ],
-              ),
-          ]),
+            ],
+          ),
+          onCanceled: () {
+            if (mounted) setState(() => _compactMenuOpen = false);
+          },
+          onSelected: (value) {
+            if (mounted) setState(() => _compactMenuOpen = false);
+            if (value == 'notifications') {
+              unawaited(_openNotifications());
+            } else if (value == 'manage-users') {
+              Navigator.pushNamed(context, '/manage-users', arguments: {
+                'role': _role,
+                'institute': _institute,
+              });
+            } else if (value == 'settings') {
+              Navigator.pushNamed(context, '/settings');
+            } else if (value == 'logout') {
+              _logout();
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem<String>(
+                value: 'notifications',
+                child: Row(children: [
+                  Icon(Icons.notifications_outlined,
+                      size: 18, color: Colors.white),
+                  SizedBox(width: 10),
+                  Text('Notifications', style: TextStyle(color: Colors.white))
+                ])),
+            if (_canAccessManagement)
+              const PopupMenuItem<String>(
+                  value: 'manage-users',
+                  child: Row(children: [
+                    Icon(Icons.admin_panel_settings_outlined,
+                        size: 18, color: Colors.white),
+                    SizedBox(width: 10),
+                    Text('Manage Users', style: TextStyle(color: Colors.white))
+                  ])),
+            if (_canAccessManagement)
+              const PopupMenuItem<String>(
+                  value: 'settings',
+                  child: Row(children: [
+                    Icon(Icons.settings_outlined,
+                        size: 18, color: Colors.white),
+                    SizedBox(width: 10),
+                    Text('Settings', style: TextStyle(color: Colors.white))
+                  ])),
+            const PopupMenuItem<String>(
+                value: 'logout',
+                child: Row(children: [
+                  Icon(Icons.logout, size: 18, color: Colors.white),
+                  SizedBox(width: 10),
+                  Text('Logout', style: TextStyle(color: Colors.white))
+                ])),
+          ],
+        ),
+      ]),
     );
   }
 
   Widget _buildHomeTab() {
-    final buildingsSource =
-        _buildings.isEmpty && _isLoading ? placeholderBuildingList() : _buildings;
+    final buildingsSource = _buildings.isEmpty && _isLoading
+        ? placeholderBuildingList()
+        : _buildings;
     final sortedBuildings = [...buildingsSource]..sort((a, b) {
         final aCode = (a['code'] as String?) ?? '';
         final bCode = (b['code'] as String?) ?? '';
@@ -1700,7 +1722,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const Expanded(
                 child: Text('Campus Buildings',
                     style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark)),
@@ -1797,14 +1819,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Row(children: [
           Text(_userName.isNotEmpty ? _userName : 'User',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: compact ? 19 : 22,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textDark)),
           if (_role == 'admin') ...[
             const SizedBox(width: 8),
-            Icon(Icons.star,
-                size: compact ? 18 : 22, color: _palette.light),
+            Icon(Icons.star, size: compact ? 18 : 22, color: _palette.light),
           ],
         ]),
       ])),
@@ -1852,13 +1873,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Energy consumed today',
-              style: TextStyle(
-                  fontSize: compact ? 11 : 12, color: Colors.white)),
+              style:
+                  TextStyle(fontSize: compact ? 11 : 12, color: Colors.white)),
           SizedBox(height: compact ? 4 : 6),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text(_safeFormatDouble(_totalKwh, 2),
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: compact ? 32 : 40,
                     fontWeight: FontWeight.w700,
                     color: Colors.white)),
@@ -1945,7 +1966,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Center(
                   child: Text(code,
                       style: TextStyle(
-                          fontFamily: 'Outfit',
+                          fontFamily: AppFonts.family,
                           fontSize: compact ? 9 : 10,
                           fontWeight: FontWeight.w700,
                           color: _palette.dark)))),
@@ -2004,7 +2025,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Analytics',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 22,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
@@ -2092,7 +2113,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                 Text('Consumption Trend',
                     style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark)),
@@ -2197,7 +2218,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Device Status',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2248,7 +2269,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: color,
-                  fontFamily: 'Outfit')),
+                  fontFamily: AppFonts.family)),
           Text(label,
               style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
         ]),
@@ -2279,7 +2300,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Utilities',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2362,7 +2383,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Institutes This Month',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2386,7 +2407,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w700,
-                                color: i == 0 ? Colors.white : _palette.dark)))),
+                                color:
+                                    i == 0 ? Colors.white : _palette.dark)))),
                 const SizedBox(width: 10),
                 Expanded(
                     child: Column(
@@ -2471,4 +2493,3 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
-

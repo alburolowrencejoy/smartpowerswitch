@@ -11,6 +11,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 String _isoDate(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -409,7 +410,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: const Text('Select Device',
-          style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+          style: TextStyle(
+              fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -427,8 +429,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                     ),
                     child: const Text(
                       'No buildings found',
-                      style:
-                          TextStyle(fontSize: 14, color: WebColors.muted),
+                      style: TextStyle(fontSize: 14, color: WebColors.muted),
                     ),
                   )
                 : _dropdown<String>(
@@ -537,8 +538,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
       actions: [
         TextButton(
             onPressed: () => _safeDialogPop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: WebColors.muted))),
+            child:
+                const Text('Cancel', style: TextStyle(color: WebColors.muted))),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
               backgroundColor: widget.palette.dark,
@@ -561,8 +562,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
       Container(
         width: 20,
         height: 20,
-        decoration: BoxDecoration(
-            color: widget.palette.dark, shape: BoxShape.circle),
+        decoration:
+            BoxDecoration(color: widget.palette.dark, shape: BoxShape.circle),
         child: Center(
             child: Text(step,
                 style: const TextStyle(
@@ -652,8 +653,8 @@ class _WindowDraft {
 
   ScheduleWindow? get window => on == null || until == null
       ? null
-      : ScheduleWindow(on!.hour * 60 + on!.minute,
-          until!.hour * 60 + until!.minute);
+      : ScheduleWindow(
+          on!.hour * 60 + on!.minute, until!.hour * 60 + until!.minute);
 }
 
 class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
@@ -736,7 +737,9 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
   Map<String, String> _validate() {
     final e = <String, String>{};
     if (!_isEdit) {
-      if (_nameCtrl.text.trim().isEmpty) e['name'] = 'Schedule name is required.';
+      if (_nameCtrl.text.trim().isEmpty) {
+        e['name'] = 'Schedule name is required.';
+      }
       if (_scope == 'building' && !widget.buildings.contains(_target)) {
         e['target'] = 'Pick a building.';
       }
@@ -818,8 +821,8 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
 
   // ── Build ──────────────────────────────────────────────────────────────
 
-  Widget _shaking(String key, Widget child) =>
-      ShakeOnChange(trigger: _errors.containsKey(key) ? _shake : 0, child: child);
+  Widget _shaking(String key, Widget child) => ShakeOnChange(
+      trigger: _errors.containsKey(key) ? _shake : 0, child: child);
 
   Widget _errorText(String key) {
     final msg = _errors[key];
@@ -851,7 +854,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
       title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(_isEdit ? 'Edit schedule' : 'Add schedule',
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 19,
                 fontWeight: FontWeight.w700,
                 color: WebColors.ink)),
@@ -945,17 +948,15 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
 
   List<Widget> _targetFields() {
     return [
-      _shaking(
-        'name',
-        TextField(
-          controller: _nameCtrl,
-          autofocus: true,
-          decoration: webInputDecoration(_p,
-              label: 'Schedule name',
-              hint: 'e.g. Weekday lights',
-              error: _errors['name']),
-          onChanged: (_) => _clear('name'),
-        ),
+      AppTextField(
+        shakeTrigger: _shake,
+        controller: _nameCtrl,
+        autofocus: true,
+        decoration: webInputDecoration(_p,
+            label: 'Schedule name',
+            hint: 'e.g. Weekday lights',
+            error: _errors['name']),
+        onChanged: (_) => _clear('name'),
       ),
       const SizedBox(height: 14),
       _dropdown('Scope', _scope, const {
@@ -996,11 +997,15 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
         const SizedBox(height: 14),
       ],
       if (_scope == 'utility') ...[
-        _dropdown('Utility', _target, const {
-          'Lights': 'Lights',
-          'Outlets': 'Outlets',
-          'AC': 'AC',
-        }, (v) => setState(() => _target = v)),
+        _dropdown(
+            'Utility',
+            _target,
+            const {
+              'Lights': 'Lights',
+              'Outlets': 'Outlets',
+              'AC': 'AC',
+            },
+            (v) => setState(() => _target = v)),
         const SizedBox(height: 14),
       ],
       if (_scope == 'device') ...[
@@ -1008,7 +1013,9 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
         const SizedBox(height: 14),
       ],
       if (_scope != 'utility') ...[
-        _dropdown('Utility to control', _utility,
+        _dropdown(
+            'Utility to control',
+            _utility,
             {for (final u in _utilities) u: u},
             (v) => setState(() => _utility = v)),
         const SizedBox(height: 18),
@@ -1107,19 +1114,25 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
                         fontSize: 13,
                         color: AppColors.greenMid)),
                 const SizedBox(width: 10),
-                _timeButton(d.on, 'Start', (t) => setState(() {
-                      d.on = t;
-                      _errors.remove(key);
-                    })),
+                _timeButton(
+                    d.on,
+                    'Start',
+                    (t) => setState(() {
+                          d.on = t;
+                          _errors.remove(key);
+                        })),
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 8),
                   child: Text('to',
                       style: TextStyle(fontSize: 13, color: WebColors.muted)),
                 ),
-                _timeButton(d.until, 'End', (t) => setState(() {
-                      d.until = t;
-                      _errors.remove(key);
-                    })),
+                _timeButton(
+                    d.until,
+                    'End',
+                    (t) => setState(() {
+                          d.until = t;
+                          _errors.remove(key);
+                        })),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(hint,
@@ -1187,10 +1200,13 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
           runSpacing: 6,
           children: [
             for (final d in _allDays)
-              _dayChip(d, _days.contains(d), () => setState(() {
-                    _days.contains(d) ? _days.remove(d) : _days.add(d);
-                    _errors.remove('days');
-                  })),
+              _dayChip(
+                  d,
+                  _days.contains(d),
+                  () => setState(() {
+                        _days.contains(d) ? _days.remove(d) : _days.add(d);
+                        _errors.remove('days');
+                      })),
           ],
         ),
       ]);
@@ -1444,7 +1460,8 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       ),
     );
     if (saved == true && mounted) {
-      TopToast.show(context, s == null ? 'Schedule added.' : 'Schedule updated.');
+      TopToast.show(
+          context, s == null ? 'Schedule added.' : 'Schedule updated.');
     }
   }
 
@@ -1458,57 +1475,57 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         extensions: [InstituteTheme.resolve(widget.role, _institute)],
       ),
       child: ScreenSkeleton(
-      isLoading: _isLoading,
-      child: SingleChildScrollView(
-      padding: const EdgeInsets.all(24.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Automation',
-                        style: TextStyle(
-                            fontFamily: 'Outfit',
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textDark)),
-                    SizedBox(height: 4),
-                    Text('Scheduled ON/OFF rules for buildings and devices',
-                        style: TextStyle(
-                            fontSize: 13, color: WebColors.muted)),
-                  ],
-                ),
-              ),
-              if (isAdmin)
-                Padding(
-                  // Clear of the shell's floating role badge and bell.
-                  padding: const EdgeInsets.only(right: 180),
-                  child: WebIconButton(
-                    icon: Icons.add_rounded,
-                    tooltip: 'Add schedule',
-                    solid: true,
-                    size: 40,
-                    onPressed: _openScheduleForm,
+              Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Automation',
+                            style: TextStyle(
+                                fontFamily: AppFonts.family,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textDark)),
+                        SizedBox(height: 4),
+                        Text('Scheduled ON/OFF rules for buildings and devices',
+                            style: TextStyle(
+                                fontSize: 13, color: WebColors.muted)),
+                      ],
+                    ),
                   ),
-                ),
+                  if (isAdmin)
+                    Padding(
+                      // Clear of the shell's floating role badge and bell.
+                      padding: const EdgeInsets.only(right: 180),
+                      child: WebIconButton(
+                        icon: Icons.add_rounded,
+                        tooltip: 'Add schedule',
+                        solid: true,
+                        size: 40,
+                        onPressed: _openScheduleForm,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              if (schedulesLoading)
+                _buildGroupedGrid(WebAutomationSchedule.placeholderList())
+              else if (_errorText != null)
+                _buildError()
+              else if (_schedules.isEmpty)
+                _buildEmpty()
+              else
+                _buildGroupedGrid(_schedules),
             ],
           ),
-          const SizedBox(height: 24),
-          if (schedulesLoading)
-            _buildGroupedGrid(WebAutomationSchedule.placeholderList())
-          else if (_errorText != null)
-            _buildError()
-          else if (_schedules.isEmpty)
-            _buildEmpty()
-          else
-            _buildGroupedGrid(_schedules),
-        ],
-      ),
-      ),
+        ),
       ),
     );
   }
@@ -1534,7 +1551,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
           const SizedBox(height: 16),
           const Text('Cannot load automations',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -1564,12 +1581,11 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               decoration: BoxDecoration(
                   color: _palette.pale,
                   borderRadius: BorderRadius.circular(20)),
-              child:
-                  Icon(Icons.schedule, size: 36, color: _palette.dark)),
+              child: Icon(Icons.schedule, size: 36, color: _palette.dark)),
           const SizedBox(height: 16),
           const Text('No schedules yet',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textDark)),
@@ -1635,7 +1651,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       children: [
         Text(title,
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
@@ -1702,7 +1718,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark)),
@@ -1710,8 +1726,8 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                 Text(_scopeLabel(s),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12, color: WebColors.muted)),
+                    style:
+                        const TextStyle(fontSize: 12, color: WebColors.muted)),
               ])),
           if (isAdmin)
             // Semantic: communicates "this automation rule is currently
@@ -1802,5 +1818,4 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         return s.scope;
     }
   }
-
 }

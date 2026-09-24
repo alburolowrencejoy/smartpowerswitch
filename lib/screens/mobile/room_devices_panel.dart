@@ -6,6 +6,8 @@ import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../widgets/app_text_field.dart';
+import '../../theme/app_fonts.dart';
 
 /// Self-contained "device grid for one room" widget, extracted out of
 /// `BuildingFloorScreen` so it can be dropped into both:
@@ -86,7 +88,8 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
 
   void _listenDevices() {
     _devicesSub = FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/${widget.floor}/devices')
+        .ref(
+            'buildings/${widget.buildingCode}/floorData/${widget.floor}/devices')
         .onValue
         .listen((event) {
       if (!mounted) return;
@@ -165,8 +168,8 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Select Utility Type',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           _utilityPickTile('Lights', Icons.lightbulb_outline, 'Lights',
               'Relay 220V', const Color(0xFFE8922A)),
@@ -189,6 +192,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
 
     final deviceIdController = TextEditingController();
     String? errorText;
+    int shake = 0;
 
     final deviceId = await showDialog<String>(
       context: context,
@@ -197,14 +201,15 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Enter Device ID',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             const Text(
                 'Type the unique Device ID from the sticker on your ESP32.',
                 style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
             const SizedBox(height: 12),
-            TextField(
+            AppTextField(
+              shakeTrigger: shake,
               controller: deviceIdController,
               textCapitalization: TextCapitalization.characters,
               decoration: InputDecoration(
@@ -234,24 +239,35 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
               onPressed: () async {
                 final id = deviceIdController.text.trim().toUpperCase();
                 if (id.isEmpty) {
-                  setS(() => errorText = 'Please enter a Device ID');
+                  setS(() {
+                    errorText = 'Please enter a Device ID';
+                    shake++;
+                  });
                   return;
                 }
                 final snap = await FirebaseDatabase.instance
                     .ref('master_devices/$id')
                     .get();
                 if (!snap.exists) {
-                  setS(() => errorText = 'Device ID not found in system');
+                  setS(() {
+                    errorText = 'Device ID not found in system';
+                    shake++;
+                  });
                   return;
                 }
                 final assigned = (snap.value as Map?)?['assignedTo'] as String?;
                 if (assigned != null && assigned.isNotEmpty) {
-                  setS(
-                      () => errorText = 'Device already assigned to $assigned');
+                  setS(() {
+                    errorText = 'Device already assigned to $assigned';
+                    shake++;
+                  });
                   return;
                 }
                 if (_devices.containsKey(id)) {
-                  setS(() => errorText = 'Device already added to this floor');
+                  setS(() {
+                    errorText = 'Device already added to this floor';
+                    shake++;
+                  });
                   return;
                 }
                 if (ctx.mounted) Navigator.pop(ctx, id);
@@ -346,8 +362,8 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Remove Device',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -417,7 +433,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
             label: const Text('Add Utility',
                 style: TextStyle(
                     color: Colors.white,
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontWeight: FontWeight.w600)),
           ),
         ),
@@ -431,14 +447,13 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
       return ScreenSkeleton(
         isLoading: _devicesLoading,
         child: Center(
-          child:
-              Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             const Icon(Icons.power_off_outlined,
                 size: 48, color: AppColors.textMuted),
             const SizedBox(height: 12),
             const Text('No utilities yet',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark)),
@@ -459,7 +474,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(widget.room,
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -541,7 +556,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
         const SizedBox(height: 6),
         Text(_utilityLabel(utility),
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),

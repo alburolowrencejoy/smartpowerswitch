@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,25 +11,67 @@ import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import 'analytics/analytics_data.dart';
+import 'analytics/analytics_filter.dart';
+import 'analytics/analytics_filter_bar.dart';
+import 'analytics/analytics_ui.dart';
+import 'analytics/breakdown_panel.dart';
+import 'analytics/utility_donut.dart';
 import 'web_forecast_cards.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
+import '../../theme/app_fonts.dart';
 
-/// The desktop "Analytics" section: Daily / Monthly totals, the last 30
-/// days (or 6 months) as a line or bar trend, ARIMA vs XGBoost / LSTM
-/// forecasts, top utility/building, and the organized Excel export. [HistoryScreen] itself is untouched -- this is
-/// an independent widget with its own Firebase listeners so the mobile
-/// screen's behavior can never be affected by desktop changes.
+/// Opens the device detail screen for a device.
+typedef OpenDeviceCallback = void Function(
+    String deviceId, String utility, String building, String room, int floor);
+
+/// The desktop "Analytics" section: a filter bar (time range, grouping,
+/// scope, utility, more), stat cards, the consumption trend, ARIMA vs
+/// XGBoost / LSTM forecasts, the utility donut and top-consumers list with
+/// click-through breakdowns, and the organized Excel export.
+/// [HistoryScreen] itself is untouched -- this is an independent widget with
+/// its own Firebase listeners so the mobile screen's behavior can never be
+/// affected by desktop changes.
 class HistoryScreenWeb extends StatefulWidget {
-  const HistoryScreenWeb({super.key});
+  /// Opens a device from the breakdown drawer / top-devices list.
+  final OpenDeviceCallback? onOpenDevice;
+
+  const HistoryScreenWeb({super.key, this.onOpenDevice});
 
   @override
   State<HistoryScreenWeb> createState() => _HistoryScreenWebState();
 }
 
 class _HistoryScreenWebState extends State<HistoryScreenWeb> {
-  String _range = 'daily';
+  /// Survives this widget being disposed (switching tabs, opening a device
+  /// from a breakdown), so the filters are still set when the user returns.
+  static AnalyticsFilter _savedFilter = AnalyticsFilter.defaults;
+
+  AnalyticsFilter _filter = _savedFilter.withValidGroup();
+
+  /// The deleted-entries path of [_listenAll]; Analytics always reads the
+  /// daily history now that the filter bar replaced the Daily/Monthly tabs.
+  final String _range = 'daily';
   String _trendChartType = 'line';
+
+  // ── Filtered range data (history/daily, queried by date key) ──────────
+  StreamSubscription<DatabaseEvent>? _rangeSub;
+  StreamSubscription<DatabaseEvent>? _compareSub;
+  StreamSubscription<DatabaseEvent>? _buildingsSub;
+  String? _rangeKey;
+  String? _compareKey;
+  Object? _rangeRaw;
+  Object? _compareRaw;
+  bool _rangeLoaded = false;
+  Map<String, DeviceMeta> _meta = {};
+  Map<String, BuildingInfo> _buildingInfo = {};
+
+  // Forecast input, parsed from the full daily history and cached.
+  Object? _fcSource;
+  Set<String>? _fcDeleted;
+  Map<String, DeviceMeta>? _fcMeta;
+  List<UsageRow> _fcRows = const [];
   bool _exporting = false;
 
   /// True until the combined stream's first emission. Never reverts to
@@ -44,7 +87,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   StreamSubscription? _combinedSub;
 
   Map<String, dynamic> _historyRoot = {};
-  Set<String> _deletedEntries = {};
   Map<String, Set<String>> _deletedEntriesByRange = {
     'daily': {},
     'weekly': {},
@@ -95,13 +137,98 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     super.initState();
     _hydrateSessionFromAuth();
     _listenAll();
+    _listenBuildings();
+    _listenRange();
   }
 
   @override
   void dispose() {
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
+    _rangeSub?.cancel();
+    _compareSub?.cancel();
+    _buildingsSub?.cancel();
     super.dispose();
+  }
+
+  // ── Filters ────────────────────────────────────────────────────────────
+
+  void _setFilter(AnalyticsFilter f) {
+    final next = f.withValidGroup();
+    _savedFilter = next;
+    setState(() {
+      _filter = next;
+      _listenRange();
+    });
+  }
+
+  /// Building names and floor counts for the Scope panel and labels.
+  void _listenBuildings() {
+    _buildingsSub = FirebaseDatabase.instance.ref('buildings').onValue.listen(
+        (e) {
+      final raw = e.snapshot.value;
+      final out = <String, BuildingInfo>{};
+      if (raw is Map) {
+        raw.forEach((code, v) {
+          if (v is! Map) return;
+          out[code.toString()] = BuildingInfo(
+            code.toString(),
+            (v['name'] ?? code).toString(),
+            int.tryParse('${v['floors'] ?? 1}') ?? 1,
+          );
+        });
+      }
+      if (mounted) setState(() => _buildingInfo = out);
+    }, onError: (_) {});
+  }
+
+  /// Queries only the selected dates of `history/daily` (and the compare
+  /// period, if any). Re-subscribes only when those dates change.
+  void _listenRange() {
+    final today = DateTime.now();
+    final span = _filter.span(today);
+    final key = '${dayKey(span.start)}..${dayKey(span.end)}';
+    if (key != _rangeKey) {
+      _rangeKey = key;
+      _rangeSub?.cancel();
+      // Callers rebuild right after (or this is initState).
+      _rangeLoaded = false;
+      _rangeSub = FirebaseDatabase.instance
+          .ref('history/daily')
+          .orderByKey()
+          .startAt(dayKey(span.start))
+          .endAt(dayKey(span.end))
+          .onValue
+          .listen((e) {
+        if (!mounted) return;
+        setState(() {
+          _rangeRaw = e.snapshot.value;
+          _rangeLoaded = true;
+        });
+      }, onError: (_) {
+        if (mounted) setState(() => _rangeLoaded = true);
+      });
+    }
+
+    final cs = _filter.compareSpan(today);
+    final ck = cs == null ? null : '${dayKey(cs.start)}..${dayKey(cs.end)}';
+    if (ck != _compareKey) {
+      _compareKey = ck;
+      _compareSub?.cancel();
+      _compareSub = null;
+      _compareRaw = null;
+      if (cs != null) {
+        _compareSub = FirebaseDatabase.instance
+            .ref('history/daily')
+            .orderByKey()
+            .startAt(dayKey(cs.start))
+            .endAt(dayKey(cs.end))
+            .onValue
+            .listen((e) {
+          if (mounted) setState(() => _compareRaw = e.snapshot.value);
+        }, onError: (_) {});
+      }
+    }
   }
 
   /// Clears the error state, resets the loading flag, and re-attaches the
@@ -207,6 +334,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
     _utilityTotals = utilityTotals;
     _buildingTotals = buildingTotals;
+    _meta = DeviceMeta.parseAll(data);
     _onlineCount = online;
     _offlineCount = offline;
   }
@@ -215,10 +343,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     if (raw is Map) {
       final map = Map<String, dynamic>.from(raw);
       final deleted = Set<String>.from(map.keys);
-      _deletedEntries = deleted;
       _deletedEntriesByRange[_range] = deleted;
     } else if (_isLoading) {
-      _deletedEntries = {};
       _deletedEntriesByRange[_range] = {};
     }
   }
@@ -254,7 +380,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     setState(() {
       _historyRoot = root;
       _deletedEntriesByRange = deletedMap;
-      _deletedEntries = deletedMap[_range] ?? {};
     });
   }
 
@@ -289,85 +414,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       default:
         return false;
     }
-  }
-
-  void _setRange(String key) {
-    setState(() => _range = key);
-    _deletedEntries.clear();
-    _listenAll();
-  }
-
-  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  List<Map<String, dynamic>> _dailyHistoryEntries() {
-    return _parseRangeEntries(
-      _historyRoot,
-      'daily',
-      _deletedEntriesByRange['daily'] ?? const {},
-    );
-  }
-
-  DateTime? _tryParseDailyLabel(String label) => DateTime.tryParse(label);
-
-  static const _monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-  static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-  /// The trend window: the last 30 days (Daily) or 6 months (Monthly)
-  /// ending at the newest entry that isn't in the future. Missing days or
-  /// months count as 0 so the axis stays evenly spaced. Stray old entries
-  /// (e.g. from a device with an unset clock) fall outside the window.
-  List<({DateTime date, double kwh})> _trendWindow() {
-    final monthly = _range == 'monthly';
-    final entries = _parseRangeEntries(
-        _historyRoot, _range, _deletedEntriesByRange[_range] ?? {});
-    final today = _dateOnly(DateTime.now());
-    final byDate = <DateTime, double>{};
-    for (final e in entries) {
-      final label = e['label'].toString();
-      final d = DateTime.tryParse(monthly ? '$label-01' : label);
-      if (d == null || d.isAfter(today)) continue;
-      byDate[_dateOnly(d)] = (byDate[_dateOnly(d)] ?? 0) + (e['kwh'] as double);
-    }
-    if (byDate.isEmpty) return const [];
-    final last = byDate.keys.reduce((a, b) => a.isAfter(b) ? a : b);
-    final count = monthly ? 6 : 30;
-    return [
-      for (var i = count - 1; i >= 0; i--)
-        (() {
-          final d = monthly
-              ? DateTime(last.year, last.month - i, 1)
-              : DateTime(last.year, last.month, last.day - i);
-          return (date: d, kwh: byDate[d] ?? 0.0);
-        })(),
-    ];
-  }
-
-  String _windowLabel(List<({DateTime date, double kwh})> w) {
-    if (_range != 'monthly') return 'Last 30 days';
-    if (w.isEmpty) return 'Last 6 months';
-    final a = w.first.date, b = w.last.date;
-    return a.year == b.year
-        ? '${_monthNames[a.month - 1]} – ${_monthNames[b.month - 1]} ${b.year}'
-        : '${_monthNames[a.month - 1]} ${a.year} – ${_monthNames[b.month - 1]} ${b.year}';
-  }
-
-  List<TrendPoint> _trendPoints(List<({DateTime date, double kwh})> w) {
-    final monthly = _range == 'monthly';
-    return [
-      for (final p in w)
-        TrendPoint(
-          monthly
-              ? _monthNames[p.date.month - 1]
-              : '${_monthNames[p.date.month - 1]} ${p.date.day}',
-          monthly
-              ? '${_monthNames[p.date.month - 1]} ${p.date.year} · ${p.kwh.toStringAsFixed(1)} kWh'
-              : '${_monthNames[p.date.month - 1]} ${p.date.day} · ${_dayNames[p.date.weekday - 1]} · ${p.kwh.toStringAsFixed(1)} kWh',
-          p.kwh,
-        ),
-    ];
   }
 
   double _asDouble(dynamic value) {
@@ -856,107 +902,182 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   // ── Build (desktop grid layout) ───────────────────────────────────────────
 
+  /// Days of history a scope needs before it gets a forecast.
+  static const _forecastMinDays = 28;
+
+  /// The full daily history as rows (for the forecasts), reparsed only when
+  /// the history, deleted entries or device list change.
+  List<UsageRow> _forecastRows() {
+    final src = _historyRoot['daily'];
+    final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
+    if (!identical(src, _fcSource) ||
+        !identical(deleted, _fcDeleted) ||
+        !identical(_meta, _fcMeta)) {
+      _fcSource = src;
+      _fcDeleted = deleted;
+      _fcMeta = _meta;
+      _fcRows = parseDaily(src, _meta, deleted: deleted);
+    }
+    return _fcRows;
+  }
+
+  String _buildingName(String code) =>
+      _buildingInfo[code]?.name ??
+      (code == 'ADMIN' ? 'Admin Building' : '$code Building');
+
+  /// Buildings offered in the Scope panel: the campus defaults first, then
+  /// any other code from the `buildings` node or a device.
+  List<BuildingInfo> _scopeBuildings() {
+    final codes = <String>[...kDefaultBuildings];
+    for (final c in [
+      ..._buildingInfo.keys,
+      ..._meta.values.map((m) => m.building),
+    ]) {
+      if (c.isNotEmpty && !codes.contains(c)) codes.add(c);
+    }
+    return [
+      for (final c in codes)
+        _buildingInfo[c] ?? BuildingInfo(c, _buildingName(c), 1)
+    ];
+  }
+
+  bool _metaInScope(DeviceMeta m) {
+    final f = _filter;
+    if (f.buildings.isNotEmpty && !f.buildings.contains(m.building)) {
+      return false;
+    }
+    if (f.floor > 0 && m.floor != f.floor) return false;
+    if (f.room.isNotEmpty && m.room != f.room) return false;
+    if (f.device.isNotEmpty && m.id != f.device) return false;
+    if (f.utilities.isNotEmpty && !f.utilities.contains(m.utility)) {
+      return false;
+    }
+    return true;
+  }
+
+  int _allowedDays(DateTimeRange span) {
+    var n = 0;
+    for (var d = span.start;
+        !d.isAfter(span.end);
+        d = DateTime(d.year, d.month, d.day + 1)) {
+      if (_filter.dayAllowed(d)) n++;
+    }
+    return n;
+  }
+
+  bool get _asCost => _filter.metric == ValueMetric.cost;
+  double get _mult => _asCost ? _electricityRate : 1.0;
+
+  /// A value in the "Show values as" metric.
+  String _fmtValue(double kwh) => _asCost
+      ? '₱${_fmtNumber(kwh * _electricityRate, decimals: 2)}'
+      : '${_fmtNumber(kwh, decimals: 1)} kWh';
+
   @override
   Widget build(BuildContext context) {
-    final window = _trendWindow();
-    final windowLabel = _windowLabel(window);
-    final totalKwh = window.fold<double>(0, (a, p) => a + p.kwh);
-    final deviceTotal = _onlineCount + _offlineCount;
+    final f = _filter;
+    final today = dateOnly(DateTime.now());
+    final span = f.span(today);
+    final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
+    final rows =
+        applyFilter(f, parseDaily(_rangeRaw, _meta, deleted: deleted), span);
+    final cmpSpan = f.compareSpan(today);
+    final cmpRows = cmpSpan == null
+        ? null
+        : applyFilter(
+            f, parseDaily(_compareRaw, _meta, deleted: deleted), cmpSpan);
+    final empty = _rangeLoaded && rows.isEmpty;
+
     return Theme(
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: ScreenSkeleton(
-      isLoading: _isLoading,
-      child: SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            const Text('Analytics',
-                style: TextStyle(
-                    fontFamily: 'Outfit',
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark)),
-            const SizedBox(width: 12),
-            _livePill(),
-          ]),
-          const SizedBox(height: 4),
-          const Text('Energy analytics and forecast',
-              style: TextStyle(fontSize: 14, color: WebColors.muted)),
-          const SizedBox(height: 18),
-          if (_errorText != null)
-            _buildLoadError()
-          else ...[
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+        isLoading: _isLoading,
+        child: Builder(builder: (context) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _rangeTabs(),
-                const SizedBox(width: 12),
-                _softChip(windowLabel),
-                const Spacer(),
-                SizedBox(
-                  height: 46,
-                  child: OutlinedButton.icon(
-                    onPressed: _exporting ? null : _exportOrganizedXlsx,
-                    icon: _exporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.download_outlined, size: 18),
-                    label: Text(_exporting ? 'Generating...' : 'Export Excel'),
-                    style: OutlinedButton.styleFrom(
-                        foregroundColor: _palette.dark,
-                        side: BorderSide(color: _palette.mid, width: 1.5),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14))),
+                Row(children: [
+                  const Text('Analytics',
+                      style: TextStyle(
+                          fontFamily: AppFonts.family,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textDark)),
+                  const SizedBox(width: 12),
+                  _livePill(),
+                  const Spacer(),
+                  _exportButton(),
+                ]),
+                const SizedBox(height: 4),
+                const Text('Energy analytics and forecast',
+                    style: TextStyle(fontSize: 14, color: WebColors.muted)),
+                const SizedBox(height: 22),
+                if (_errorText != null)
+                  _buildLoadError()
+                else ...[
+                  AnalyticsFilterBar(
+                    filter: f,
+                    onChanged: _setFilter,
+                    buildings: _scopeBuildings(),
+                    devices: _meta,
                   ),
-                ),
+                  const SizedBox(height: 22),
+                  if (!_rangeLoaded)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          minHeight: 3,
+                          color: _palette.mid,
+                          backgroundColor: _palette.pale.withAlpha(90),
+                        ),
+                      ),
+                    ),
+                  if (empty)
+                    _emptyState()
+                  else ...[
+                    _statGrid(rows, cmpRows, span, cmpSpan),
+                    const SizedBox(height: 22),
+                    _trendCard(rows, cmpRows, span, cmpSpan),
+                  ],
+                  const SizedBox(height: 22),
+                  _buildForecasts(today),
+                  if (!empty) ...[
+                    const SizedBox(height: 22),
+                    _bottomRow(context, rows, span),
+                  ],
+                ],
               ],
             ),
-            const SizedBox(height: 18),
-            _equalRow([
-              _statCard(
-                icon: Icons.bolt_rounded,
-                value: _fmtNumber(totalKwh, decimals: 1),
-                unit: 'kWh',
-                label: 'Total energy',
-                caption: windowLabel,
-              ),
-              _statCard(
-                icon: Icons.payments_outlined,
-                value: '₱${_fmtNumber(totalKwh * _electricityRate)}',
-                label: 'Total cost',
-                caption: 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh',
-              ),
-              _statCard(
-                icon: Icons.wifi_tethering_rounded,
-                value: '$_onlineCount / $deviceTotal',
-                label: 'Device status',
-                caption: 'Online now',
-              ),
-            ]),
-            const SizedBox(height: 20),
-            _trendCard(window),
-            const SizedBox(height: 20),
-            _buildForecasts(),
-            if (_utilityTotals.isNotEmpty || _buildingTotals.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _equalRow([
-                if (_utilityTotals.isNotEmpty) _buildTopUtilityCard(),
-                if (_buildingTotals.isNotEmpty) _buildTopBuildingCard(),
-              ]),
-            ],
-          ],
-        ],
-      ),
-      ),
+          );
+        }),
       ),
     );
   }
+
+  Widget _exportButton() => SizedBox(
+        height: 42,
+        child: OutlinedButton.icon(
+          onPressed: _exporting ? null : _exportOrganizedXlsx,
+          icon: _exporting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.download_outlined, size: 18),
+          label: Text(_exporting ? 'Generating...' : 'Export Excel'),
+          style: OutlinedButton.styleFrom(
+              foregroundColor: _palette.dark,
+              side: BorderSide(color: _palette.mid, width: 1.5),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12))),
+        ),
+      );
 
   Widget _buildLoadError() {
     return Container(
@@ -980,7 +1101,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           const SizedBox(height: 16),
           const Text('Cannot load analytics',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -1002,6 +1123,59 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           ),
         ]),
       ),
+    );
+  }
+
+  /// Shown instead of the stats, trend and top lists when the filters
+  /// leave no data.
+  Widget _emptyState() {
+    final f = _filter;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
+      decoration: AnalyticsUi.card(_palette),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+              color: _palette.pale.withAlpha(160),
+              borderRadius: BorderRadius.circular(18)),
+          child: Icon(Icons.filter_alt_off_outlined,
+              size: 30, color: _palette.dark),
+        ),
+        const SizedBox(height: 16),
+        const Text('No data for these filters',
+            style: TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: WebColors.ink)),
+        const SizedBox(height: 6),
+        Text(
+          'Nothing was recorded for ${f.scopeName} · ${f.utilityName} '
+          '(${f.rangeName.toLowerCase().startsWith('last') ? f.rangeName.toLowerCase() : f.rangeName}'
+          '${f.dayType == DayType.all ? '' : ', ${f.dayType.label.toLowerCase()}'}). '
+          'Try a longer time range or a wider scope.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 14, color: WebColors.muted),
+        ),
+        const SizedBox(height: 18),
+        ElevatedButton(
+          onPressed: f.isDefault
+              ? null
+              : () => _setFilter(AnalyticsFilter.defaults),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _palette.dark,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+          child: const Text('Reset filters'),
+        ),
+      ]),
     );
   }
 
@@ -1032,18 +1206,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                   color: _palette.dark,
                   fontWeight: FontWeight.w600)),
         ]),
-      );
-
-  Widget _softChip(String text) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-            color: _palette.pale.withAlpha(200),
-            borderRadius: BorderRadius.circular(9)),
-        child: Text(text,
-            style: TextStyle(
-                fontSize: 13.5,
-                fontWeight: FontWeight.w600,
-                color: _palette.dark)),
       );
 
   /// Segmented pill: a white "thumb" on the selected option.
@@ -1083,13 +1245,106 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  Widget _rangeTabs() => _segmented(
-        const {'daily': 'Daily', 'monthly': 'Monthly'},
-        _range == 'monthly' ? 'monthly' : 'daily',
-        (k) {
-          if (k != _range) _setRange(k);
-        },
-      );
+  /// "▲ 12.3% vs previous period". Energy going up is shown in red.
+  Widget? _delta(double current, double? previous, {bool upIsBad = true}) {
+    if (previous == null) return null;
+    final vs = _filter.compare == CompareMode.lastYear
+        ? 'last year'
+        : 'previous period';
+    if (previous <= 0) {
+      return Text('No data for the $vs',
+          style: const TextStyle(fontSize: 12, color: WebColors.muted));
+    }
+    final pct = (current - previous) / previous * 100;
+    final flat = pct.abs() < 0.05;
+    final up = pct > 0;
+    final color = flat
+        ? WebColors.muted
+        : (up == upIsBad ? AnalyticsUi.danger : _palette.dark);
+    return Text.rich(
+      TextSpan(children: [
+        TextSpan(
+            text: flat
+                ? '● 0.0%'
+                : '${up ? '▲' : '▼'} ${pct.abs().toStringAsFixed(1)}%',
+            style: TextStyle(fontWeight: FontWeight.w700, color: color)),
+        TextSpan(text: ' vs $vs'),
+      ]),
+      style: const TextStyle(fontSize: 12, color: WebColors.muted),
+    );
+  }
+
+  Widget _statGrid(List<UsageRow> rows, List<UsageRow>? cmp,
+      DateTimeRange span, DateTimeRange? cmpSpan) {
+    final f = _filter;
+    final total = sumKwh(rows);
+    final days = _allowedDays(span);
+    final avg = days == 0 ? 0.0 : total / days;
+    final cTotal = cmp == null ? null : sumKwh(cmp);
+    final cDays = cmpSpan == null ? 0 : _allowedDays(cmpSpan);
+    final cAvg = cTotal == null ? null : (cDays == 0 ? 0.0 : cTotal / cDays);
+    final scoped = _meta.values.where(_metaInScope).toList();
+    final online = scoped.where((m) => m.online).length;
+    int reporting(List<UsageRow> r) => r
+        .where((x) => x.deviceId.isNotEmpty && x.kwh > 0)
+        .map((x) => x.deviceId)
+        .toSet()
+        .length;
+    final rep = reporting(rows);
+
+    final cards = [
+      _statCard(
+        icon: Icons.bolt_rounded,
+        value: _fmtNumber(total, decimals: 1),
+        unit: 'kWh',
+        label: 'Total energy',
+        caption: f.rangeName,
+        delta: _delta(total, cTotal),
+      ),
+      _statCard(
+        icon: Icons.payments_outlined,
+        value: '₱${_fmtNumber(total * _electricityRate)}',
+        label: 'Total cost',
+        caption: 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh',
+        delta: _delta(total, cTotal),
+      ),
+      _statCard(
+        icon: Icons.show_chart_rounded,
+        value: _fmtNumber(avg, decimals: 1),
+        unit: 'kWh',
+        label: 'Daily average',
+        caption:
+            '$days ${f.dayType == DayType.all ? 'day' : f.dayType.label.toLowerCase().replaceAll('s', '')}${days == 1 ? '' : 's'}',
+        delta: _delta(avg, cAvg),
+      ),
+      _statCard(
+        icon: Icons.wifi_tethering_rounded,
+        value: '$online / ${scoped.length}',
+        label: 'Devices online',
+        caption: cmp == null ? 'Online now' : '$rep reported usage',
+        delta: cmp == null
+            ? null
+            : _delta(rep.toDouble(), reporting(cmp).toDouble(),
+                upIsBad: false),
+      ),
+    ];
+    return LayoutBuilder(builder: (context, c) {
+      if (c.maxWidth >= 1100) return _equalRow(cards);
+      if (c.maxWidth < 560) {
+        return Column(children: [
+          for (var i = 0; i < cards.length; i++) ...[
+            if (i > 0) const SizedBox(height: 16),
+            cards[i],
+          ],
+        ]);
+      }
+      return Column(children: [
+        _equalRow(cards.sublist(0, 2)),
+        const SizedBox(height: 16),
+        _equalRow(cards.sublist(2)),
+      ]);
+    });
+  }
 
   Widget _statCard({
     required IconData icon,
@@ -1097,20 +1352,21 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     String? unit,
     required String label,
     required String caption,
+    Widget? delta,
   }) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _palette.mid.withAlpha(22)),
       ),
       child: Row(children: [
         Container(
-          width: 50,
-          height: 50,
+          width: 52,
+          height: 52,
           decoration: BoxDecoration(
-              color: _palette.pale.withAlpha(200), shape: BoxShape.circle),
+              color: _palette.pale.withAlpha(153), shape: BoxShape.circle),
           child: Icon(icon, color: _palette.dark, size: 24),
         ),
         const SizedBox(width: 14),
@@ -1121,7 +1377,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                 TextSpan(
                     text: value,
                     style: const TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 26,
                         fontWeight: FontWeight.w700,
                         color: WebColors.ink)),
@@ -1130,8 +1386,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                       text: ' $unit',
                       style: const TextStyle(
                           fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: WebColors.mid)),
+                          fontWeight: FontWeight.w600,
+                          color: WebColors.muted)),
               ]),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1139,44 +1395,94 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
             Text(label,
                 style: const TextStyle(
                     fontSize: 14,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w600,
                     color: WebColors.ink)),
             Text(caption,
-                style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: WebColors.muted)),
+            if (delta != null) ...[
+              const SizedBox(height: 4),
+              delta,
+            ],
           ]),
         ),
       ]),
     );
   }
 
-  Widget _trendCard(List<({DateTime date, double kwh})> window) {
+  /// A card with the preview's panel header (title, subtitle, trailing).
+  Widget _panel({
+    required String title,
+    String? subtitle,
+    Widget? trailing,
+    required Widget body,
+  }) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(22)),
-      ),
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 22),
+      decoration: AnalyticsUi.card(_palette),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Expanded(
+          Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Consumption Trend',
-                  style: TextStyle(
-                      fontFamily: 'Outfit',
+              Text(title,
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family,
                       fontSize: 17,
                       fontWeight: FontWeight.w700,
                       color: WebColors.ink)),
-              SizedBox(height: 2),
-              Text('kWh over time (realtime) · hover for values',
-                  style: TextStyle(fontSize: 13, color: WebColors.muted)),
+              if (subtitle != null) ...[
+                const SizedBox(height: 3),
+                Text(subtitle,
+                    style:
+                        const TextStyle(fontSize: 13, color: WebColors.muted)),
+              ],
             ]),
           ),
-          _segmented(const {'line': 'Line', 'bar': 'Bar'}, _trendChartType,
-              (k) => setState(() => _trendChartType = k)),
+          if (trailing != null) ...[const SizedBox(width: 12), trailing],
         ]),
-        const SizedBox(height: 16),
-        if (window.isEmpty)
+        const SizedBox(height: 18),
+        body,
+      ]),
+    );
+  }
+
+  Widget _trendCard(List<UsageRow> rows, List<UsageRow>? cmpRows,
+      DateTimeRange span, DateTimeRange? cmpSpan) {
+    final f = _filter;
+    final buckets = bucketize(f, rows, span, f.group);
+    final cb = cmpSpan == null
+        ? null
+        : bucketize(f, cmpRows ?? const [], cmpSpan, f.group);
+    final points = [
+      for (var i = 0; i < buckets.length; i++)
+        TrendPoint(
+          buckets[i].label,
+          '${buckets[i].tooltipLabel} · ${_fmtValue(buckets[i].kwh)}'
+          '${cb != null && i < cb.length ? '\nEarlier: ${_fmtValue(cb[i].kwh)}' : ''}',
+          buckets[i].kwh * _mult,
+        ),
+    ];
+    final compare = cb == null
+        ? null
+        : [
+            for (var i = 0; i < math.min(cb.length, buckets.length); i++)
+              cb[i].kwh * _mult
+          ];
+    final noun = switch (f.group) {
+      GroupBy.hourly => 'hour',
+      GroupBy.daily => 'day',
+      GroupBy.weekly => 'week',
+      GroupBy.monthly => 'month',
+    };
+    return _panel(
+      title: 'Consumption Trend',
+      subtitle:
+          '${_asCost ? 'Cost (₱)' : 'kWh'} per $noun · ${f.rangeName} · hover for values',
+      trailing: _segmented(const {'line': 'Line', 'bar': 'Bar'},
+          _trendChartType, (k) => setState(() => _trendChartType = k)),
+      body: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (buckets.isEmpty)
           const SizedBox(
             height: 200,
             child: Center(
@@ -1186,24 +1492,67 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           )
         else
           WebTrendChart(
-            points: _trendPoints(window),
+            points: points,
             bars: _trendChartType == 'bar',
             color: AppColors.greenMid,
+            compare: compare,
+            compareColor: WebColors.muted,
           ),
+        if (cmpSpan != null) ...[
+          const SizedBox(height: 14),
+          Wrap(spacing: 16, runSpacing: 6, children: [
+            _legend(false, AppColors.greenMid,
+                'This period · ${spanText(span)}'),
+            _legend(
+                true,
+                WebColors.muted,
+                '${f.compare == CompareMode.lastYear ? 'Last year' : 'Previous period'} · ${spanText(cmpSpan)}'),
+          ]),
+        ],
       ]),
     );
   }
 
-  /// ARIMA (left) and a model picker (right) over the daily history.
-  Widget _buildForecasts() {
-    final daily = _dailyHistoryEntries();
+  Widget _legend(bool dashed, Color color, String text) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      SizedBox(
+        width: 20,
+        child: dashed
+            ? Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                for (var i = 0; i < 3; i++)
+                  Container(width: 5, height: 2.5, color: color),
+              ])
+            : Container(height: 2.5, color: color),
+      ),
+      const SizedBox(width: 6),
+      Text(text, style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
+    ]);
+  }
+
+  /// ARIMA (left) and a model picker (right). Uses only the scope and
+  /// utility filters, and always trains on the full history up to
+  /// yesterday; the horizon follows the selected range.
+  Widget _buildForecasts(DateTime today) {
+    final f = _filter;
+    final yesterday = DateTime(today.year, today.month, today.day - 1);
+    final series = dailySeries(f, _forecastRows(), yesterday);
+    final days = f.days;
+    final horizon = days <= 10 ? 7 : (days <= 45 ? 30 : 90);
+    final enough = series.daysWithData >= _forecastMinDays;
+    final scoped = f.hasScope || f.hasUtility;
     return ForecastComparison(
       palette: _palette,
-      daily: [for (final e in daily) (e['kwh'] as num).toDouble()],
-      lastDate: daily.isEmpty
-          ? null
-          : _tryParseDailyLabel(daily.last['label'].toString()),
+      daily: series.values,
+      lastDate: series.last ?? yesterday,
       rate: _electricityRate,
+      horizon: horizon,
+      remoteModelsApply: !scoped,
+      unavailableReason: enough
+          ? null
+          : 'Not enough data for a forecast. '
+              '${scoped ? 'This scope has' : 'There are'} ${series.daysWithData} '
+              'day${series.daysWithData == 1 ? '' : 's'} of history; a '
+              'forecast needs at least $_forecastMinDays.',
     );
   }
 
@@ -1225,165 +1574,291 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  Widget _buildTopUtilityCard() {
-    if (_utilityTotals.isEmpty) return const SizedBox.shrink();
-    final sorted = _utilityTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final maxVal = sorted.first.value;
-    // Semantic: fixed categorical color-coding to visually distinguish
-    // utility types from each other on this chart, not institute brand
-    // chrome -- deliberately NOT retheme'd (default-to-institute here would
-    // make different utility categories harder to tell apart, not easier).
-    // Matches mobile history_screen.dart.
-    final Map<String, Color> utilityColors = {
-      'Lights': AppColors.greenMid,
-      'Outlets': AppColors.greenLight,
-      'AC': AppColors.greenDark,
-    };
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Top Consuming Utilities',
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        ...sorted.map((e) {
-          final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
-          final color = utilityColors[e.key] ?? AppColors.greenMid;
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(e.key,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.textDark)),
-                Text('${e.value.toStringAsFixed(1)} kWh',
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: _palette.dark)),
-              ]),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: LinearProgressIndicator(
-                  value: pct,
-                  minHeight: 8,
-                  backgroundColor: color.withAlpha(30),
-                  valueColor: AlwaysStoppedAnimation<Color>(color),
-                ),
-              ),
-            ]),
-          );
-        }),
-      ]),
+  // ── Top Consuming cards + breakdown drawer ────────────────────────────
+
+  Widget _bottomRow(
+      BuildContext ctx, List<UsageRow> rows, DateTimeRange span) {
+    final a = _utilityCard(ctx, rows);
+    final b = _topCard(ctx, rows, span);
+    return LayoutBuilder(builder: (context, c) {
+      if (c.maxWidth < 900) {
+        return Column(children: [a, const SizedBox(height: 22), b]);
+      }
+      return IntrinsicHeight(
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Expanded(child: a),
+          const SizedBox(width: 22),
+          Expanded(child: b),
+        ]),
+      );
+    });
+  }
+
+  void _openBreakdown(
+      BuildContext ctx, BreakdownKind kind, String id, List<UsageRow> rows) {
+    final open = widget.onOpenDevice;
+    showBreakdownPanel(
+      ctx,
+      kind: kind,
+      id: id,
+      rangeName: _filter.rangeName,
+      rows: rows,
+      cardTotal: sumKwh(rows),
+      devices: _meta,
+      buildingNames: {for (final b in _scopeBuildings()) b.code: b.name},
+      rate: _electricityRate,
+      onOpenDevice: open == null
+          ? null
+          : (m) => open(m.id, m.utility, m.building, m.room, m.floor),
     );
   }
 
-  Widget _buildTopBuildingCard() {
-    if (_buildingTotals.isEmpty) return const SizedBox.shrink();
-    final sorted = _buildingTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final maxVal = sorted.first.value;
-    // Semantic: this card ranks *other* institutes/buildings by energy use
-    // (not the viewer's own institute), so a rank-position gradient is used
-    // instead of the viewer's resolved brand palette -- tinting institute B's
-    // bar with institute A's viewer color would be actively misleading.
-    // Deliberately NOT retheme'd (matches mobile history_screen.dart).
-    final List<Color> barColors = [
-      AppColors.greenDark,
-      AppColors.greenMid,
-      AppColors.greenLight,
-      AppColors.greenPale.withAlpha(200),
-      Colors.teal.shade400,
-    ];
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Top Consuming Institutes',
-            style: TextStyle(
-                fontFamily: 'Outfit',
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        ...sorted.asMap().entries.map((entry) {
-          final i = entry.key;
-          final e = entry.value;
-          final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
-          final color = barColors[i % barColors.length];
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Row(children: [
-              Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  // Semantic: rank-position color, same reasoning as
-                  // barColors above -- NOT retheme'd.
-                  color: i == 0 ? AppColors.greenDark : AppColors.greenPale,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                    // Semantic: rank-position color, same reasoning as
-                    // barColors above -- NOT retheme'd.
-                    child: Text('${i + 1}',
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color:
-                                i == 0 ? Colors.white : AppColors.greenDark))),
+  Widget _progress(double frac, Color color) => ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: LinearProgressIndicator(
+          value: frac.clamp(0.0, 1.0),
+          minHeight: 6,
+          backgroundColor: AnalyticsUi.track,
+          valueColor: AlwaysStoppedAnimation<Color>(color),
+        ),
+      );
+
+  /// A clickable row with a hover state and a › icon.
+  Widget _bdRow({
+    required String semantic,
+    required VoidCallback? onTap,
+    required Widget label,
+    required String value,
+    required double frac,
+    required Color color,
+  }) {
+    return HoverRegion(
+      semanticLabel: semantic,
+      onTap: onTap,
+      builder: (context, hovered) => Container(
+        margin: const EdgeInsets.only(bottom: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: hovered ? _palette.pale.withAlpha(89) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            Expanded(
+              child: DefaultTextStyle.merge(
+                style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: WebColors.ink),
+                child: label,
               ),
-              const SizedBox(width: 10),
+            ),
+            const SizedBox(width: 8),
+            Text(value,
+                style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+            if (onTap != null) ...[
+              const SizedBox(width: 8),
+              Text('›',
+                  style: TextStyle(
+                      fontSize: 16,
+                      height: 1,
+                      fontWeight: FontWeight.w700,
+                      color: hovered ? _palette.dark : WebColors.muted)),
+            ],
+          ]),
+          const SizedBox(height: 6),
+          _progress(frac, color),
+        ]),
+      ),
+    );
+  }
+
+  Widget _code(String c) => Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: _palette.pale.withAlpha(153),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(c,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: _palette.dark)),
+      );
+
+  Widget _utilityCard(BuildContext ctx, List<UsageRow> rows) {
+    final groups = groupSum(rows, (r) => r.utility)
+        .where((e) => e.value > 0)
+        .toList();
+    final total = sumKwh(rows);
+    return _panel(
+      title: 'Top Consuming Utilities',
+      subtitle:
+          "${_filter.rangeName} · click a utility to see what's behind it",
+      body: groups.isEmpty
+          ? const Text('No usage in this range.',
+              style: TextStyle(fontSize: 14, color: WebColors.muted))
+          : Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+              UtilityDonut(
+                data: [for (final g in groups) MapEntry(g.key, g.value * _mult)],
+                centerValue: _asCost
+                    ? '₱${_fmtNumber(total * _mult)}'
+                    : total.toStringAsFixed(1),
+                centerCaption: _asCost ? 'cost' : 'kWh',
+                onTap: (u) =>
+                    _openBreakdown(ctx, BreakdownKind.utility, u, rows),
+              ),
+              const SizedBox(width: 24),
               Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(e.key,
-                              style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                  color: AppColors.textDark)),
-                          Text('${e.value.toStringAsFixed(1)} kWh',
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: _palette.dark)),
-                        ]),
-                    const SizedBox(height: 5),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
-                      child: LinearProgressIndicator(
-                        value: pct,
-                        minHeight: 7,
-                        backgroundColor: color.withAlpha(30),
-                        valueColor: AlwaysStoppedAnimation<Color>(color),
-                      ),
+                child: Column(children: [
+                  for (final g in groups)
+                    _bdRow(
+                      semantic: 'See breakdown for ${g.key}',
+                      onTap: () =>
+                          _openBreakdown(ctx, BreakdownKind.utility, g.key, rows),
+                      label: Row(children: [
+                        Container(
+                          width: 10,
+                          height: 10,
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                              color: AnalyticsUi.utilityColor(g.key),
+                              borderRadius: BorderRadius.circular(3)),
+                        ),
+                        Flexible(
+                          child: Text(
+                              '${g.key} (${total <= 0 ? 0 : (g.value / total * 100).round()}%)',
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                      ]),
+                      value: _fmtValue(g.value),
+                      frac: total <= 0 ? 0 : g.value / total,
+                      color: AnalyticsUi.utilityColor(g.key),
                     ),
-                  ])),
+                ]),
+              ),
             ]),
-          );
-        }),
-      ]),
+    );
+  }
+
+  /// Institutes by default, rooms when one building is selected, devices
+  /// when a room or device is selected.
+  Widget _topCard(BuildContext ctx, List<UsageRow> rows, DateTimeRange span) {
+    final f = _filter;
+    final mode = f.buildings.length != 1
+        ? _TopMode.institutes
+        : (f.room.isEmpty && f.device.isEmpty
+            ? _TopMode.rooms
+            : _TopMode.devices);
+    final perDevice = rows.where((r) => r.deviceId.isNotEmpty);
+    final groups = switch (mode) {
+      _TopMode.institutes => groupSum(rows, (r) => r.building),
+      _TopMode.rooms => groupSum(perDevice, (r) => r.roomKey),
+      _TopMode.devices => groupSum(perDevice, (r) => r.deviceId),
+    }
+        .where((e) => e.value > 0)
+        .take(mode == _TopMode.institutes ? 50 : 10)
+        .toList();
+    final max = groups.isEmpty ? 0.0 : groups.first.value;
+
+    // HIGH / MID / LOW, the dashboard's 100 / 50 kWh-a-month thresholds
+    // scaled to the length of the range.
+    final scale = spanDays(span) / 30;
+    Color levelColor(double kwh) => kwh >= 100 * scale
+        ? AnalyticsUi.high
+        : kwh >= 50 * scale
+            ? AnalyticsUi.warn
+            : const Color(0xFF2E9E52);
+
+    final title = switch (mode) {
+      _TopMode.institutes => 'Top Consuming Institutes',
+      _TopMode.rooms => 'Top Consuming Rooms',
+      _TopMode.devices => 'Top Consuming Devices',
+    };
+    final hint = mode == _TopMode.devices
+        ? 'click one to open it'
+        : "click one to see what's behind it";
+
+    return _panel(
+      title: title,
+      subtitle: '${f.rangeName}, ${_asCost ? '₱' : 'kWh'} · $hint',
+      body: groups.isEmpty
+          ? const Text('No usage in this range.',
+              style: TextStyle(fontSize: 14, color: WebColors.muted))
+          : Column(children: [
+              for (final g in groups)
+                switch (mode) {
+                  _TopMode.institutes => _bdRow(
+                      semantic: 'See breakdown for ${_buildingName(g.key)}',
+                      onTap: g.key.isEmpty
+                          ? null
+                          : () => _openBreakdown(
+                              ctx, BreakdownKind.building, g.key, rows),
+                      label: Row(children: [
+                        _code(g.key.isEmpty ? '—' : g.key),
+                        Flexible(
+                          child: Text(
+                              g.key.isEmpty
+                                  ? 'Unassigned'
+                                  : _buildingName(g.key),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                      ]),
+                      value: _fmtValue(g.value),
+                      frac: max <= 0 ? 0 : g.value / max,
+                      color: levelColor(g.value),
+                    ),
+                  _TopMode.rooms => () {
+                      final parts = g.key.split('|');
+                      final room = parts.length > 2 && parts[2].isNotEmpty
+                          ? parts[2]
+                          : 'No room';
+                      return _bdRow(
+                        semantic: 'See breakdown for $room',
+                        onTap: () => _openBreakdown(
+                            ctx, BreakdownKind.room, g.key, rows),
+                        label: Text.rich(TextSpan(children: [
+                          TextSpan(text: room),
+                          TextSpan(
+                              text: '  · Floor ${parts.length > 1 ? parts[1] : '?'}',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w400,
+                                  color: WebColors.muted)),
+                        ])),
+                        value: _fmtValue(g.value),
+                        frac: max <= 0 ? 0 : g.value / max,
+                        color: _palette.mid,
+                      );
+                    }(),
+                  _TopMode.devices => () {
+                      final m = _meta[g.key];
+                      final open = widget.onOpenDevice;
+                      return _bdRow(
+                        semantic: 'Open ${g.key}',
+                        onTap: m == null || open == null
+                            ? null
+                            : () => open(
+                                m.id, m.utility, m.building, m.room, m.floor),
+                        label: Text.rich(TextSpan(children: [
+                          TextSpan(text: g.key),
+                          if (m != null)
+                            TextSpan(
+                                text: '  · ${m.utility} · ${m.room}',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w400,
+                                    color: WebColors.muted)),
+                        ])),
+                        value: _fmtValue(g.value),
+                        frac: max <= 0 ? 0 : g.value / max,
+                        color: AnalyticsUi.utilityColor(m?.utility ?? ''),
+                      );
+                    }(),
+                },
+            ]),
     );
   }
 }
+
+/// What the "Top Consuming" card lists.
+enum _TopMode { institutes, rooms, devices }

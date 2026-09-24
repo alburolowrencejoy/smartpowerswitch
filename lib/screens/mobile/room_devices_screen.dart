@@ -3,6 +3,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import 'room_devices_panel.dart';
+import '../../theme/app_fonts.dart';
 
 /// Thin pushed screen for a single room's devices, composed from
 /// [RoomDevicesPanel]. Used by the institute-admin room-tap path (see
@@ -91,7 +92,7 @@ class RoomDevicesScreen extends StatelessWidget {
             Text(
               '$buildingName - $room',
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: Colors.white),

@@ -13,6 +13,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// The desktop "Settings" section: the same actions as [SettingsScreen]
 /// (electricity rate + history, IoT device registration, GitHub updater,
@@ -486,35 +487,35 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: ScreenSkeleton(
-      isLoading: _isLoading,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Settings',
-                style: TextStyle(
-                    fontFamily: 'Outfit',
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark)),
-            const SizedBox(height: 4),
-            const Text('Rate, devices, updates, and account',
-                style: TextStyle(fontSize: 13, color: WebColors.muted)),
-            const SizedBox(height: 24),
-            if (_errorText != null)
-              _buildError()
-            else ...[
-              _buildRateSection(),
-              const SizedBox(height: 16),
-              _equalRow(
-                  [_buildIotInventorySection(), _buildUpdaterSection()]),
-              const SizedBox(height: 16),
-              _equalRow([_buildAccountSection(), _buildAppInfoSection()]),
+        isLoading: _isLoading,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Settings',
+                  style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textDark)),
+              const SizedBox(height: 4),
+              const Text('Rate, devices, updates, and account',
+                  style: TextStyle(fontSize: 13, color: WebColors.muted)),
+              const SizedBox(height: 24),
+              if (_errorText != null)
+                _buildError()
+              else ...[
+                _buildRateSection(),
+                const SizedBox(height: 16),
+                _equalRow(
+                    [_buildIotInventorySection(), _buildUpdaterSection()]),
+                const SizedBox(height: 16),
+                _equalRow([_buildAccountSection(), _buildAppInfoSection()]),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -541,7 +542,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
           const SizedBox(height: 16),
           const Text('Cannot load settings',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -611,7 +612,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
               child: Text(
                 title,
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark),
@@ -635,21 +636,19 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
           style: TextStyle(fontSize: 13, color: WebColors.muted),
         ),
         const SizedBox(height: 12),
-        ShakeOnChange(
-          trigger: _iotShake,
-          child: TextField(
-            controller: _unassignedIotController,
-            textCapitalization: TextCapitalization.characters,
-            style: const TextStyle(fontSize: 14, color: AppColors.textDark),
-            decoration: webInputDecoration(_palette,
-                label: 'Device ID',
-                hint: 'e.g. ESP32-ROOM101-001',
-                error: _iotError),
-            onChanged: (_) {
-              if (_iotError != null) setState(() => _iotError = null);
-            },
-            onSubmitted: (_) => _registerUnassignedIotDevice(),
-          ),
+        AppTextField(
+          shakeTrigger: _iotShake,
+          controller: _unassignedIotController,
+          textCapitalization: TextCapitalization.characters,
+          style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+          decoration: webInputDecoration(_palette,
+              label: 'Device ID',
+              hint: 'e.g. ESP32-ROOM101-001',
+              error: _iotError),
+          onChanged: (_) {
+            if (_iotError != null) setState(() => _iotError = null);
+          },
+          onSubmitted: (_) => _registerUnassignedIotDevice(),
         ),
         const SizedBox(height: 12),
         SizedBox(
@@ -731,22 +730,19 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         const SizedBox(height: 10),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Expanded(
-            child: ShakeOnChange(
-              trigger: _rateShake,
-              child: TextField(
-                controller: _rateController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                style:
-                    const TextStyle(fontSize: 14, color: AppColors.textDark),
-                decoration: webInputDecoration(_palette,
-                        label: 'Rate per kWh', hint: '11.50', error: _rateError)
-                    .copyWith(prefixText: '₱ '),
-                onChanged: (_) {
-                  if (_rateError != null) setState(() => _rateError = null);
-                },
-                onSubmitted: (_) => _saveRate(),
-              ),
+            child: AppTextField(
+              shakeTrigger: _rateShake,
+              controller: _rateController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+              decoration: webInputDecoration(_palette,
+                      label: 'Rate per kWh', hint: '11.50', error: _rateError)
+                  .copyWith(prefixText: '₱ '),
+              onChanged: (_) {
+                if (_rateError != null) setState(() => _rateError = null);
+              },
+              onSubmitted: (_) => _saveRate(),
             ),
           ),
           const SizedBox(width: 12),
@@ -977,9 +973,8 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
                       color: Colors.white, fontWeight: FontWeight.w600),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: release.updateAvailable
-                      ? _palette.dark
-                      : _palette.mid,
+                  backgroundColor:
+                      release.updateAvailable ? _palette.dark : _palette.mid,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                 ),

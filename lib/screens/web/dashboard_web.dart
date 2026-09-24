@@ -24,6 +24,7 @@ import 'settings_screen_web.dart';
 import 'web_overview_tab.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// The desktop/wide-window dashboard shell: a floating side nav plus a
 /// content area, chosen over [DashboardScreen] by `DashboardPage` once the
@@ -518,7 +519,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
       const Color(0xFFF6F8F7),
     );
 
-    // Web typography (DM Sans body, Outfit headings, readable muted text)
+    // Web typography (app font, readable muted text)
     // plus the resolved InstituteTheme extension for descendants.
     return Theme(
       data: webTheme(Theme.of(context)).copyWith(
@@ -648,7 +649,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                 const Text(
                   'Smart Switch',
                   style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     color: Colors.white,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
@@ -758,11 +759,11 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           onDeviceTap: _openDevice,
         ),
         // 2 Analytics
-        const Padding(
-          padding: EdgeInsets.all(4.0),
+        Padding(
+          padding: const EdgeInsets.all(4.0),
           child: ResponsiveCenter(
             maxWidth: 1400,
-            child: HistoryScreenWeb(),
+            child: HistoryScreenWeb(onOpenDevice: _openDevice),
           ),
         ),
         // 3 Automation
@@ -959,7 +960,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                     child: Text(
                       'Notifications',
                       style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textDark,
@@ -1007,7 +1008,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                   const Text(
                     'Devices',
                     style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 22,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textDark),
@@ -1207,7 +1208,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
               const SizedBox(height: 16),
               const Text('Cannot load dashboard',
                   style: TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                       color: AppColors.textDark)),
@@ -1382,7 +1383,7 @@ class _InstituteSummaryCard extends StatelessWidget {
               Text(
                 kwh.toStringAsFixed(2),
                 style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 38,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
@@ -1531,7 +1532,7 @@ class _EnergyOverviewCard extends StatelessWidget {
               Text(
                 totalKwh.toStringAsFixed(2),
                 style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 38,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,

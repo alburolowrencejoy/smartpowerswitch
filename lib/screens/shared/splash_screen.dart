@@ -1,11 +1,11 @@
 // lib/screens/splash_screen.dart
 //
 // SmartPowerSwitch preloader — native Flutter port of the HTML animation.
-// No packages required beyond google_fonts: AnimationController + CustomPainter only.
+// No packages required: AnimationController + CustomPainter only.
 
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import '../../theme/app_fonts.dart';
 
 import '../../theme/app_colors.dart';
 import 'auth_gate.dart';
@@ -286,9 +286,8 @@ class _ScenePainter extends CustomPainter {
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..color = Color.lerp(Sps.p3.withValues(alpha: .5), Sps.p4, fil)!
-        ..maskFilter = fil > .5
-            ? const MaskFilter.blur(BlurStyle.solid, 2.5)
-            : null,
+        ..maskFilter =
+            fil > .5 ? const MaskFilter.blur(BlurStyle.solid, 2.5) : null,
     );
 
     final capStroke = Paint()
@@ -317,7 +316,8 @@ class _ScenePainter extends CustomPainter {
       final tp = TextPainter(
         text: TextSpan(
           text: tag,
-          style: GoogleFonts.dmSans(
+          style: TextStyle(
+            fontFamily: AppFonts.family,
             fontSize: 10,
             letterSpacing: .6,
             color: Sps.p4.withValues(alpha: .55 * tagP),
@@ -433,8 +433,7 @@ class _ScenePainter extends CustomPainter {
     canvas.drawCircle(
       Offset(170 + 20 * knob, 254),
       7,
-      Paint()
-        ..color = Color.lerp(Sps.p3.withValues(alpha: .55), Sps.p4, knob)!,
+      Paint()..color = Color.lerp(Sps.p3.withValues(alpha: .55), Sps.p4, knob)!,
     );
 
     final rp = _seg(t, 1480, 820);
@@ -481,8 +480,7 @@ class _ScenePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_ScenePainter old) =>
-      old.t != t || old.pulse != pulse;
+  bool shouldRepaint(_ScenePainter old) => old.t != t || old.pulse != pulse;
 }
 
 class _Wordmark extends StatelessWidget {
@@ -525,7 +523,8 @@ class _Wordmark extends StatelessWidget {
                 offset: Offset(0, 16 * (1 - p)),
                 child: Text(
                   'Campus energy monitoring · DNSC',
-                  style: GoogleFonts.dmSans(
+                  style: TextStyle(
+                    fontFamily: AppFonts.family,
                     fontSize: 12,
                     color: Sps.p4.withValues(alpha: .7),
                   ),
@@ -563,7 +562,8 @@ class _Letter extends StatelessWidget {
           scale: 1 + 0.9 * (1 - p),
           child: Text(
             char,
-            style: GoogleFonts.syne(
+            style: TextStyle(
+              fontFamily: AppFonts.family,
               fontWeight: FontWeight.w800,
               fontSize: 22,
               height: 1,
@@ -616,7 +616,8 @@ class _LoadingBar extends StatelessWidget {
               child: Text(
                 status,
                 key: ValueKey(status),
-                style: GoogleFonts.dmSans(
+                style: TextStyle(
+                  fontFamily: AppFonts.family,
                   fontSize: 12.5,
                   color: Sps.p4.withValues(alpha: .72),
                 ),

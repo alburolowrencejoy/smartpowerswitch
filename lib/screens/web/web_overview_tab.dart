@@ -10,6 +10,7 @@ import '../../viewmodels/dashboard_viewmodel.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import 'web_theme.dart';
+import '../../theme/app_fonts.dart';
 
 /// The web "Dashboard" tab: an at-a-glance overview modelled on a classic
 /// admin layout -- a row of stat cards, a device-status card with a
@@ -276,7 +277,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
             const Text(
               'Dashboard',
               style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 26,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark,
@@ -439,7 +440,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                         Text(
                           _fmt(total),
                           style: const TextStyle(
-                            fontFamily: 'Outfit',
+                            fontFamily: AppFonts.family,
                             fontSize: 20,
                             fontWeight: FontWeight.w700,
                             color: AppColors.textDark,
@@ -724,7 +725,7 @@ class _Panel extends StatelessWidget {
                     Text(
                       title,
                       style: const TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 17,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textDark,
@@ -814,7 +815,7 @@ class _StatCard extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          fontFamily: 'Outfit',
+                          fontFamily: AppFonts.family,
                           fontSize: 26,
                           fontWeight: FontWeight.w700,
                           color: AppColors.textDark,
@@ -926,7 +927,7 @@ class _CountBox extends StatelessWidget {
         children: [
           Text('$value',
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textDark)),

@@ -4,11 +4,13 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/app_text_field.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'room_devices_panel.dart';
 import 'room_devices_screen.dart';
+import '../../theme/app_fonts.dart';
 
 class BuildingFloorScreen extends StatefulWidget {
   final String buildingCode;
@@ -227,8 +229,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           .onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance
-          .ref(
-              'history/monthly/$monthKey/buildings/${widget.buildingCode}/kwh')
+          .ref('history/monthly/$monthKey/buildings/${widget.buildingCode}/kwh')
           .onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
     ]).listen((events) {
@@ -384,50 +385,92 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
   // â”€â”€ Add room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  Future<void> _addRoom() async {
-    final controller = TextEditingController();
-    final result = await showDialog<String>(
+  /// Room-name prompt shared by add and edit. [validate] returns an error
+  /// message, shown on the field (with a shake), or null to accept.
+  Future<String?> _roomNameDialog({
+    required String title,
+    required String actionLabel,
+    required String? Function(String name) validate,
+    String initial = '',
+  }) {
+    final controller = TextEditingController(text: initial);
+    String? error;
+    int shake = 0;
+
+    return showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Add Room',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: 'e.g. Room 2, Lab 1, Office',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: _palette.mid)),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Add', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) {
+          void submit() {
+            final name = controller.text.trim();
+            final err = validate(name);
+            if (err != null) {
+              setS(() {
+                error = err;
+                shake++;
+              });
+              return;
+            }
+            Navigator.pop(ctx, name);
+          }
+
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Text(title,
+                style: const TextStyle(
+                    fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
+            content: AppTextField(
+              controller: controller,
+              shakeTrigger: shake,
+              decoration: InputDecoration(
+                hintText: 'e.g. Room 2, Lab 1, Office',
+                errorText: error,
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(color: _palette.mid)),
+              ),
+              autofocus: true,
+              onChanged: (_) {
+                if (error != null) setS(() => error = null);
+              },
+              onSubmitted: (_) => submit(),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: AppColors.textMuted))),
+              ElevatedButton(
+                onPressed: submit,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: _palette.dark,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10))),
+                child: Text(actionLabel,
+                    style: const TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
       ),
     );
+  }
 
-    if (result == null || result.isEmpty) return;
+  Future<void> _addRoom() async {
     final current = _rooms[_selectedFloor] ?? [];
-    if (current.contains(result)) {
-      if (!mounted) return;
-      TopToast.error(context, 'Room already exists.');
-      return;
-    }
+    final result = await _roomNameDialog(
+      title: 'Add Room',
+      actionLabel: 'Add',
+      validate: (name) {
+        if (name.isEmpty) return 'Room name is required';
+        if (current.contains(name)) return 'Room already exists';
+        return null;
+      },
+    );
+    if (result == null) return;
 
     final updated = [...current, result];
     final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
@@ -438,50 +481,20 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   // â”€â”€ Edit room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Future<void> _editRoom(String oldRoom) async {
-    final controller = TextEditingController(text: oldRoom);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Edit Room Name',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: 'e.g. Room 2, Lab 1, Office',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide(color: _palette.mid)),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Save', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (result == null || result.isEmpty || result == oldRoom) return;
-
     final current = _rooms[_selectedFloor] ?? [];
-    if (current.contains(result)) {
-      if (!mounted) return;
-      TopToast.error(context, 'Room name already exists.');
-      return;
-    }
+    final result = await _roomNameDialog(
+      title: 'Edit Room Name',
+      actionLabel: 'Save',
+      initial: oldRoom,
+      validate: (name) {
+        if (name.isEmpty) return 'Room name is required';
+        if (name != oldRoom && current.contains(name)) {
+          return 'Room name already exists';
+        }
+        return null;
+      },
+    );
+    if (result == null || result == oldRoom) return;
 
     // Update room name in the list
     final updated = current.map((r) => r == oldRoom ? result : r).toList();
@@ -526,8 +539,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Room',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Text('Delete "$room" and all its utilities?',
             style: const TextStyle(fontSize: 14)),
         actions: [
@@ -654,7 +667,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 'Add Room',
                 style: TextStyle(
                     color: Colors.white,
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontWeight: FontWeight.w600),
               ),
             )
@@ -706,7 +719,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   ? '${widget.buildingName} - $_selectedRoom'
                   : widget.buildingName,
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: Colors.white),
@@ -804,8 +817,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               GestureDetector(
                 onTap: _retryLoad,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                       color: Colors.white.withAlpha(38),
                       borderRadius: BorderRadius.circular(8)),
@@ -846,7 +859,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
                       color: color)),
@@ -881,7 +894,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 child: Center(
                   child: Text('Floor $floor',
                       style: TextStyle(
-                          fontFamily: 'Outfit',
+                          fontFamily: AppFonts.family,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color:
@@ -905,7 +918,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           const SizedBox(height: 12),
           const Text('No rooms yet',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -925,7 +938,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         Text(
             'Floor $_selectedFloor - ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -1002,7 +1015,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                     children: [
                       Text(room,
                           style: const TextStyle(
-                              fontFamily: 'Outfit',
+                              fontFamily: AppFonts.family,
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                               color: AppColors.textDark)),
@@ -1106,5 +1119,4 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       child: Icon(icon, size: 14, color: color),
     );
   }
-
 }

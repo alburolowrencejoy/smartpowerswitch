@@ -29,3 +29,14 @@ pub cache (`%LOCALAPPDATA%\Pub\Cache`), and this project directory — antivirus
 intercepting process/thread creation syscalls are a known cause of exactly this class of
 intermittent native crash, though this has not been confirmed as a root cause here (checking
 requires admin rights).
+
+## UI conventions (enforced by `test/ui_conventions_test.dart`)
+
+- **Text inputs:** never use a raw `TextField` / `TextFormField` in `lib/`. Use `AppTextField`
+  / `AppTextFormField` from `lib/widgets/app_text_field.dart`, so every field shakes when it
+  shows an error. Put field errors in the field's `decoration.errorText` (or a validator), and
+  bump `shakeTrigger` on each failed submit so a repeated error shakes again. For custom-drawn
+  fields, wrap the box in `ShakeOnError`.
+- **Fonts:** one typeface app-wide: Roboto, bundled in `assets/fonts/`. Always write
+  `fontFamily: AppFonts.family` (`lib/theme/app_fonts.dart`), never a string literal, and
+  don't add `google_fonts`.

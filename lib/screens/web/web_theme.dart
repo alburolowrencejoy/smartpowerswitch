@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../theme/app_colors.dart';
+import '../../theme/app_fonts.dart';
 
 /// Web-only text colors. The app-wide [AppColors.textMuted] (#7AAA8A) is
 /// only ~2.6:1 on white, too faint for the desktop dashboard's small
@@ -20,20 +20,21 @@ class WebColors {
   static const muted = Color(0xFF4F6A58);
 }
 
-/// The web shell's theme: DM Sans for body/UI text (very legible at small
-/// sizes) while every `fontFamily: 'Outfit'` heading and number keeps
-/// Outfit, the app's display face. Applied only inside
-/// `DesktopDashboardScreen`, so the mobile UI is untouched.
+/// The web shell's theme: the app font ([AppFonts.family]) everywhere, with
+/// darker web text colors and web-sized button, tooltip and input text.
+/// Applied only inside `DesktopDashboardScreen`, so the mobile UI is untouched.
 ThemeData webTheme(ThemeData base) {
-  final text = GoogleFonts.dmSansTextTheme(base.textTheme).apply(
+  final text = base.textTheme.apply(
+    fontFamily: AppFonts.family,
     bodyColor: WebColors.ink,
     displayColor: WebColors.ink,
   );
   return base.copyWith(
     textTheme: text,
-    primaryTextTheme: GoogleFonts.dmSansTextTheme(base.primaryTextTheme),
+    primaryTextTheme: base.primaryTextTheme.apply(fontFamily: AppFonts.family),
     tooltipTheme: TooltipThemeData(
-      textStyle: GoogleFonts.dmSans(
+      textStyle: const TextStyle(
+        fontFamily: AppFonts.family,
         fontSize: 12.5,
         fontWeight: FontWeight.w600,
         color: Colors.white,
@@ -47,18 +48,27 @@ ThemeData webTheme(ThemeData base) {
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
-        textStyle: GoogleFonts.dmSans(fontSize: 14, fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(
+            fontFamily: AppFonts.family,
+            fontSize: 14,
+            fontWeight: FontWeight.w600),
       ),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
-        textStyle: GoogleFonts.dmSans(fontSize: 14, fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(
+            fontFamily: AppFonts.family,
+            fontSize: 14,
+            fontWeight: FontWeight.w600),
       ),
     ),
     inputDecorationTheme: base.inputDecorationTheme.copyWith(
-      labelStyle: GoogleFonts.dmSans(fontSize: 14, color: WebColors.mid),
-      hintStyle: GoogleFonts.dmSans(fontSize: 14, color: WebColors.muted),
-      helperStyle: GoogleFonts.dmSans(fontSize: 12.5, color: WebColors.muted),
+      labelStyle: const TextStyle(
+          fontFamily: AppFonts.family, fontSize: 14, color: WebColors.mid),
+      hintStyle: const TextStyle(
+          fontFamily: AppFonts.family, fontSize: 14, color: WebColors.muted),
+      helperStyle: const TextStyle(
+          fontFamily: AppFonts.family, fontSize: 12.5, color: WebColors.muted),
     ),
   );
 }

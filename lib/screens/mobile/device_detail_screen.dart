@@ -10,6 +10,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../services/readings_service.dart';
 import '../../services/home_widget_service.dart';
+import '../../theme/app_fonts.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -459,7 +460,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const SizedBox(height: 16),
           const Text('Cannot load device',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -519,7 +520,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                     letterSpacing: 0.5)),
             Text(_utilityLabel(widget.utility),
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: Colors.white)),
@@ -600,7 +601,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(widget.deviceId,
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -656,7 +657,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const SizedBox(height: 4),
           Text(relayVisible ? 'Turned ON' : 'Turned OFF',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
                   color: relayVisible ? Colors.white : AppColors.textDark)),
@@ -794,7 +795,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       children: [
         const Text('PZEM-004T Readings',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -858,7 +859,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text(value,
                   style: const TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textDark)),
@@ -898,7 +899,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const SizedBox(height: 4),
           Text('₱ ${cost.toStringAsFixed(2)}',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 24,
                   fontWeight: FontWeight.w700,
                   color: _palette.dark)),
@@ -910,7 +911,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               style: TextStyle(fontSize: 11, color: AppColors.textMid)),
           Text('${energy.toStringAsFixed(2)} kWh',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: _palette.dark)),

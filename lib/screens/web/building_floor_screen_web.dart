@@ -9,6 +9,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// The desktop building page: floor tabs, then one card per room listing
 /// its devices with a live switch, View, and admin add/edit/delete icons.
@@ -733,7 +734,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
           children: [
             Text(widget.buildingName,
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 26,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
@@ -761,7 +762,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
           const SizedBox(height: 12),
           const Text('Cannot load this building',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
                   color: WebColors.ink)),
@@ -828,7 +829,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),

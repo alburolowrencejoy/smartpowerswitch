@@ -11,6 +11,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// Web campus map with two views over the real campus image:
 ///
@@ -431,7 +432,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
             children: [
               Text('Campus Map',
                   style: TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 26,
                       fontWeight: FontWeight.w700,
                       color: WebColors.ink)),
@@ -883,7 +884,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       const SizedBox(height: 10),
       Text(_precise ? 'Pick a device' : 'Pick a building',
           style: const TextStyle(
-              fontFamily: 'Outfit',
+              fontFamily: AppFonts.family,
               fontSize: 17,
               fontWeight: FontWeight.w700,
               color: WebColors.ink)),
@@ -942,7 +943,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
         Expanded(
           child: Text(name,
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: WebColors.ink)),
@@ -1030,7 +1031,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
             Text('${d.utility.isEmpty ? 'Device' : d.utility} · ${d.room}',
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),

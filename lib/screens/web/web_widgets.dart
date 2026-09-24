@@ -1,11 +1,14 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/app_text_field.dart';
 import 'web_theme.dart';
+import '../../theme/app_fonts.dart';
+
+// The web screens get the shared input + shake widgets through this file.
+export '../../widgets/app_text_field.dart';
 
 /// Shared building blocks for the web screens: icon-only action buttons and
 /// form dialogs whose fields show their own error (red border, message
@@ -68,52 +71,6 @@ class WebIconButton extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-// ── Shake ────────────────────────────────────────────────────────────────
-
-/// Plays a short horizontal shake every time [trigger] changes.
-class ShakeOnChange extends StatefulWidget {
-  final int trigger;
-  final Widget child;
-
-  const ShakeOnChange({super.key, required this.trigger, required this.child});
-
-  @override
-  State<ShakeOnChange> createState() => _ShakeOnChangeState();
-}
-
-class _ShakeOnChangeState extends State<ShakeOnChange>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 380),
-  );
-
-  @override
-  void didUpdateWidget(covariant ShakeOnChange oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.trigger != widget.trigger) _c.forward(from: 0);
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _c,
-      child: widget.child,
-      builder: (context, child) {
-        final t = _c.value;
-        final dx = math.sin(t * math.pi * 6) * 7 * (1 - t);
-        return Transform.translate(offset: Offset(dx, 0), child: child);
-      },
     );
   }
 }
@@ -266,7 +223,7 @@ class _WebFormDialogState extends State<_WebFormDialog> {
         children: [
           Text(widget.title,
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 19,
                   fontWeight: FontWeight.w700,
                   color: WebColors.ink)),
@@ -284,18 +241,15 @@ class _WebFormDialogState extends State<_WebFormDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             for (final f in widget.fields) ...[
-              ShakeOnChange(
-                trigger: _errors.containsKey(f.id) ? _shake : 0,
-                child: _field(f, p),
-              ),
+              _field(f, p),
               const SizedBox(height: 14),
             ],
             if (general != null)
               ShakeOnChange(
                 trigger: _shake,
                 child: Text(general,
-                    style: const TextStyle(
-                        fontSize: 13, color: AppColors.error)),
+                    style:
+                        const TextStyle(fontSize: 13, color: AppColors.error)),
               ),
           ],
         ),
@@ -328,21 +282,28 @@ class _WebFormDialogState extends State<_WebFormDialog> {
 
   Widget _field(WebField f, InstitutePalette p) {
     final err = _errors[f.id];
-    final deco = webInputDecoration(p, label: f.label, hint: f.hint, error: err);
+    final deco =
+        webInputDecoration(p, label: f.label, hint: f.hint, error: err);
     if (f.options != null) {
-      return DropdownButtonFormField<String>(
-        initialValue: _choice[f.id],
-        decoration: deco,
-        items: [
-          for (final o in f.options!) DropdownMenuItem(value: o, child: Text(o)),
-        ],
-        onChanged: (v) => setState(() {
-          _choice[f.id] = v ?? _choice[f.id]!;
-          _errors.remove(f.id);
-        }),
+      return ShakeOnError(
+        error: err,
+        trigger: _shake,
+        child: DropdownButtonFormField<String>(
+          initialValue: _choice[f.id],
+          decoration: deco,
+          items: [
+            for (final o in f.options!)
+              DropdownMenuItem(value: o, child: Text(o)),
+          ],
+          onChanged: (v) => setState(() {
+            _choice[f.id] = v ?? _choice[f.id]!;
+            _errors.remove(f.id);
+          }),
+        ),
       );
     }
-    return TextField(
+    return AppTextField(
+      shakeTrigger: _shake,
       controller: _text[f.id],
       autofocus: f == widget.fields.first,
       obscureText: f.obscure,
@@ -483,7 +444,8 @@ class WebStatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fg = on ? const Color(0xFF1A5C35) : const Color(0xFF5D5D5D);
-    final bg = on ? const Color(0xFF2E9E52).withAlpha(31) : const Color(0xFFEEEEEE);
+    final bg =
+        on ? const Color(0xFF2E9E52).withAlpha(31) : const Color(0xFFEEEEEE);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       decoration:
@@ -523,7 +485,8 @@ class WebSwitch extends StatelessWidget {
       enabled: enabled,
       label: semanticLabel,
       child: MouseRegion(
-        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.forbidden,
+        cursor:
+            enabled ? SystemMouseCursors.click : SystemMouseCursors.forbidden,
         child: GestureDetector(
           onTap: enabled ? () => onChanged!(!value) : null,
           child: Opacity(
@@ -535,7 +498,8 @@ class WebSwitch extends StatelessWidget {
               padding: const EdgeInsets.all(3),
               alignment: value ? Alignment.centerRight : Alignment.centerLeft,
               decoration: BoxDecoration(
-                color: value ? const Color(0xFF2E9E52) : const Color(0xFFCFD8D2),
+                color:
+                    value ? const Color(0xFF2E9E52) : const Color(0xFFCFD8D2),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Container(
@@ -576,7 +540,8 @@ class WebTabs<T> extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-          color: p.pale.withAlpha(102), borderRadius: BorderRadius.circular(12)),
+          color: p.pale.withAlpha(102),
+          borderRadius: BorderRadius.circular(12)),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(mainAxisSize: MainAxisSize.min, children: [

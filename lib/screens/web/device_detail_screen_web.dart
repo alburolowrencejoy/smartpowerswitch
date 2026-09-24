@@ -12,6 +12,7 @@ import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// The desktop device page: live PZEM readings (voltage, current, power,
 /// energy today), a 7-day energy trend, and the relay Control panel.
@@ -508,7 +509,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           children: [
             Text('${_utilityLabel(widget.utility)} · ${widget.room}',
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 26,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
@@ -533,7 +534,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         const SizedBox(height: 12),
         const Text('Cannot load this device',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
                 color: WebColors.ink)),
@@ -584,7 +585,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           TextSpan(
               text: value,
               style: const TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 22,
                   fontWeight: FontWeight.w700,
                   color: WebColors.ink)),
@@ -604,7 +605,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(title,
                 style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),

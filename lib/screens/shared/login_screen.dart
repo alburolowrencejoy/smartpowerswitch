@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -6,15 +7,28 @@ import '../../config/app_mode.dart';
 import '../../services/automation_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/top_toast.dart';
+import '../../widgets/app_text_field.dart';
+import '../web/login_screen_web.dart';
+import '../../theme/app_fonts.dart';
 
-class LoginScreen extends StatefulWidget {
+/// Web builds get the redesigned [LoginScreenWeb]; native apps keep
+/// [_MobileLoginScreen].
+class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  Widget build(BuildContext context) =>
+      kIsWeb ? const LoginScreenWeb() : const _MobileLoginScreen();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _MobileLoginScreen extends StatefulWidget {
+  const _MobileLoginScreen();
+
+  @override
+  State<_MobileLoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<_MobileLoginScreen> {
   static const _rememberEmailKey = 'login.rememberEmail';
   static const _rememberPasswordKey = 'login.rememberPassword';
   static const _rememberMeKey = 'login.rememberMe';
@@ -462,7 +476,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 overflow: TextOverflow.ellipsis,
                 text: const TextSpan(
                   style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: Colors.white,
@@ -482,7 +496,7 @@ class _LoginScreenState extends State<LoginScreen> {
           SizedBox(height: isNarrow ? 22 : 28),
           Text('Welcome back,',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: titleSize,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
@@ -490,7 +504,7 @@ class _LoginScreenState extends State<LoginScreen> {
               textAlign: isDesktop ? TextAlign.center : TextAlign.start),
           Text('Sign in to continue.',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: subtitleSize,
                   fontWeight: FontWeight.w400,
                   color: AppColors.greenLight),
@@ -525,7 +539,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 color: AppColors.textMid,
                 letterSpacing: 0.8)),
         const SizedBox(height: 6),
-        TextFormField(
+        AppTextFormField(
           controller: controller,
           keyboardType: keyboard,
           textInputAction: textInputAction,
@@ -549,7 +563,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 color: AppColors.textMid,
                 letterSpacing: 0.8)),
         const SizedBox(height: 6),
-        TextFormField(
+        AppTextFormField(
           controller: _passwordController,
           obscureText: _obscurePassword,
           textInputAction: TextInputAction.done,
@@ -634,7 +648,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     color: Colors.white, strokeWidth: 2.5))
             : const Text('Sign In',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: Colors.white)),

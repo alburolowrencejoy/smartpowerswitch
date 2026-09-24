@@ -10,8 +10,10 @@ import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../firebase_options.dart';
 import '../../utils/placeholder_data.dart';
+import '../../widgets/app_text_field.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 /// Oversees institutes and their members.
 ///
@@ -110,8 +112,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
       if (!mounted || !_isLoading) return;
       setState(() {
         _isLoading = false;
-        _errorText =
-            'Taking too long to load users. Check your connection.';
+        _errorText = 'Taking too long to load users. Check your connection.';
       });
     });
 
@@ -146,8 +147,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               'floors': (b['floors'] ?? 1),
             };
           }).toList()
-            ..sort((a, b) =>
-                (a['code'] as String).compareTo(b['code'] as String));
+            ..sort(
+                (a, b) => (a['code'] as String).compareTo(b['code'] as String));
         } else if (_isLoading) {
           _institutes = [];
         }
@@ -278,6 +279,10 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     final passwordCtrl = TextEditingController();
     String? selectedUid = members.isNotEmpty ? members.first['uid'] : null;
     String? errorText;
+    String? nameError;
+    String? emailError;
+    String? passwordError;
+    int shake = 0;
     bool obscure = true;
     bool submitting = false;
     final actionLabel = asCoAdmin ? 'Co-Admin' : 'Admin';
@@ -290,7 +295,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text('Add $actionLabel · $instituteName',
               style: const TextStyle(
-                  fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               if (members.isNotEmpty)
@@ -306,9 +311,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 10),
                           decoration: BoxDecoration(
-                            color: !createNew
-                                ? _palette.dark
-                                : Colors.transparent,
+                            color:
+                                !createNew ? _palette.dark : Colors.transparent,
                             borderRadius: const BorderRadius.only(
                                 topLeft: Radius.circular(11),
                                 bottomLeft: Radius.circular(11)),
@@ -330,9 +334,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 10),
                           decoration: BoxDecoration(
-                            color: createNew
-                                ? _palette.dark
-                                : Colors.transparent,
+                            color:
+                                createNew ? _palette.dark : Colors.transparent,
                             borderRadius: const BorderRadius.only(
                                 topRight: Radius.circular(11),
                                 bottomRight: Radius.circular(11)),
@@ -381,25 +384,31 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                   ),
                 ),
               ] else ...[
-                TextField(
+                AppTextField(
+                  shakeTrigger: shake,
                   controller: nameCtrl,
                   decoration:
-                      _inputDecoration('Full Name', Icons.person_outline),
+                      _inputDecoration('Full Name', Icons.person_outline)
+                          .copyWith(errorText: nameError),
                   autofocus: true,
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppTextField(
+                  shakeTrigger: shake,
                   controller: emailCtrl,
                   keyboardType: TextInputType.emailAddress,
                   decoration: _inputDecoration(
-                      'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined),
+                          'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined)
+                      .copyWith(errorText: emailError),
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                AppTextField(
+                  shakeTrigger: shake,
                   controller: passwordCtrl,
                   obscureText: obscure,
                   decoration:
                       _inputDecoration('Password', Icons.lock_outline).copyWith(
+                    errorText: passwordError,
                     suffixIcon: GestureDetector(
                       onTap: () => setS(() => obscure = !obscure),
                       child: Icon(
@@ -452,22 +461,32 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                       final name = nameCtrl.text.trim();
                       final email = emailCtrl.text.trim();
                       final password = passwordCtrl.text.trim();
-                      if (name.isEmpty || email.isEmpty || password.isEmpty) {
-                        setS(() => errorText = 'All fields are required');
-                        return;
-                      }
-                      if (!email.endsWith('@dnsc.edu.ph')) {
-                        setS(() =>
-                            errorText = 'Email must be a @dnsc.edu.ph address');
-                        return;
-                      }
-                      if (password.length < 6) {
-                        setS(() => errorText =
-                            'Password must be at least 6 characters');
+                      final nameErr = name.isEmpty ? 'Name is required' : null;
+                      final emailErr = email.isEmpty
+                          ? 'Email is required'
+                          : !email.endsWith('@dnsc.edu.ph')
+                              ? 'Email must be a @dnsc.edu.ph address'
+                              : null;
+                      final passErr = password.isEmpty
+                          ? 'Password is required'
+                          : password.length < 6
+                              ? 'Password must be at least 6 characters'
+                              : null;
+                      if (nameErr != null ||
+                          emailErr != null ||
+                          passErr != null) {
+                        setS(() {
+                          nameError = nameErr;
+                          emailError = emailErr;
+                          passwordError = passErr;
+                          errorText = null;
+                          shake++;
+                        });
                         return;
                       }
                       setS(() {
                         errorText = null;
+                        nameError = emailError = passwordError = null;
                         submitting = true;
                       });
                       try {
@@ -515,6 +534,10 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     final emailCtrl = TextEditingController();
     final passwordCtrl = TextEditingController();
     String? errorText;
+    String? nameError;
+    String? emailError;
+    String? passwordError;
+    int shake = 0;
     bool obscure = true;
     bool submitting = false;
 
@@ -526,27 +549,33 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text('Add Member · $instituteName',
               style: const TextStyle(
-                  fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(
+              AppTextField(
+                shakeTrigger: shake,
                 controller: nameCtrl,
-                decoration: _inputDecoration('Full Name', Icons.person_outline),
+                decoration: _inputDecoration('Full Name', Icons.person_outline)
+                    .copyWith(errorText: nameError),
                 autofocus: true,
               ),
               const SizedBox(height: 12),
-              TextField(
+              AppTextField(
+                shakeTrigger: shake,
                 controller: emailCtrl,
                 keyboardType: TextInputType.emailAddress,
                 decoration: _inputDecoration(
-                    'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined),
+                        'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined)
+                    .copyWith(errorText: emailError),
               ),
               const SizedBox(height: 12),
-              TextField(
+              AppTextField(
+                shakeTrigger: shake,
                 controller: passwordCtrl,
                 obscureText: obscure,
                 decoration:
                     _inputDecoration('Password', Icons.lock_outline).copyWith(
+                  errorText: passwordError,
                   suffixIcon: GestureDetector(
                     onTap: () => setS(() => obscure = !obscure),
                     child: Icon(
@@ -580,22 +609,32 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                       final name = nameCtrl.text.trim();
                       final email = emailCtrl.text.trim();
                       final password = passwordCtrl.text.trim();
-                      if (name.isEmpty || email.isEmpty || password.isEmpty) {
-                        setS(() => errorText = 'All fields are required');
-                        return;
-                      }
-                      if (!email.endsWith('@dnsc.edu.ph')) {
-                        setS(() =>
-                            errorText = 'Email must be a @dnsc.edu.ph address');
-                        return;
-                      }
-                      if (password.length < 6) {
-                        setS(() => errorText =
-                            'Password must be at least 6 characters');
+                      final nameErr = name.isEmpty ? 'Name is required' : null;
+                      final emailErr = email.isEmpty
+                          ? 'Email is required'
+                          : !email.endsWith('@dnsc.edu.ph')
+                              ? 'Email must be a @dnsc.edu.ph address'
+                              : null;
+                      final passErr = password.isEmpty
+                          ? 'Password is required'
+                          : password.length < 6
+                              ? 'Password must be at least 6 characters'
+                              : null;
+                      if (nameErr != null ||
+                          emailErr != null ||
+                          passErr != null) {
+                        setS(() {
+                          nameError = nameErr;
+                          emailError = emailErr;
+                          passwordError = passErr;
+                          errorText = null;
+                          shake++;
+                        });
                         return;
                       }
                       setS(() {
                         errorText = null;
+                        nameError = emailError = passwordError = null;
                         submitting = true;
                       });
                       try {
@@ -658,8 +697,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Assign to Institute',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: _institutes.isEmpty
               ? const Text('No institutes exist yet.',
                   style: TextStyle(fontSize: 13, color: AppColors.textMuted))
@@ -719,6 +758,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   Future<void> _changePassword(String uid, String email) async {
     final passwordCtrl = TextEditingController();
     String? errorText;
+    String? passwordError;
+    int shake = 0;
     bool obscure = true;
 
     await showDialog(
@@ -728,18 +769,20 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Change Password',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             Text('Account: $email',
                 style:
                     const TextStyle(fontSize: 12, color: AppColors.textMuted)),
             const SizedBox(height: 12),
-            TextField(
+            AppTextField(
+              shakeTrigger: shake,
               controller: passwordCtrl,
               obscureText: obscure,
               decoration:
                   _inputDecoration('New Password', Icons.lock_outline).copyWith(
+                errorText: passwordError,
                 suffixIcon: GestureDetector(
                   onTap: () => setS(() => obscure = !obscure),
                   child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
@@ -767,10 +810,14 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               onPressed: () async {
                 final password = passwordCtrl.text.trim();
                 if (password.length < 6) {
-                  setS(() =>
-                      errorText = 'Password must be at least 6 characters');
+                  setS(() {
+                    passwordError = 'Password must be at least 6 characters';
+                    errorText = null;
+                    shake++;
+                  });
                   return;
                 }
+                setS(() => passwordError = null);
                 try {
                   await FirebaseFunctions.instance
                       .httpsCallable('changeUserPassword')
@@ -804,8 +851,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Account',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Text('Delete account "$email"? This cannot be undone.',
             style: const TextStyle(fontSize: 14)),
         actions: [
@@ -977,11 +1024,12 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                   decoration: BoxDecoration(
                       color: _palette.pale,
                       borderRadius: BorderRadius.circular(20)),
-                  child: Icon(Icons.lock_outline, size: 34, color: _palette.mid)),
+                  child:
+                      Icon(Icons.lock_outline, size: 34, color: _palette.mid)),
               const SizedBox(height: 16),
               const Text('Cannot load users',
                   style: TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                       color: AppColors.textDark)),
@@ -993,8 +1041,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               const SizedBox(height: 16),
               ElevatedButton.icon(
                 onPressed: _retryLoad,
-                icon:
-                    const Icon(Icons.refresh, size: 16, color: Colors.white),
+                icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
                 label:
                     const Text('Retry', style: TextStyle(color: Colors.white)),
                 style: ElevatedButton.styleFrom(
@@ -1028,7 +1075,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
           children: [
             const Text('Manage Users',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textDark)),
@@ -1240,10 +1287,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                         badgeOverride: isCo ? 'CO-ADMIN' : 'ADMIN',
                         paletteOverride: cardPalette,
                         trailing: [
-                          _rowActionButton(
-                              'Change Password',
-                              () => _changePassword(
-                                  a['uid'], a['email'] ?? ''),
+                          _rowActionButton('Change Password',
+                              () => _changePassword(a['uid'], a['email'] ?? ''),
                               palette: cardPalette),
                           if (canRemove) ...[
                             const SizedBox(width: 8),
@@ -1295,8 +1340,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                           trailing: [
                             _rowActionButton(
                                 'Change Password',
-                                () => _changePassword(
-                                    m['uid'], m['email'] ?? ''),
+                                () =>
+                                    _changePassword(m['uid'], m['email'] ?? ''),
                                 palette: cardPalette),
                             const SizedBox(width: 8),
                             _rowIconButton(Icons.delete_outline,
@@ -1343,13 +1388,14 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                   color: _palette.pale,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.groups_outlined, size: 18, color: _palette.dark),
+                child:
+                    Icon(Icons.groups_outlined, size: 18, color: _palette.dark),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text('Other Accounts (${others.length})',
                     style: const TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark)),
@@ -1428,19 +1474,16 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
           width: 32,
           height: 32,
           decoration: BoxDecoration(
-            color: isHighTier
-                ? palette.dark.withAlpha(20)
-                : palette.pale,
+            color: isHighTier ? palette.dark.withAlpha(20) : palette.pale,
             borderRadius: BorderRadius.circular(9),
           ),
           child: Center(
             child: Text(email.isNotEmpty ? email[0].toUpperCase() : 'U',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontWeight: FontWeight.w700,
                     fontSize: 12,
-                    color:
-                        isHighTier ? palette.dark : palette.mid)),
+                    color: isHighTier ? palette.dark : palette.mid)),
           ),
         ),
         const SizedBox(width: 10),
@@ -1464,9 +1507,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           decoration: BoxDecoration(
-            color: isHighTier
-                ? palette.dark.withAlpha(20)
-                : palette.pale,
+            color: isHighTier ? palette.dark.withAlpha(20) : palette.pale,
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(badgeOverride ?? _roleLabel(role),
@@ -1519,9 +1560,8 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
               style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w600,
-                  color: isDanger
-                      ? AppColors.error
-                      : (palette ?? _palette).dark)),
+                  color:
+                      isDanger ? AppColors.error : (palette ?? _palette).dark)),
         ),
       ),
     );

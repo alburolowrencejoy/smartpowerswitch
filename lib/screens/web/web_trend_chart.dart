@@ -25,12 +25,18 @@ class WebTrendChart extends StatefulWidget {
   final Color color;
   final double height;
 
+  /// Optional earlier period, drawn as a dashed line aligned by index.
+  final List<double>? compare;
+  final Color compareColor;
+
   const WebTrendChart({
     super.key,
     required this.points,
     required this.bars,
     required this.color,
     this.height = 280,
+    this.compare,
+    this.compareColor = const Color(0xFF8A9A90),
   });
 
   @override
@@ -58,7 +64,8 @@ class _WebTrendChartState extends State<WebTrendChart> {
       child: LayoutBuilder(builder: (context, c) {
         final n = pts.length;
         final pw = c.maxWidth - _padL - _padR;
-        final maxV = niceAxisMax(pts.isEmpty ? 0 : pts.map((p) => p.value).reduce(math.max));
+        final all = [...pts.map((p) => p.value), ...?widget.compare];
+        final maxV = niceAxisMax(all.isEmpty ? 0 : all.reduce(math.max));
         final geo = _Geo(n, pw, c.maxHeight, maxV, widget.bars);
 
         return MouseRegion(
@@ -76,6 +83,8 @@ class _WebTrendChartState extends State<WebTrendChart> {
                   geo: geo,
                   color: widget.color,
                   hover: _hover,
+                  compare: widget.compare,
+                  compareColor: widget.compareColor,
                 ),
               ),
             ),
@@ -142,12 +151,16 @@ class _TrendPainter extends CustomPainter {
   final _Geo geo;
   final Color color;
   final int? hover;
+  final List<double>? compare;
+  final Color compareColor;
 
   _TrendPainter({
     required this.points,
     required this.geo,
     required this.color,
     required this.hover,
+    this.compare,
+    this.compareColor = const Color(0xFF8A9A90),
   });
 
   @override
@@ -219,6 +232,26 @@ class _TrendPainter extends CustomPainter {
       }
     }
 
+    final cmp = compare;
+    if (cmp != null && cmp.isNotEmpty) {
+      final m = math.min(n, cmp.length);
+      final path = Path()..moveTo(g.x(0), g.y(cmp[0]));
+      for (var i = 1; i < m; i++) {
+        path.lineTo(g.x(i), g.y(cmp[i]));
+      }
+      final dash = Paint()
+        ..color = compareColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round;
+      for (final metric in path.computeMetrics()) {
+        for (var d = 0.0; d < metric.length; d += 11) {
+          canvas.drawPath(
+              metric.extractPath(d, math.min(d + 6, metric.length)), dash);
+        }
+      }
+    }
+
     if (hover != null && hover! < n && !g.bars) {
       final hx = g.x(hover!);
       canvas.drawLine(Offset(hx, _padT), Offset(hx, g.base),
@@ -255,6 +288,7 @@ class _TrendPainter extends CustomPainter {
   bool shouldRepaint(covariant _TrendPainter old) =>
       old.points != points ||
       old.hover != hover ||
+      old.compare != compare ||
       old.color != color ||
       old.geo.bars != geo.bars ||
       old.geo.pw != geo.pw;

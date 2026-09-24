@@ -8,6 +8,7 @@ import '../../services/forecast_models.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import 'web_theme.dart';
+import '../../theme/app_fonts.dart';
 
 /// Two half-width forecast cards for the web Analytics screen.
 ///
@@ -29,12 +30,26 @@ class ForecastComparison extends StatefulWidget {
   final DateTime? lastDate;
   final double rate;
 
+  /// Days to forecast.
+  final int horizon;
+
+  /// When set, both cards show this message instead of a forecast (e.g.
+  /// "Not enough data for a forecast").
+  final String? unavailableReason;
+
+  /// XGBoost / LSTM are trained campus-wide by the Python job; when the
+  /// Analytics scope or utility filter is narrower they can't be shown.
+  final bool remoteModelsApply;
+
   const ForecastComparison({
     super.key,
     required this.palette,
     required this.daily,
     required this.lastDate,
     required this.rate,
+    this.horizon = 30,
+    this.unavailableReason,
+    this.remoteModelsApply = true,
   });
 
   @override
@@ -105,6 +120,16 @@ class _ForecastComparisonState extends State<ForecastComparison> {
 
   _Model _arima() {
     final w = _window;
+    final reason = widget.unavailableReason;
+    if (reason != null) {
+      return _Model(
+        key: 'arima',
+        name: 'ARIMA',
+        blurb: 'Seasonal time-series model',
+        color: _arimaColor,
+        unavailable: reason,
+      );
+    }
     if (w.length < 2) {
       return const _Model(
         key: 'arima',
@@ -119,13 +144,29 @@ class _ForecastComparisonState extends State<ForecastComparison> {
       name: 'ARIMA',
       blurb: 'Seasonal time-series model',
       color: _arimaColor,
-      values: arimaForecast(w, 30),
+      values: arimaForecast(w, widget.horizon),
       error: backtest(w, (y, h) => arimaForecast(y, h)),
     );
   }
 
   _Model _remoteModel(String key, String name, String blurb, Color color) {
     final raw = _remote[key];
+    final reason = widget.unavailableReason;
+    if (reason != null) {
+      return _Model(
+          key: key, name: name, blurb: blurb, color: color,
+          unavailable: reason);
+    }
+    if (!widget.remoteModelsApply) {
+      return _Model(
+        key: key,
+        name: name,
+        blurb: blurb,
+        color: color,
+        unavailable: '$name is trained on campus-wide totals only. Clear the '
+            'Scope and Utility filters to compare it with ARIMA.',
+      );
+    }
     if (!_remoteLoaded) {
       return _Model(
           key: key, name: name, blurb: blurb, color: color,
@@ -151,7 +192,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
       name: name,
       blurb: blurb,
       color: color,
-      values: values.take(30).toList(),
+      values: values.take(widget.horizon).toList(),
       error: ForecastError.fromMap(raw['backtest']),
       trainedAt:
           gen is num ? DateTime.fromMillisecondsSinceEpoch(gen.toInt()) : null,
@@ -177,14 +218,15 @@ class _ForecastComparisonState extends State<ForecastComparison> {
 
     final all = [...?left.values, ...?right.values];
     final maxV = _niceMax(all.isEmpty ? 0 : all.reduce(math.max));
-    final labels = List.generate(30, (i) {
+    final h = widget.horizon;
+    final labels = List.generate(h, (i) {
       final d = widget.lastDate?.add(Duration(days: i + 1));
       return d;
     });
 
     final leftCard = _card(
       title: 'ARIMA Forecast',
-      subtitle: '${left.blurb} · next 30 days',
+      subtitle: '${left.blurb} · next $h days',
       trailing: best == 'arima' ? const _BestChip(big: true) : null,
       model: left,
       labels: labels,
@@ -192,7 +234,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
     );
     final rightCard = _card(
       title: 'Compare with',
-      subtitle: '${right.blurb} · next 30 days',
+      subtitle: '${right.blurb} · next $h days',
       trailing: _picker(models, best),
       model: right,
       labels: labels,
@@ -213,11 +255,11 @@ class _ForecastComparisonState extends State<ForecastComparison> {
         ]);
       }),
       const SizedBox(height: 8),
-      const Text(
-        'Both charts show the next 30 days on the same scale. Error is a '
+      Text(
+        'Both charts show the next $h days on the same scale. Error is a '
         'backtest: each model is trained without the last 14 days and its '
         'predictions are compared with what actually happened. Lower is better.',
-        style: TextStyle(fontSize: 12.5, color: WebColors.muted),
+        style: const TextStyle(fontSize: 12.5, color: WebColors.muted),
       ),
     ]);
   }
@@ -314,7 +356,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(title,
                   style: const TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: WebColors.ink)),
@@ -348,7 +390,8 @@ class _ForecastComparisonState extends State<ForecastComparison> {
           const SizedBox(height: 14),
           Row(children: [
             Expanded(
-                child: _Box('Projected 30-day kWh', total.toStringAsFixed(2))),
+                child: _Box('Projected ${values.length}-day kWh',
+                    total.toStringAsFixed(2))),
             const SizedBox(width: 10),
             Expanded(
                 child: _Box('Estimated bill',
@@ -451,7 +494,7 @@ class _Box extends StatelessWidget {
         const SizedBox(height: 4),
         Text(value,
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
                 color: WebColors.ink)),
@@ -607,7 +650,9 @@ class _ForecastPainter extends CustomPainter {
         ..strokeJoin = StrokeJoin.round,
     );
 
-    for (final i in {0, 7, 14, 21, n - 1}) {
+    final step = math.max(1, ((n - 1) / 4).round());
+    for (final i in {0, step, step * 2, step * 3, n - 1}) {
+      if (i != n - 1 && n - 1 - i < step / 2) continue;
       if (i < 0 || i >= n) continue;
       _text(canvas, _fmtDate(labels.length > i ? labels[i] : null),
           Offset(x(i), base + 14),

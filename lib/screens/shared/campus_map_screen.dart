@@ -5,6 +5,7 @@ import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 // ─── Energy Level ─────────────────────────────────────────────────────────────
 
@@ -672,7 +673,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                     child: Text(
                       'Add Hotspot Zone',
                       style: TextStyle(
-                          fontFamily: 'Outfit',
+                          fontFamily: AppFonts.family,
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: AppColors.textDark),
@@ -704,7 +705,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
                             child: Text(
                               id,
                               style: const TextStyle(
-                                  fontFamily: 'Outfit',
+                                  fontFamily: AppFonts.family,
                                   fontSize: 9,
                                   fontWeight: FontWeight.w700,
                                   color: AppColors.greenDark),
@@ -757,7 +758,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           const SizedBox(height: 16),
           const Text('Cannot load campus map',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -996,7 +997,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           backgroundColor: AppColors.greenDark,
           title: const Text('Campus Map',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   color: Colors.white,
                   fontWeight: FontWeight.w700)),
           iconTheme: const IconThemeData(color: Colors.white),
@@ -1095,7 +1096,7 @@ class _BuildingPopup extends StatelessWidget {
                     children: [
                   Text(buildingName,
                       style: const TextStyle(
-                          fontFamily: 'Outfit',
+                          fontFamily: AppFonts.family,
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
                           color: AppColors.greenDark)),

@@ -10,8 +10,10 @@ import '../../services/download_open_service.dart';
 import '../../services/github_update_service.dart';
 import '../../services/davao_light_rate_monitor.dart';
 import '../../services/automation_scheduler_service.dart';
+import '../../widgets/app_text_field.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -28,6 +30,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _unassignedIotController = TextEditingController();
   bool _saving = false;
   bool _registeringIot = false;
+  String? _rateError;
+  String? _iotError;
+  int _rateShake = 0;
+  int _iotShake = 0;
   double _currentRate = 11.5;
   DateTime? _lastRateUpdateTime;
   String _appVersion = '';
@@ -230,7 +236,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveRate() async {
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
-      TopToast.show(context, 'Enter a valid rate.', isError: true);
+      setState(() {
+        _rateError = 'Enter a valid rate.';
+        _rateShake++;
+      });
       return;
     }
     setState(() => _saving = true);
@@ -283,11 +292,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     final id = _unassignedIotController.text.trim().toUpperCase();
     if (!RegExp(r'^[A-Z0-9_-]{3,40}$').hasMatch(id)) {
-      TopToast.show(
-        context,
-        'Enter a valid Device ID (3-40 chars, A-Z, 0-9, _ or -).',
-        isError: true,
-      );
+      setState(() {
+        _iotError = 'Enter a valid Device ID (3-40 chars, A-Z, 0-9, _ or -).';
+        _iotShake++;
+      });
       return;
     }
 
@@ -304,12 +312,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final assignedTo = (existing['assignedTo'] ?? '').toString();
         if (assignedTo.isNotEmpty) {
           if (!mounted) return;
-          TopToast.show(
-            context,
-            'Device already assigned to $assignedTo.',
-            isError: true,
-          );
-          setState(() => _registeringIot = false);
+          setState(() {
+            _registeringIot = false;
+            _iotError = 'Device already assigned to $assignedTo.';
+            _iotShake++;
+          });
           return;
         }
 
@@ -524,12 +531,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SizedBox(height: 12),
         Row(children: [
           Expanded(
-            child: TextField(
+            child: AppTextField(
               controller: _unassignedIotController,
+              shakeTrigger: _iotShake,
               textCapitalization: TextCapitalization.characters,
               style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+              onChanged: (_) {
+                if (_iotError != null) setState(() => _iotError = null);
+              },
               decoration: InputDecoration(
                 hintText: 'e.g. ESP32-ROOM101-001',
+                errorText: _iotError,
+                errorMaxLines: 2,
                 hintStyle: const TextStyle(color: AppColors.textMuted),
                 filled: true,
                 fillColor: Colors.white,
@@ -537,12 +550,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        BorderSide(color: _palette.mid.withAlpha(51))),
+                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
                 enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        BorderSide(color: _palette.mid.withAlpha(51))),
+                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
                 focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: _palette.mid)),
@@ -602,7 +613,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Expanded(
           child: Text('Settings',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: Colors.white)),
@@ -641,8 +652,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           label: const Text('Retry', style: TextStyle(color: Colors.white)),
           style: ElevatedButton.styleFrom(
               backgroundColor: _palette.dark,
-              shape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10))),
         ),
       ]),
     );
@@ -709,13 +720,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         Row(children: [
           Expanded(
-            child: TextField(
+            child: AppTextField(
               controller: _rateController,
+              shakeTrigger: _rateShake,
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
               style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+              onChanged: (_) {
+                if (_rateError != null) setState(() => _rateError = null);
+              },
               decoration: InputDecoration(
                 prefixText: '₱ ',
+                errorText: _rateError,
                 hintText: '11.5',
                 hintStyle: const TextStyle(color: AppColors.textMuted),
                 filled: true,
@@ -724,12 +740,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        BorderSide(color: _palette.mid.withAlpha(51))),
+                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
                 enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                        BorderSide(color: _palette.mid.withAlpha(51))),
+                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
                 focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: _palette.mid)),
@@ -816,8 +830,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Icon(
                         isManual ? Icons.edit : Icons.cloud_download,
                         size: 16,
-                        color:
-                            isManual ? _palette.dark : _palette.mid,
+                        color: isManual ? _palette.dark : _palette.mid,
                       ),
                     ),
                   ),
@@ -987,9 +1000,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       color: Colors.white, fontWeight: FontWeight.w600),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: release.updateAvailable
-                      ? _palette.dark
-                      : _palette.mid,
+                  backgroundColor:
+                      release.updateAvailable ? _palette.dark : _palette.mid,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                 ),
@@ -1020,9 +1032,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: isOpen
-              ? _palette.dark.withAlpha(70)
-              : _palette.mid.withAlpha(18),
+          color:
+              isOpen ? _palette.dark.withAlpha(70) : _palette.mid.withAlpha(18),
         ),
         boxShadow: [
           BoxShadow(
@@ -1043,21 +1054,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 width: 34,
                 height: 34,
                 decoration: BoxDecoration(
-                  color: isOpen
-                      ? _palette.dark.withAlpha(20)
-                      : _palette.pale,
+                  color: isOpen ? _palette.dark.withAlpha(20) : _palette.pale,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon,
-                    size: 18,
-                    color: isOpen ? _palette.dark : _palette.mid),
+                    size: 18, color: isOpen ? _palette.dark : _palette.mid),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   title,
                   style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: isOpen ? AppColors.textDark : AppColors.textMid,

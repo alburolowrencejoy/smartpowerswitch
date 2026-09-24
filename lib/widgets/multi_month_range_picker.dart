@@ -41,6 +41,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
+import '../theme/app_fonts.dart';
 
 class MultiMonthRangePicker extends StatefulWidget {
   /// First-of-month for the earliest month to show (bottom of the grid).
@@ -318,7 +319,7 @@ class _MonthBlock extends StatelessWidget {
           Text(
             '${_monthNames[month.month - 1]} ${month.year}',
             style: const TextStyle(
-              fontFamily: 'Outfit',
+              fontFamily: AppFonts.family,
               fontSize: 11,
               fontWeight: FontWeight.w600,
               color: AppColors.textDark,

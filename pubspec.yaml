@@ -15,9 +15,6 @@ dependencies:
   firebase_auth: ^5.3.1
   firebase_database: ^11.1.4
 
-  # Google Fonts (Outfit)
-  google_fonts: ^6.2.1
-
   # Cloud Functions
   cloud_functions: ^5.1.0
 
@@ -49,3 +46,27 @@ flutter:
   assets:
     - assets/images/campus_map.png
     - promo/img/logo.png
+
+  # The app's single typeface (lib/theme/app_fonts.dart). Bundled so every
+  # platform -- web, Android, iOS, Windows -- renders the same font offline.
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-thin.ttf
+          weight: 100
+        - asset: assets/fonts/Roboto-light.ttf
+          weight: 300
+        - asset: assets/fonts/Roboto-regular.ttf
+          weight: 400
+        - asset: assets/fonts/Roboto-italic.ttf
+          weight: 400
+          style: italic
+        - asset: assets/fonts/Roboto-medium.ttf
+          weight: 500
+        - asset: assets/fonts/Roboto-bold.ttf
+          weight: 700
+        - asset: assets/fonts/Roboto-bolditalic.ttf
+          weight: 700
+          style: italic
+        - asset: assets/fonts/Roboto-black.ttf
+          weight: 900

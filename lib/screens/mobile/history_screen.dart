@@ -12,6 +12,7 @@ import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -1381,7 +1382,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           const SizedBox(height: 16),
           const Text('Cannot load history',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -1433,7 +1434,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         const Expanded(
           child: Text('Energy Analytics',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: Colors.white)),
@@ -1674,7 +1675,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         const SizedBox(height: 10),
         Text(value,
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
@@ -1717,7 +1718,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     Text(
                       'Consumption Trend',
                       style: TextStyle(
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                         color: AppColors.textDark,
@@ -1919,7 +1920,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           const Text(
             'Next Month Prediction',
             style: TextStyle(
-              fontFamily: 'Outfit',
+              fontFamily: AppFonts.family,
               fontSize: 14,
               fontWeight: FontWeight.w600,
               color: AppColors.textDark,
@@ -2041,7 +2042,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Text(
             value,
             style: const TextStyle(
-              fontFamily: 'Outfit',
+              fontFamily: AppFonts.family,
               fontSize: 18,
               fontWeight: FontWeight.w700,
               color: AppColors.textDark,
@@ -2113,7 +2114,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Device Status',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2165,7 +2166,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: color,
-                  fontFamily: 'Outfit')),
+                  fontFamily: AppFonts.family)),
           Text(label,
               style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
         ]),
@@ -2197,7 +2198,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Utilities',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2265,7 +2266,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Top Consuming Institutes',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),
@@ -2345,7 +2346,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       children: [
         const Text('Breakdown',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textDark)),

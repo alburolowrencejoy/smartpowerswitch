@@ -5,8 +5,10 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/app_text_field.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 void _safeDialogPop<T>(BuildContext context, [T? result]) {
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -278,7 +280,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: const Text('Select Device',
-          style: TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+          style: TextStyle(
+              fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
       content: SingleChildScrollView(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // Step 1 — Building
@@ -433,8 +436,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
       Container(
         width: 20,
         height: 20,
-        decoration: BoxDecoration(
-            color: widget.palette.dark, shape: BoxShape.circle),
+        decoration:
+            BoxDecoration(color: widget.palette.dark, shape: BoxShape.circle),
         child: Center(
             child: Text(step,
                 style: const TextStyle(
@@ -653,8 +656,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
       builder: (dialogCtx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete Schedule',
-            style:
-                TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
         content: Text('Delete "${s.name}"?'),
         actions: [
           TextButton(
@@ -691,6 +694,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
     TimeOfDay offTime = const TimeOfDay(hour: 18, minute: 0);
     List<String> days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
     String? error;
+    String? nameError;
+    int shake = 0;
     bool loading = false;
 
     await showDialog(
@@ -700,15 +705,20 @@ class _AutomationScreenState extends State<AutomationScreen> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Add Schedule',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               // Name
-              TextField(
+              AppTextField(
                 controller: nameCtrl,
-                decoration: _inputDeco('Schedule name', Icons.label_outline),
+                shakeTrigger: shake,
+                decoration: _inputDeco('Schedule name', Icons.label_outline)
+                    .copyWith(errorText: nameError),
                 autofocus: true,
+                onChanged: (_) {
+                  if (nameError != null) setS(() => nameError = null);
+                },
               ),
               const SizedBox(height: 14),
 
@@ -897,7 +907,11 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   : () async {
                       final name = nameCtrl.text.trim();
                       if (name.isEmpty) {
-                        setS(() => error = 'Name is required');
+                        setS(() {
+                          nameError = 'Name is required';
+                          error = null;
+                          shake++;
+                        });
                         return;
                       }
                       if (days.isEmpty) {
@@ -1004,8 +1018,8 @@ class _AutomationScreenState extends State<AutomationScreen> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('Edit Schedule Time & Days',
-              style:
-                  TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600)),
+              style: TextStyle(
+                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1178,7 +1192,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
                 label: const Text('Add Schedule',
                     style: TextStyle(
                         color: Colors.white,
-                        fontFamily: 'Outfit',
+                        fontFamily: AppFonts.family,
                         fontWeight: FontWeight.w600)),
               )
             : null,
@@ -1187,10 +1201,9 @@ class _AutomationScreenState extends State<AutomationScreen> {
             : ScreenSkeleton(
                 isLoading: _isLoading,
                 child: Builder(builder: (context) {
-                  final displaySchedules =
-                      _schedules.isEmpty && _isLoading
-                          ? AutomationSchedule.placeholderList()
-                          : _schedules;
+                  final displaySchedules = _schedules.isEmpty && _isLoading
+                      ? AutomationSchedule.placeholderList()
+                      : _schedules;
                   return displaySchedules.isEmpty
                       ? _buildEmpty()
                       : _buildList(displaySchedules);
@@ -1215,7 +1228,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
           const SizedBox(height: 16),
           const Text('Cannot load automations',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -1235,13 +1248,12 @@ class _AutomationScreenState extends State<AutomationScreen> {
             width: 72,
             height: 72,
             decoration: BoxDecoration(
-                color: _palette.pale,
-                borderRadius: BorderRadius.circular(20)),
+                color: _palette.pale, borderRadius: BorderRadius.circular(20)),
             child: Icon(Icons.schedule, size: 36, color: _palette.dark)),
         const SizedBox(height: 16),
         const Text('No schedules yet',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
@@ -1300,7 +1312,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
       children: [
         Text(title,
             style: const TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 15,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textDark)),
@@ -1359,7 +1371,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
-                                        fontFamily: 'Outfit',
+                                        fontFamily: AppFonts.family,
                                         fontSize: 14,
                                         fontWeight: FontWeight.w600,
                                         color: AppColors.textDark)),
@@ -1403,7 +1415,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                  fontFamily: 'Outfit',
+                                  fontFamily: AppFonts.family,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
                                   color: AppColors.textDark)),

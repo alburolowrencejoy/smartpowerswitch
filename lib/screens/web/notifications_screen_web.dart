@@ -10,6 +10,7 @@ import '../../utils/placeholder_data.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
+import '../../theme/app_fonts.dart';
 
 /// The desktop "Notifications" section: the same alert feed as
 /// [NotificationsScreen] (high-consumption/offline alerts, app-update
@@ -237,7 +238,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textDark,
@@ -278,7 +279,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                 const Text(
                   'What\'s New',
                   style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark,
@@ -468,7 +469,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
             const SizedBox(height: 14),
             const Text('No notifications',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark)),
@@ -511,7 +512,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
             const SizedBox(height: 14),
             const Text('Cannot load notifications',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark)),

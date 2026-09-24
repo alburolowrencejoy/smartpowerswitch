@@ -26,6 +26,7 @@ import 'services/global_readings_listener.dart';
 import 'services/prediction_service.dart';
 import 'theme/app_colors.dart';
 import 'widgets/idle_timeout_wrapper.dart';
+import 'theme/app_fonts.dart';
 
 void main() async {
   // Splash is mobile (Android/iOS) + web only -- desktop native builds are
@@ -141,7 +142,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
         child: child!,
       ),
       theme: ThemeData(
-        fontFamily: 'Outfit',
+        fontFamily: AppFonts.family,
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.greenDark),
         scaffoldBackgroundColor: AppColors.greenPale,
         useMaterial3: true,
@@ -234,7 +235,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
                   'Manage Users',
                   style: TextStyle(
                       color: Colors.white,
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontWeight: FontWeight.w700),
                 ),
               ),

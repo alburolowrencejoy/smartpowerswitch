@@ -16,6 +16,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
+import '../../theme/app_fonts.dart';
 
 /// Web "Manage Users": one card per institute (admins first, then members)
 /// plus an Other Accounts card, with icon-only row actions. Same data,
@@ -511,7 +512,7 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('Manage Users',
           style: TextStyle(
-              fontFamily: 'Outfit',
+              fontFamily: AppFonts.family,
               fontSize: 26,
               fontWeight: FontWeight.w700,
               color: WebColors.ink)),
@@ -639,7 +640,7 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontFamily: 'Outfit',
+                      fontFamily: AppFonts.family,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: WebColors.ink)),
@@ -712,7 +713,7 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Text('Other Accounts',
             style: TextStyle(
-                fontFamily: 'Outfit',
+                fontFamily: AppFonts.family,
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
                 color: WebColors.ink)),

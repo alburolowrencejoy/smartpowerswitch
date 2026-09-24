@@ -9,6 +9,7 @@ import '../../services/download_open_service.dart';
 import '../../utils/placeholder_data.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../theme/app_fonts.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -236,7 +237,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 Text(
                   title,
                   style: const TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textDark,
@@ -279,7 +280,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 const Text(
                   'What\'s New',
                   style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark,
@@ -423,7 +424,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         const Expanded(
           child: Text('Notifications',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                   color: Colors.white)),
@@ -455,7 +456,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           const SizedBox(height: 16),
           const Text('No notifications',
               style: TextStyle(
-                  fontFamily: 'Outfit',
+                  fontFamily: AppFonts.family,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textDark)),
@@ -488,7 +489,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             const SizedBox(height: 16),
             const Text('Cannot load notifications',
                 style: TextStyle(
-                    fontFamily: 'Outfit',
+                    fontFamily: AppFonts.family,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: AppColors.textDark)),
