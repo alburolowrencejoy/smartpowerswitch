@@ -29,6 +29,9 @@ def init_firebase():
     if cred_json:
         # Use explicit service account JSON (legacy method)
         cred_dict = json.loads(cred_json)
+        print('Signing in as', cred_dict.get('client_email'),
+              '(project', cred_dict.get('project_id'), ')')
+        print('Database:', db_url)
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred, options)
     else:
@@ -39,7 +42,13 @@ def init_firebase():
 
 def fetch_daily_history():
     ref = db.reference('history/daily')
-    data = ref.get()
+    try:
+        data = ref.get()
+    except Exception as exc:
+        raise RuntimeError(
+            'Could not read history/daily. The service account must belong '
+            'to (or be granted "Firebase Realtime Database Admin" on) the '
+            f'project that owns the database. Original error: {exc}') from exc
     if not isinstance(data, dict):
         return pd.DataFrame()
     rows = []

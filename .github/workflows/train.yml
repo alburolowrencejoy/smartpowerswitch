@@ -21,9 +21,12 @@ jobs:
           pip install -r requirements.txt
       - name: Run training script
         env:
-          # This service account must be allowed to read/write the Realtime
-          # Database (role "Firebase Realtime Database Admin").
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 }}
+          # A service-account key that can read/write the Realtime Database
+          # of project smartpowerswitch-e90d0. Preferred: FIREBASE_TRAINER_KEY
+          # (Firebase Console > Project settings > Service accounts >
+          # Generate new private key). The hosting-deploy key is only a
+          # fallback and usually lacks database access.
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_TRAINER_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 }}
           # The database URL isn't secret; the secret, if set, still wins.
           FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL || 'https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app' }}
           FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
