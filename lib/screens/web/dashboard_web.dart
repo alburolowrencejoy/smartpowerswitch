@@ -549,13 +549,15 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                           child: Container(color: Colors.transparent),
                         ),
                       ),
-                    // Floating overlays (role badge + bell), visible on
-                    // every tab, level with each screen's title row.
-                    Positioned(
-                      top: 22,
-                      right: 76,
-                      child: _buildRoleBadge(),
-                    ),
+                    // Floating overlays level with each screen's title row:
+                    // the bell on every tab, the role badge (the app's only
+                    // role tag) on the Dashboard tab only.
+                    if (safeIndex == _tabDashboard && !_isDrilledDown)
+                      Positioned(
+                        top: 22,
+                        right: 76,
+                        child: _buildRoleBadge(),
+                      ),
                     Positioned(
                       top: 12,
                       right: 20,
@@ -1347,34 +1349,13 @@ class _InstituteSummaryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Energy consumed today',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(46),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text(
-                  'Admin',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ],
+          const Text(
+            'Energy consumed today',
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 16),
           Row(
