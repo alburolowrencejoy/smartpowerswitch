@@ -10,6 +10,7 @@ import '../../viewmodels/dashboard_viewmodel.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import 'analytics/analytics_focus.dart';
+import 'analytics/analytics_ui.dart';
 import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import '../../theme/app_fonts.dart';
@@ -143,15 +144,20 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     });
   }
 
+  // Fixed, non-institute-themed colors -- matches the convention already
+  // established by `AnalyticsUi.utilityColors` for these same three
+  // categories on the Analytics screen. This used to derive from
+  // `widget.palette.dark/mid/light`, but the OKLCH palette rebuild made
+  // `.light` equal to `.mid` for the four themed institutes (IC/ILEGG/ITED/
+  // IAAS), which collapsed the Outlets and AC donut slices/legend entries
+  // into the same color. Falling back to the fixed categorical ramp keeps
+  // all three slices distinct regardless of institute.
   Color _utilityColor(String key) {
-    final p = widget.palette;
     switch (key) {
       case 'Lights':
-        return p.dark;
       case 'Outlets':
-        return p.mid;
       case 'AC':
-        return p.light;
+        return AnalyticsUi.utilityColor(key);
       default:
         return WebColors.muted.withAlpha(140);
     }

@@ -1,17 +1,40 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/app_text_field.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/app_segmented_control.dart';
+import '../../widgets/app_button.dart';
+import '../../widgets/app_switch.dart';
+import '../../widgets/app_bottom_sheet.dart';
+import '../../widgets/outline_icon_box.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import 'room_devices_panel.dart';
-import 'room_devices_screen.dart';
-import '../../theme/app_fonts.dart';
-import '../../services/history_clock.dart';
+import '../../utils/last_seen.dart';
+
+/// Best-effort full institute names for the Building screen's subtitle
+/// (handoff §4.4: "IC Building" / "Institute of Computing"). Only "IC" is
+/// confirmed by the handoff doc itself -- ILEGG/ITED/IAAS are reasonable
+/// guesses from the abbreviation pattern, NOT confirmed against any real
+/// school record in this repo (there is no full-name field anywhere in
+/// Firebase; `buildings/{code}` only stores `name` + `floors`). Flagged for
+/// verification. Unmapped codes (including a future 6th institute) show no
+/// subtitle rather than a fabricated name.
+const Map<String, String> _kInstituteFullNames = {
+  'IC': 'Institute of Computing',
+  'ILEGG': 'Institute of Law, Education and Good Governance',
+  'ITED': 'Institute of Teacher Education',
+  'IAAS': 'Institute of Agriculture and Applied Sciences',
+  'ADMIN': 'Campus Administration',
+};
 
 class BuildingFloorScreen extends StatefulWidget {
   final String buildingCode;
@@ -39,29 +62,45 @@ class BuildingFloorScreen extends StatefulWidget {
 
 class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   int _selectedFloor = 1;
-  String? _selectedRoom;
-  String? _roomTogglingRoom;
 
   /// This building's institute color ramp (falls back to the main green
   /// palette for institutes without a dedicated color).
   InstitutePalette get _palette => InstituteColors.forCode(widget.buildingCode);
 
+  String? get _instituteFullName =>
+      _kInstituteFullNames[widget.buildingCode.trim().toUpperCase()];
+
   final Map<int, List<String>> _rooms = {};
+
+  /// This floor's devices, keyed by deviceId, straight from
+  /// `buildings/{code}/floorData/{floor}/devices` (fields: utility, status,
+  /// relay, room -- no live telemetry).
   Map<String, dynamic> _devices = {};
 
-  double _buildingKwh = 0;
-  int _buildingOnline = 0;
-  bool _hasMonthlyBuildingEnergy = false;
-  int _instituteTotalDevices = 0; // assigned devices in this building
+  /// The flat `devices` node (all devices, every building) -- source of
+  /// live telemetry (power, kwh, last_seen) keyed by deviceId. Cross
+  /// referenced against [_devices] (which already scopes to this floor).
+  Map<String, dynamic> _liveDevices = {};
 
   final List<StreamSubscription<DatabaseEvent>> _roomSubs = [];
   StreamSubscription? _combinedSub;
-  Map<String, dynamic> _liveDevices = {};
 
-  // True until the first combined emission of this screen's 4 Firebase
-  // streams (floor devices, master_devices, monthly history, flat devices)
-  // has been received; never reverts to true afterwards, so a transient
-  // null on any one path can't blank out data already shown this session.
+  /// Room currently mid-delete-animation (handoff §7.4) -- flipped to a
+  /// room name by [_confirmDeleteRoom]'s `onOptimisticRemove`, cleared by
+  /// `onRestore` if Undo is tapped. The room only actually disappears from
+  /// [_rooms] once the deferred Firebase write in [_commitDeleteRoom] lands
+  /// and the live `rooms` listener picks it up -- by then the row's height
+  /// is already collapsed, so there's no visible jump.
+  String? _deletingRoom;
+
+  /// Device IDs with an in-flight relay write, so a rapid double-tap on a
+  /// device row's switch can't fire two overlapping writes.
+  final Set<String> _togglingDevices = {};
+
+  // True until the first combined emission of this screen's 2 Firebase
+  // streams (this floor's devices, the flat devices node) has been
+  // received; never reverts to true afterwards, so a transient null on
+  // either path can't blank out data already shown this session.
   bool _isLoading = true;
 
   // Set only if the combined listener fails (or times out) before the
@@ -93,52 +132,58 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     return roomDevices;
   }
 
-  bool _roomRelayIsOn(String room) {
-    final roomDevices = _roomDeviceEntries(room);
-    if (roomDevices.isEmpty) return false;
-    return roomDevices.every((entry) => entry.value['relay'] == true);
+  Map<String, dynamic>? _liveFor(String deviceId) =>
+      _liveDevices[deviceId] as Map<String, dynamic>?;
+
+  bool _isDeviceOnline(String deviceId) =>
+      isRecentlySeen(_liveFor(deviceId)?['last_seen']);
+
+  // ── Floor-level summary (handoff §4.4: "Devices / On now / Today kWh") ──
+  int get _floorDeviceCount => _devices.length;
+
+  int get _floorOnNowCount => _devices.entries.where((e) {
+        final floorDevice = e.value as Map;
+        return floorDevice['relay'] == true && _isDeviceOnline(e.key);
+      }).length;
+
+  double get _floorTodayKwh => _devices.keys.fold<double>(0, (sum, id) {
+        final kwh = (_liveFor(id)?['kwh'] as num?)?.toDouble() ?? 0.0;
+        return sum + kwh;
+      });
+
+  double _roomPowerKw(String room) {
+    double totalWatts = 0;
+    for (final entry in _roomDeviceEntries(room)) {
+      totalWatts += (_liveFor(entry.key)?['power'] as num?)?.toDouble() ?? 0.0;
+    }
+    return totalWatts / 1000;
   }
 
-  Future<void> _setRoomRelays(String room, bool turnOn) async {
-    if (_roomTogglingRoom != null) return;
+  String _roomSubtitle(String room) {
+    final count = _roomDeviceEntries(room).length;
+    if (count == 0) return 'No devices yet';
+    final kw = _roomPowerKw(room);
+    return '$count ${count == 1 ? 'device' : 'devices'} · ${kw.toStringAsFixed(1)} kW now';
+  }
 
-    final roomDevices = _roomDeviceEntries(room);
-    if (roomDevices.isEmpty) {
-      TopToast.error(context, 'No utilities found in this room.');
-      return;
-    }
-
-    setState(() => _roomTogglingRoom = room);
-
+  Future<void> _toggleDeviceRelay(String deviceId, bool newValue) async {
+    if (_togglingDevices.contains(deviceId)) return;
+    setState(() => _togglingDevices.add(deviceId));
     try {
       final db = FirebaseDatabase.instance.ref();
-      final writes = <Future<void>>[];
-
-      for (final entry in roomDevices) {
-        final deviceId = entry.key;
-        writes.add(db.child('devices/$deviceId/relay').set(turnOn));
-        writes.add(db
+      await Future.wait([
+        db.child('devices/$deviceId/relay').set(newValue),
+        db
             .child(
                 'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/relay')
-            .set(turnOn));
-      }
-
-      await Future.wait(writes);
-
-      if (mounted) {
-        TopToast.success(
-          context,
-          '${turnOn ? 'Turned on' : 'Turned off'} all utilities in $room.',
-        );
-      }
+            .set(newValue),
+      ]);
     } catch (e) {
       if (mounted) {
-        TopToast.error(context, 'Room switch failed: $e');
+        TopToast.error(context, 'Could not reach the device. Try again.');
       }
     } finally {
-      if (mounted) {
-        setState(() => _roomTogglingRoom = null);
-      }
+      if (mounted) setState(() => _togglingDevices.remove(deviceId));
     }
   }
 
@@ -173,7 +218,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _listenAll();
   }
 
-  // â”€â”€ Load rooms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Load rooms ───────────────────────────────────────────────────────
   void _loadRooms() {
     for (final sub in _roomSubs) {
       sub.cancel();
@@ -202,13 +247,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     }
   }
 
-  // ── Listen to every Firebase path this screen needs (floor devices,
-  // master_devices, this month's building history, and the flat devices
-  // node) in one combined stream so a transient null on any single path
-  // can't blank out data already shown this session. The flat `devices`
-  // snapshot is read once and used to derive both live energy totals and
-  // the online count -- previously two separate subscriptions to the same
-  // path.
+  // ── Listen to this floor's devices + the flat devices node (for live
+  // telemetry/online state) in one combined stream so a transient null on
+  // either path can't blank out data already shown this session.
   void _listenAll() {
     _loadTimeoutTimer?.cancel();
     if (_isLoading) {
@@ -222,22 +263,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       });
     }
 
-    final monthKey = _monthKey(HistoryClock.instance.now());
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance
           .ref(
               'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-          .onValue,
-      FirebaseDatabase.instance.ref('master_devices').onValue,
-      FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings/${widget.buildingCode}/kwh')
           .onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
-        // ── floor devices (for this floor's room/device tiles) ─────
+        // ── floor devices (for this floor's room/device rows) ───────
         final floorRaw = events[0].snapshot.value;
         if (floorRaw is Map) {
           final devices = <String, dynamic>{};
@@ -253,66 +289,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           _devices = {};
         }
 
-        // ── master_devices (assigned counts) ───────────────────────
-        final masterRaw = events[1].snapshot.value;
-        if (masterRaw is Map) {
-          int buildingCount = 0;
-          masterRaw.forEach((id, val) {
-            if (val is! Map) return;
-            final assignedTo = (val['assignedTo'] ?? '').toString();
-            if (assignedTo.isEmpty) return;
-            // assignedTo format: "IC/1/Comlab 1"
-            final parts = assignedTo.split('/');
-            if (parts.isNotEmpty && parts[0] == widget.buildingCode) {
-              buildingCount++;
-            }
-          });
-          _instituteTotalDevices = buildingCount;
-        } else if (_isLoading) {
-          _instituteTotalDevices = 0;
-        }
-
-        // ── this month's building energy from history ──────────────
-        final historyRaw = events[2].snapshot.value;
-        if (historyRaw is num) {
-          _hasMonthlyBuildingEnergy = true;
-          _buildingKwh = historyRaw.toDouble();
-        } else if (_isLoading) {
-          _hasMonthlyBuildingEnergy = false;
-        }
-
-        // ── flat devices node: live energy totals + online count ──
-        final devicesRaw = events[3].snapshot.value;
+        // ── flat devices node: live telemetry + online state ───────
+        final devicesRaw = events[1].snapshot.value;
         if (devicesRaw is Map) {
           final liveDevices = <String, dynamic>{};
-          double kwh = 0;
-          int online = 0;
           devicesRaw.forEach((id, val) {
             if (val is! Map) return;
-            final device = Map<String, dynamic>.from(val);
-            liveDevices[id.toString()] = device;
-
-            final building = (device['building'] ?? '').toString();
-            if (building != widget.buildingCode) return;
-            kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
-
-            final lastSeen = device['last_seen'];
-            if (lastSeen != null && lastSeen != 0) {
-              final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-              if (DateTime.now().difference(dt).inMinutes < 2) online++;
-            }
+            liveDevices[id.toString()] = Map<String, dynamic>.from(val);
           });
           _liveDevices = liveDevices;
-          if (!_hasMonthlyBuildingEnergy) {
-            _buildingKwh = kwh;
-          }
-          _buildingOnline = online;
         } else if (_isLoading) {
           _liveDevices = {};
-          _buildingOnline = 0;
-          if (!_hasMonthlyBuildingEnergy) {
-            _buildingKwh = 0;
-          }
         }
 
         _isLoading = false;
@@ -344,7 +331,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   void _switchFloor(int floor) {
     setState(() {
       _selectedFloor = floor;
-      _selectedRoom = null;
       // Deliberate reset (not a network blip): the floor actually changed,
       // so the previous floor's device tiles must not linger.
       _devices = {};
@@ -353,558 +339,491 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     _listenAll();
   }
 
-  double _roomKwh(String room) {
-    double total = 0;
-    // Read from live devices (flat /devices node) filtered by building + room
-    _liveDevices.forEach((_, val) {
-      if (val is! Map) return;
-      final device = Map<String, dynamic>.from(val);
-      final deviceBuilding = (device['building'] ?? '').toString();
-      final deviceRoom = device['room']?.toString().trim() ?? '';
-
-      // Only sum if building matches and room matches
-      if (deviceBuilding != widget.buildingCode) return;
-      if (deviceRoom != room.trim()) return;
-
-      total += ((device['kwh'] ?? 0.0) as num).toDouble();
-    });
-    return total;
-  }
-
-  double _currentEnergyKwh() {
-    if (_selectedRoom != null) {
-      return _roomKwh(_selectedRoom!);
-    }
-    return _buildingKwh;
-  }
-
-  String _energyScopeLabel() {
-    return _selectedRoom != null ? 'Room' : 'All Rooms';
-  }
-
-  String _monthKey(DateTime date) =>
-      '${date.year}-${date.month.toString().padLeft(2, '0')}';
-
-  // â”€â”€ Add room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  /// Room-name prompt shared by add and edit. [validate] returns an error
-  /// message, shown on the field (with a shake), or null to accept.
-  Future<String?> _roomNameDialog({
-    required String title,
-    required String actionLabel,
-    required String? Function(String name) validate,
-    String initial = '',
-  }) {
-    final controller = TextEditingController(text: initial);
+  // ── Add room (handoff: "simple add-room sheet: room name/number") ────
+  Future<void> _addRoom() async {
+    final current = _rooms[_selectedFloor] ?? [];
+    final controller = TextEditingController();
     String? error;
     int shake = 0;
 
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) {
+    final result = await showAppBottomSheet<String>(
+      context,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setS) {
           void submit() {
             final name = controller.text.trim();
-            final err = validate(name);
-            if (err != null) {
+            if (name.isEmpty) {
               setS(() {
-                error = err;
+                error = 'Room name is required';
                 shake++;
               });
               return;
             }
-            Navigator.pop(ctx, name);
+            if (current.contains(name)) {
+              setS(() {
+                error = 'Room already exists';
+                shake++;
+              });
+              return;
+            }
+            Navigator.of(sheetContext).pop(name);
           }
 
-          return AlertDialog(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: Text(title,
-                style: const TextStyle(
-                    fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-            content: AppTextField(
+          return BottomSheetScaffold(
+            title: 'Add room',
+            palette: _palette,
+            body: AppTextField(
               controller: controller,
               shakeTrigger: shake,
+              autofocus: true,
               decoration: InputDecoration(
-                hintText: 'e.g. Room 2, Lab 1, Office',
+                labelText: 'Room name or number',
+                hintText: 'e.g. Room 204, Lab 1',
                 errorText: error,
                 border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: _palette.mid)),
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              autofocus: true,
               onChanged: (_) {
                 if (error != null) setS(() => error = null);
               },
               onSubmitted: (_) => submit(),
             ),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Cancel',
-                      style: TextStyle(color: AppColors.textMuted))),
-              ElevatedButton(
-                onPressed: submit,
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: _palette.dark,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10))),
-                child: Text(actionLabel,
-                    style: const TextStyle(color: Colors.white)),
-              ),
-            ],
+            footer: BottomSheetFooter(
+              palette: _palette,
+              applyLabel: 'Add',
+              onCancel: () => Navigator.of(sheetContext).pop(),
+              onApply: submit,
+            ),
           );
         },
       ),
-    );
-  }
-
-  Future<void> _addRoom() async {
-    final current = _rooms[_selectedFloor] ?? [];
-    final result = await _roomNameDialog(
-      title: 'Add Room',
-      actionLabel: 'Add',
-      validate: (name) {
-        if (name.isEmpty) return 'Room name is required';
-        if (current.contains(name)) return 'Room already exists';
-        return null;
-      },
     );
     if (result == null) return;
 
     final updated = [...current, result];
     final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(roomMap);
+    try {
+      await FirebaseDatabase.instance
+          .ref(
+              'buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
+          .set(roomMap);
+      if (mounted) TopToast.success(context, '"$result" added.');
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Failed to add room: $e');
+    }
   }
 
-  // â”€â”€ Edit room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  Future<void> _editRoom(String oldRoom) async {
-    final current = _rooms[_selectedFloor] ?? [];
-    final result = await _roomNameDialog(
-      title: 'Edit Room Name',
-      actionLabel: 'Save',
-      initial: oldRoom,
-      validate: (name) {
-        if (name.isEmpty) return 'Room name is required';
-        if (name != oldRoom && current.contains(name)) {
-          return 'Room name already exists';
-        }
-        return null;
-      },
-    );
-    if (result == null || result == oldRoom) return;
-
-    // Update room name in the list
-    final updated = current.map((r) => r == oldRoom ? result : r).toList();
-    final roomMap = {for (int i = 0; i < updated.length; i++) '$i': updated[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(roomMap);
-
-    // Update all devices in this room
-    final snap = await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-        .get();
-
-    if (snap.exists) {
-      final data = snap.value as Map<dynamic, dynamic>;
-      for (final entry in data.entries) {
-        final val = entry.value as Map?;
-        if (val?['room'] == oldRoom) {
-          final deviceId = entry.key.toString();
-          // Update in buildings node
-          await FirebaseDatabase.instance
-              .ref(
-                  'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/room')
-              .set(result);
-          // Update in flat devices node
-          await FirebaseDatabase.instance
-              .ref('devices/$deviceId/room')
-              .set(result);
-        }
+  // ── Add device to a room (preserves the existing "Add Utility" flow;
+  // the handoff's Building screen mock doesn't show this control at all,
+  // but removing the only way to assign a device to a room would be an
+  // undocumented regression, so it's kept as a trailing row inside each
+  // room section instead of a header icon -- see the class doc in
+  // room_devices_panel.dart for the canonical version of this flow, which
+  // this deliberately mirrors; keep the two in sync if you touch either.) ─
+  Future<void> _addDeviceToRoom(String room) async {
+    var assignedInBuilding = 0;
+    try {
+      final capSnap =
+          await FirebaseDatabase.instance.ref('master_devices').get();
+      if (capSnap.value is Map) {
+        (capSnap.value as Map).forEach((id, val) {
+          if (val is! Map) return;
+          final assignedTo = (val['assignedTo'] ?? '').toString();
+          if (assignedTo.startsWith('${widget.buildingCode}/')) {
+            assignedInBuilding++;
+          }
+        });
       }
+    } catch (e) {
+      if (mounted) {
+        TopToast.error(context, 'Could not check the device limit: $e');
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (assignedInBuilding >= 24) {
+      TopToast.threshold(context, 'Device limit reached (24 max).');
+      return;
     }
 
-    if (!mounted) return;
-    TopToast.success(context, '"$oldRoom" renamed to "$result".');
-  }
-
-  // â”€â”€ Delete room â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  Future<void> _deleteRoom(String room) async {
-    final confirm = await showDialog<bool>(
+    final utility = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Room',
-            style: TextStyle(
-                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-        content: Text('Delete "$room" and all its utilities?',
-            style: const TextStyle(fontSize: 14)),
+        title: Text('Select Utility Type',
+            style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          _utilityPickTile('Lights', Icons.lightbulb_outline, 'Lights',
+              const Color(0xFFE8922A)),
+          const SizedBox(height: 8),
+          _utilityPickTile('Outlets', Icons.electrical_services, 'Outlets',
+              AppColors.greenMid),
+          const SizedBox(height: 8),
+          _utilityPickTile(
+              'AC', Icons.ac_unit, 'AC Unit', const Color(0xFF2196F3)),
+        ]),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
+              onPressed: () => Navigator.pop(context),
               child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
+                  style: TextStyle(color: AppColors.inkMuted))),
         ],
       ),
     );
-    if (confirm != true) return;
+    if (utility == null || !mounted) return;
 
-    final snap = await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-        .get();
+    final idController = TextEditingController();
+    String? idError;
+    int idShake = 0;
 
-    if (snap.exists) {
-      final data = snap.value as Map<dynamic, dynamic>;
-      for (final entry in data.entries) {
-        final val = entry.value as Map?;
-        if (val?['room'] == room) await _unassignDevice(entry.key.toString());
-      }
+    final deviceId = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text('Enter Device ID',
+              style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Type the unique Device ID from the sticker on your ESP32.',
+                style:
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 12),
+            AppTextField(
+              controller: idController,
+              shakeTrigger: idShake,
+              textCapitalization: TextCapitalization.characters,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: 'e.g. DEV-2024-A3F7',
+                errorText: idError,
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon:
+                    const Icon(Icons.qr_code, color: AppColors.inkMuted),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.inkMuted))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: _palette.dark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              onPressed: () async {
+                final id = idController.text.trim().toUpperCase();
+                if (id.isEmpty) {
+                  setS(() {
+                    idError = 'Please enter a Device ID';
+                    idShake++;
+                  });
+                  return;
+                }
+                final snap = await FirebaseDatabase.instance
+                    .ref('master_devices/$id')
+                    .get();
+                if (!snap.exists) {
+                  setS(() {
+                    idError = 'Device ID not found in system';
+                    idShake++;
+                  });
+                  return;
+                }
+                final assigned = (snap.value as Map?)?['assignedTo'] as String?;
+                if (assigned != null && assigned.isNotEmpty) {
+                  setS(() {
+                    idError = 'Device already assigned to $assigned';
+                    idShake++;
+                  });
+                  return;
+                }
+                if (_devices.containsKey(id)) {
+                  setS(() {
+                    idError = 'Device already added to this floor';
+                    idShake++;
+                  });
+                  return;
+                }
+                if (ctx.mounted) Navigator.pop(ctx, id);
+              },
+              child: const Text('Add Device',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (deviceId == null || !mounted) return;
+
+    try {
+      await FirebaseDatabase.instance
+          .ref(
+              'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
+          .set({
+        'utility': utility,
+        'status': 'offline',
+        'relay': false,
+        'room': room,
+      });
+      await FirebaseDatabase.instance.ref('devices/$deviceId').update({
+        'building': widget.buildingCode,
+        'floor': '$_selectedFloor',
+        'room': room,
+        'utility': utility,
+        'relay': false,
+        'status': 'offline',
+        'kwh': 0,
+        'voltage': 0,
+        'current': 0,
+        'power': 0,
+        'last_seen': 0,
+        'last_updated': 0,
+      });
+      await FirebaseDatabase.instance
+          .ref('master_devices/$deviceId/assignedTo')
+          .set('${widget.buildingCode}/$_selectedFloor/$room');
+
+      if (!mounted) return;
+      TopToast.success(context, '$deviceId added as $utility in $room.');
+    } catch (e) {
+      if (!mounted) return;
+      TopToast.error(context, 'Failed to add device: $e');
     }
-
-    final current = List<String>.from(_rooms[_selectedFloor] ?? []);
-    current.remove(room);
-    final roomMap = {for (int i = 0; i < current.length; i++) '$i': current[i]};
-    await FirebaseDatabase.instance
-        .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms')
-        .set(current.isEmpty ? {} : roomMap);
-
-    if (!mounted) return;
-    TopToast.success(context, '"$room" deleted.');
   }
 
-  // Add-utility and delete-device flows (including the utility-type picker
-  // dialog) moved to RoomDevicesPanel (lib/screens/mobile/room_devices_panel.dart)
-  // as part of extracting the room-devices view into its own reusable
-  // widget. _unassignDevice below stays here too -- see the comment on it.
+  Widget _utilityPickTile(
+      String value, IconData icon, String label, Color color) {
+    return GestureDetector(
+      onTap: () => Navigator.pop(context, value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withAlpha(51)),
+        ),
+        child: Row(children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: color.withAlpha(90)),
+                borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, size: 20, color: color),
+          ),
+          const SizedBox(width: 12),
+          Text(label,
+              style: AppTextStyles.subtitle
+                  .copyWith(color: AppColors.ink, fontSize: 14)),
+          const Spacer(),
+          Icon(Icons.chevron_right, color: color, size: 18),
+        ]),
+      ),
+    );
+  }
 
-  // Deliberately duplicated in RoomDevicesPanel._unassignDevice (used there
-  // by that widget's own _deleteDevice). Kept here because this copy is
-  // also used by _deleteRoom's cascading delete above, which stays in this
-  // file (rooms-list flow, not part of the extracted panel). If you touch
-  // this, update the copy in room_devices_panel.dart too so the two don't
-  // drift.
-  Future<void> _unassignDevice(String deviceId) async {
-    await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
-        .remove();
-    await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId')
-        .update({'assignedTo': ''});
-    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-      'building': '',
-      'floor': '',
-      'room': '',
-      'status': 'offline',
-    });
+  // ── Delete room (handoff §7: two-step confirm + 5s Undo) ─────────────
+  Future<void> _confirmDeleteRoom(String room) async {
+    final roomDevices = _roomDeviceEntries(room);
+    final deviceCount = roomDevices.length;
+
+    final committed = await showDeleteFlow(
+      context,
+      type: DeleteType.room,
+      itemName: '$room · ${widget.buildingName}',
+      impact: [
+        deviceCount > 0
+            ? '$deviceCount ${deviceCount == 1 ? 'device' : 'devices'} will be unassigned'
+            : 'No devices are assigned to this room',
+        'Schedules for these devices will stop',
+        'Usage history stays in Analytics',
+      ],
+      onOptimisticRemove: () => setState(() => _deletingRoom = room),
+      onRestore: () => setState(() => _deletingRoom = null),
+      onCommit: (reason, otherText) =>
+          _commitDeleteRoom(room, roomDevices, reason, otherText),
+    );
+
+    if (committed && mounted) {
+      TopToast.success(context, 'Room deleted');
+    }
+  }
+
+  Future<void> _commitDeleteRoom(
+    String room,
+    List<MapEntry<String, Map<String, dynamic>>> roomDevices,
+    String reason,
+    String? otherText,
+  ) async {
+    final db = FirebaseDatabase.instance.ref();
+    final remainingRooms = List<String>.from(_rooms[_selectedFloor] ?? [])
+      ..remove(room);
+    final roomMap = {
+      for (var i = 0; i < remainingRooms.length; i++) '$i': remainingRooms[i]
+    };
+
+    final updates = <String, Object?>{
+      'buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms':
+          remainingRooms.isEmpty ? {} : roomMap,
+    };
+
+    for (final entry in roomDevices) {
+      final id = entry.key;
+      updates['buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$id'] =
+          null;
+      updates['master_devices/$id/assignedTo'] = '';
+      updates['devices/$id/building'] = '';
+      updates['devices/$id/floor'] = '';
+      updates['devices/$id/room'] = '';
+      updates['devices/$id/status'] = 'offline';
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    final logRef = db.child('deletion_log').push();
+    updates['deletion_log/${logRef.key}'] = {
+      'type': 'room',
+      'buildingCode': widget.buildingCode,
+      'floor': _selectedFloor,
+      'room': room,
+      'deviceIds': roomDevices.map((e) => e.key).toList(),
+      'reason': reason,
+      'otherText': otherText,
+      'deletedBy': user?.uid,
+      'deletedByEmail': user?.email,
+      'timestamp': ServerValue.timestamp,
+    };
+
+    try {
+      await db.update(updates);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _deletingRoom = null);
+        TopToast.error(context, 'Failed to delete room: $e');
+      }
+      rethrow;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      body: SafeArea(
-        child: Column(children: [
-          // Both this header (building code/name + Admin badge) and the
-          // stats row below are skipped when embedded as an institute
-          // admin's dashboard tab -- the parent dashboard already shows an
-          // equivalent institute-scoped summary card just above this
-          // screen, so showing either here is pure duplication (they cover
-          // the same institute, since an institute admin has exactly one
-          // building). Safe to gate the header on showBackButton alone now:
-          // room taps in the embedded instance push RoomDevicesScreen
-          // instead of setting _selectedRoom, so the header's back-arrow-
-          // for-a-selected-room case never applies here.
-          if (widget.showBackButton) ...[
-            _buildHeader(),
-            _buildBuildingDashboard(),
-          ],
-          _buildFloorTabs(),
-          Flexible(
-            fit: FlexFit.loose,
-            child: ResponsiveCenter(
-              maxWidth: 900,
-              child: _selectedRoom == null
-                  ? _buildRoomsList()
-                  // Room-devices grid + its own "Add Utility" FAB now live
-                  // in RoomDevicesPanel; this in-place swap only applies to
-                  // the main-admin standalone path (showBackButton: true --
-                  // see _buildRoomCard's onTap below for the institute-admin
-                  // path, which pushes RoomDevicesScreen instead).
-                  : RoomDevicesPanel(
-                      buildingCode: widget.buildingCode,
-                      buildingName: widget.buildingName,
-                      floor: _selectedFloor,
-                      room: _selectedRoom!,
-                      role: widget.role,
-                    ),
-            ),
-          ),
-        ]),
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme(palette: _palette)],
       ),
-      // Add Utility is now owned by RoomDevicesPanel itself (see build()
-      // above), so this outer FAB only ever drives Add Room, and only
-      // shows up on the rooms-list step.
-      floatingActionButton: isAdmin && _selectedRoom == null
-          ? FloatingActionButton.extended(
-              onPressed: _addRoom,
-              backgroundColor: _palette.dark,
-              icon: const Icon(Icons.add, color: Colors.white),
-              label: const Text(
-                'Add Room',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontFamily: AppFonts.family,
-                    fontWeight: FontWeight.w600),
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        body: SafeArea(
+          child: Column(children: [
+            // Skipped when embedded directly as an institute admin's
+            // dashboard tab -- the parent dashboard already shows an
+            // equivalent institute-scoped summary card just above this
+            // screen (see class doc on `showBackButton`).
+            if (widget.showBackButton)
+              AppTopBar(
+                title: widget.buildingName,
+                subtitle: _instituteFullName,
+                variant: AppTopBarVariant.small,
+                showBackButton: true,
+                showInstituteLine: true,
+                palette: _palette,
               ),
-            )
-          : null,
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-      color: _palette.dark,
-      child: Row(children: [
-        if (widget.showBackButton || _selectedRoom != null) ...[
-          GestureDetector(
-            onTap: () {
-              if (_selectedRoom != null) {
-                setState(() => _selectedRoom = null);
-              } else {
-                Navigator.pop(context);
-              }
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(38),
-                  borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.arrow_back_ios_new,
-                  color: Colors.white, size: 16),
-            ),
-          ),
-          const SizedBox(width: 12),
-        ],
-        Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Skip the small code caption when the building has no custom
-            // name yet — showing "IC" twice in a row is pure redundancy.
-            if (widget.buildingName.trim().toUpperCase() !=
-                widget.buildingCode.trim().toUpperCase())
-              Text(widget.buildingCode,
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: _palette.light,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1)),
-            Text(
-              _selectedRoom != null
-                  ? '${widget.buildingName} - $_selectedRoom'
-                  : widget.buildingName,
-              style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white),
-              overflow: TextOverflow.ellipsis,
+            _buildFloorRow(),
+            if (_errorText == null) _buildSummaryBoxes(),
+            Expanded(
+              child: ResponsiveCenter(
+                maxWidth: 900,
+                child: _errorText != null
+                    ? _buildFloorError()
+                    : ScreenSkeleton(
+                        isLoading: _isLoading,
+                        child: _buildRoomsList(),
+                      ),
+              ),
             ),
           ]),
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-              color: Colors.white.withAlpha(26),
-              borderRadius: BorderRadius.circular(12)),
-          child: Text(isAdmin ? 'Admin' : 'Faculty',
-              style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white)),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildBuildingDashboard() {
-    final energyKwh = _currentEnergyKwh();
-    final energyCost = energyKwh * 11.5;
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-      decoration: BoxDecoration(
-        color: _palette.dark,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
       ),
-      child: _errorText != null
-          ? _buildDashboardError()
-          : ScreenSkeleton(
-              isLoading: _isLoading,
-              child: Row(children: [
-                Expanded(
-                    child: _dashCard(
-                        _energyScopeLabel(),
-                        '${energyKwh.toStringAsFixed(1)} kWh',
-                        Icons.bolt,
-                        _palette.light)),
-                const SizedBox(width: 10),
-                Expanded(
-                    child: _dashCard(
-                        'Cost',
-                        'PHP ${energyCost.toStringAsFixed(0)}',
-                        Icons.payments_outlined,
-                        _palette.pale)),
-                const SizedBox(width: 10),
-                Expanded(
-                    child: _dashCard('Online', '$_buildingOnline online',
-                        Icons.wifi, _palette.mid)),
-                if (isAdmin) ...[
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: _dashCard(
-                          'Devices',
-                          '$_instituteTotalDevices assigned',
-                          Icons.devices,
-                          _palette.light)),
-                ],
-              ]),
-            ),
     );
   }
 
-  Widget _buildDashboardError() {
-    return SizedBox(
-      height: 84,
+  Widget _buildFloorRow() {
+    final segments = List.generate(
+        widget.floors, (i) => AppSegment(label: 'Floor ${i + 1}'));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
       child: Row(children: [
         Expanded(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-                color: Colors.white.withAlpha(15),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withAlpha(26))),
-            child: Row(children: [
-              Icon(Icons.wifi_off_rounded, size: 18, color: _palette.light),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  _errorText ?? 'Failed to load floor data.',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: _palette.pale),
-                ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: _retryLoad,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: Colors.white.withAlpha(38),
-                      borderRadius: BorderRadius.circular(8)),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.refresh, size: 14, color: Colors.white),
-                    SizedBox(width: 4),
-                    Text('Retry',
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white)),
-                  ]),
-                ),
-              ),
-            ]),
+          child: AppSegmentedControl(
+            segments: segments,
+            selectedIndex: _selectedFloor - 1,
+            onChanged: (i) => _switchFloor(i + 1),
+            palette: _palette,
           ),
         ),
+        if (isAdmin) ...[
+          const SizedBox(width: 10),
+          IconAddButton(
+            onPressed: _addRoom,
+            palette: _palette,
+            semanticLabel: 'Add room',
+          ),
+        ],
       ]),
     );
   }
 
-  Widget _dashCard(String label, String value, IconData icon, Color color) {
-    return SizedBox(
-      height: 84,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        decoration: BoxDecoration(
-            color: Colors.white.withAlpha(15),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white.withAlpha(26))),
-        child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, size: 16, color: color),
-              const SizedBox(height: 6),
-              Text(value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontFamily: AppFonts.family,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: color)),
-              Text(label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 10, color: color.withAlpha(179))),
-            ]),
-      ),
+  Widget _buildSummaryBoxes() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: Row(children: [
+        Expanded(
+            child: _StatBox(
+                label: 'Devices',
+                value: '$_floorDeviceCount',
+                palette: _palette)),
+        const SizedBox(width: 8),
+        Expanded(
+            child: _StatBox(
+                label: 'On now',
+                value: '$_floorOnNowCount',
+                palette: _palette)),
+        const SizedBox(width: 8),
+        Expanded(
+            child: _StatBox(
+                label: 'Today',
+                value: _floorTodayKwh.toStringAsFixed(1),
+                unit: 'kWh',
+                palette: _palette)),
+      ]),
     );
   }
 
-  Widget _buildFloorTabs() {
-    return Container(
-      height: 52,
-      margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-      decoration: BoxDecoration(
-          color: _palette.pale, borderRadius: BorderRadius.circular(14)),
-      child: Row(
-        children: List.generate(widget.floors, (i) {
-          final floor = i + 1;
-          final isSelected = _selectedFloor == floor;
-          return Expanded(
-            child: GestureDetector(
-              onTap: () => _switchFloor(floor),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                margin: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                    color: isSelected ? _palette.dark : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10)),
-                child: Center(
-                  child: Text('Floor $floor',
-                      style: TextStyle(
-                          fontFamily: AppFonts.family,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color:
-                              isSelected ? Colors.white : AppColors.textMid)),
-                ),
-              ),
-            ),
-          );
-        }),
+  Widget _buildFloorError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid),
+          const SizedBox(height: 12),
+          Text(_errorText ?? 'Failed to load this floor.',
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: _retryLoad,
+            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
+            label: const Text('Retry', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: _palette.dark,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+          ),
+        ]),
       ),
     );
   }
@@ -914,210 +833,280 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     if (rooms.isEmpty) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.meeting_room_outlined,
-              size: 48, color: AppColors.textMuted),
+          Icon(Icons.meeting_room_outlined, size: 48, color: _palette.mid),
           const SizedBox(height: 12),
-          const Text('No rooms yet',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
+          Text('No rooms yet',
+              style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
           const SizedBox(height: 6),
           Text(
-            isAdmin
-                ? 'Tap + Add Room to get started'
-                : 'No rooms have been added yet',
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+            isAdmin ? 'Tap + to add one' : 'No rooms have been added yet',
+            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted),
           ),
         ]),
       );
     }
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-            'Floor $_selectedFloor - ${rooms.length} ${rooms.length == 1 ? 'room' : 'rooms'}',
-            style: const TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        ...rooms.map((room) => _buildRoomCard(room)),
-      ]),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final room in rooms)
+            // Gap sits outside the transition so the red "Room deleted"
+            // strip hangs from the room's last row, not from the gap.
+            Padding(
+              key: ValueKey('room-$room'),
+              padding: const EdgeInsets.only(bottom: 22),
+              child: DeleteRowTransition(
+                deleting: _deletingRoom == room,
+                message: 'Room deleted',
+                onDeleteAnimationComplete: () {},
+                child: _buildRoomSection(room),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
-  Widget _buildRoomCard(String room) {
+  Widget _buildRoomSection(String room) {
     final roomDevices = _roomDeviceEntries(room);
-    final utilityCount = roomDevices.length;
-    final onlineCount = roomDevices.where((entry) {
-      final device = entry.value;
-      return device['status'] == 'online';
-    }).length;
-    bool hasLights = false;
-    bool hasOutlets = false;
-    bool hasAc = false;
-
-    for (final entry in roomDevices) {
-      final device = entry.value;
-      final u = (device['utility'] ?? '').toString().toLowerCase();
-      if (u == 'lights') hasLights = true;
-      if (u == 'outlets') hasOutlets = true;
-      if (u == 'ac') hasAc = true;
-    }
-
-    final roomSwitchOn = _roomRelayIsOn(room);
-    final roomSwitchBusy = _roomTogglingRoom == room;
-
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: _palette.mid.withAlpha(26))),
-      child: Column(children: [
-        GestureDetector(
-          onTap: () {
-            if (!widget.showBackButton) {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => RoomDevicesScreen(
-                    buildingCode: widget.buildingCode,
-                    buildingName: widget.buildingName,
-                    floor: _selectedFloor,
-                    room: room,
-                    role: widget.role,
-                  ),
-                ),
-              );
-            } else {
-              setState(() => _selectedRoom = room);
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                    color: _palette.pale,
-                    borderRadius: BorderRadius.circular(13)),
-                child: Icon(Icons.meeting_room_outlined,
-                    size: 24, color: _palette.dark),
-              ),
-              const SizedBox(width: 14),
+      color: Colors.white,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Expanded(
                 child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(room,
-                          style: const TextStyle(
-                              fontFamily: AppFonts.family,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textDark)),
-                      const SizedBox(height: 3),
-                      Text(
-                        utilityCount == 0
-                            ? 'No utilities added'
-                            : '$utilityCount ${utilityCount == 1 ? 'utility' : 'utilities'} - $onlineCount online',
-                        style: const TextStyle(
-                            fontSize: 12, color: AppColors.textMuted),
-                      ),
-                    ]),
-              ),
-              if (isAdmin && utilityCount > 0) ...[
-                const SizedBox(width: 12),
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
-                      width: 50,
-                      height: 28,
-                      child: Switch.adaptive(
-                        value: roomSwitchOn,
-                        onChanged: roomSwitchBusy
-                            ? null
-                            : (value) => _setRoomRelays(room, value),
-                        activeThumbColor: _palette.light,
-                        activeTrackColor: _palette.mid.withAlpha(80),
-                        inactiveThumbColor: Colors.white,
-                        inactiveTrackColor: AppColors.textMuted.withAlpha(70),
-                      ),
-                    ),
+                    Text(room,
+                        style:
+                            AppTextStyles.title.copyWith(color: AppColors.ink)),
+                    const SizedBox(height: 2),
+                    Text(_roomSubtitle(room),
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMuted)),
                   ],
                 ),
-              ],
-              // Show utility icons only when the main switch is not displayed
-              if (!(isAdmin && utilityCount > 0)) ...[
-                if (hasLights)
-                  _utilityDot(Icons.lightbulb_outline, const Color(0xFFE8922A)),
-                if (hasOutlets)
-                  Padding(
-                      padding: const EdgeInsets.only(left: 5),
-                      child:
-                          _utilityDot(Icons.electrical_services, _palette.mid)),
-                if (hasAc)
-                  Padding(
-                      padding: const EdgeInsets.only(left: 5),
-                      child:
-                          _utilityDot(Icons.ac_unit, const Color(0xFF2196F3))),
-              ],
-              const SizedBox(width: 8),
-              const Icon(Icons.chevron_right,
-                  color: AppColors.textMuted, size: 20),
-            ]),
-          ),
-        ),
-        if (isAdmin) ...[
-          Divider(height: 1, color: _palette.mid.withAlpha(20)),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(children: [
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: () => _editRoom(room),
-                  icon:
-                      Icon(Icons.edit_outlined, size: 16, color: _palette.dark),
-                  label: Text('Edit',
-                      style: TextStyle(fontSize: 12, color: _palette.dark)),
-                  style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 10)),
-                ),
               ),
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: () => _deleteRoom(room),
-                  icon: const Icon(Icons.delete_outline,
-                      size: 16, color: AppColors.error),
-                  label: const Text('Delete',
-                      style: TextStyle(fontSize: 12, color: AppColors.error)),
-                  style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 10)),
+              if (isAdmin)
+                IconDeleteButton(
+                  onPressed: () => _confirmDeleteRoom(room),
+                  semanticLabel: 'Delete $room',
                 ),
-              ),
-            ]),
+            ],
           ),
+          const SizedBox(height: 8),
+          if (roomDevices.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text('No devices yet',
+                  style:
+                      AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            )
+          else
+            ...roomDevices
+                .map((entry) => ValueListenableBuilder<Set<String>>(
+                      // Plays the delete animation after "Remove device" on
+                      // the device page brings the user back here.
+                      key: ValueKey('device-${entry.key}'),
+                      valueListenable: pendingRowDeletes,
+                      builder: (context, pending, _) => DeleteRowTransition(
+                        deleting: pending.contains('device:${entry.key}'),
+                        message: 'Device removed',
+                        child: _deviceRow(entry.key, entry.value, room),
+                      ),
+                    )),
+          if (isAdmin) _addDeviceRow(room),
         ],
-      ]),
+      ),
     );
   }
 
-  Widget _utilityDot(IconData icon, Color color) {
+  Widget _deviceRow(
+      String deviceId, Map<String, dynamic> floorDevice, String room) {
+    final utility = (floorDevice['utility'] ?? '').toString();
+    final online = _isDeviceOnline(deviceId);
+    final relayOn = floorDevice['relay'] == true;
+    final watts = (_liveFor(deviceId)?['power'] as num?)?.toDouble();
+    final statusText = online
+        ? 'Online${watts != null ? ' · ${watts.toStringAsFixed(0)} W' : ''}'
+        : 'Offline';
+    final dotColor = online ? AppColors.success : AppColors.offline;
+    final toggling = _togglingDevices.contains(deviceId);
+
+    return Material(
+      color: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.pushNamed(context, '/device', arguments: {
+          'deviceId': deviceId,
+          'utility': utility,
+          'building': widget.buildingCode,
+          'room': room,
+          'floor': _selectedFloor,
+          'role': widget.role,
+        }),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(children: [
+            OutlineIconBox(icon: _utilityIcon(utility), palette: _palette),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_utilityLabel(utility),
+                      style: AppTextStyles.subtitle
+                          .copyWith(color: AppColors.ink)),
+                  const SizedBox(height: 2),
+                  Row(children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                          shape: BoxShape.circle, color: dotColor),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(statusText,
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMuted)),
+                  ]),
+                ],
+              ),
+            ),
+            if (toggling)
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: _palette.dark),
+              )
+            else
+              AppSwitch(
+                value: relayOn,
+                onChanged:
+                    isAdmin ? (v) => _toggleDeviceRelay(deviceId, v) : null,
+                palette: _palette,
+              ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _addDeviceRow(String room) {
+    return Material(
+      color: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _addDeviceToRoom(room),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(children: [
+            OutlineIconBox(icon: Icons.add, palette: _palette),
+            const SizedBox(width: 12),
+            Text('Add device',
+                style: AppTextStyles.subtitle.copyWith(color: _palette.dark)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  String _utilityLabel(String u) {
+    switch (u.toLowerCase()) {
+      case 'light':
+      case 'lights':
+        return 'Lights';
+      case 'outlet':
+      case 'outlets':
+        return 'Outlets';
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return 'AC Unit';
+      default:
+        return 'Device';
+    }
+  }
+
+  IconData _utilityIcon(String u) {
+    switch (u.toLowerCase()) {
+      case 'light':
+      case 'lights':
+        return Icons.lightbulb_outline;
+      case 'outlet':
+      case 'outlets':
+        return Icons.electrical_services;
+      case 'aircon':
+      case 'ac':
+      case 'air conditioner':
+        return Icons.ac_unit;
+      default:
+        return Icons.device_unknown_outlined;
+    }
+  }
+}
+
+/// White + 1px institute-line border reading box (handoff §3.2's "outline
+/// system"), used for the Devices / On now / Today floor summary.
+class _StatBox extends StatelessWidget {
+  const _StatBox({
+    required this.label,
+    required this.value,
+    required this.palette,
+    this.unit,
+  });
+
+  final String label;
+  final String value;
+  final String? unit;
+  final InstitutePalette palette;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      width: 28,
-      height: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-          color: color.withAlpha(26), borderRadius: BorderRadius.circular(8)),
-      child: Icon(icon, size: 14, color: color),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+          const SizedBox(height: 2),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(value,
+                  style: AppTextStyles.subtitle.copyWith(
+                      color: AppColors.ink,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700)),
+              if (unit != null) ...[
+                const SizedBox(width: 3),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(unit!,
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.inkMuted)),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

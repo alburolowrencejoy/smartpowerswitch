@@ -1,71 +1,125 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
 
-/// A 4-step brand ramp shaped like [AppColors]' green ramp (dark/mid/light/
-/// pale), so any institute-scoped screen can swap its accent colors for the
-/// institute being viewed. Semantic colors (error/warning/success/text/
-/// surface) never change — only this brand ramp does.
+/// A per-institute brand ramp.
+///
+/// Historically this only carried 4 tiers (`dark`/`mid`/`light`/`pale`), one
+/// hue rotated per institute at the same saturation/lightness as the app's
+/// green ramp. The mobile redesign (see
+/// `lib/Claude outputs/SmartSwitch-Mobile-Redesign-Handoff.md` §3.6) rebuilt
+/// the four themed institutes (IC/ILEGG/ITED/IAAS) in OKLCH for equal
+/// perceived strength and added a 5th shade (`wash`, the 50-tier) plus a
+/// dedicated hairline `line` color. ADMIN was NOT rebuilt -- it keeps the
+/// app's original green ramp, per the handoff.
+///
+/// Field <-> handoff-tier mapping (confirmed against
+/// `smartswitch-mobile-preview.html`'s `.theme-ic/.theme-ilegg/.theme-ited/
+/// .theme-iaas` CSS, which is the ground truth for exact hex values):
+/// - [shade900] = handoff "900" (hero gradient start / deepest tone). New.
+/// - [dark]     = handoff "700" (buttons, switches, links, active outlines).
+///   This is the same *role* the old `dark` field already played, so the
+///   name is unchanged -- only its value moves to the new OKLCH hex.
+/// - [mid]      = handoff "500" (charts, top-bar institute line).
+/// - [light]    = also handoff "500" for the four themed institutes -- the
+///   preview's CSS defines `--green-light` equal to `--green-mid` for every
+///   `.theme-*` class, i.e. the redesign does not give themed institutes a
+///   tier distinct from [mid] for this field. Kept as its own field (rather
+///   than deleted) because existing mobile screens (e.g.
+///   `building_floor_screen.dart`, `dashboard_screen.dart`) already read
+///   `.light` as a mid-strength accent color; removing it would silently
+///   break those screens ahead of their own redesign phase. ADMIN keeps its
+///   own distinct `light` (unchanged, original green ramp).
+/// - [pale]     = handoff "200" (selected chips/tabs, tinted backgrounds).
+/// - [wash]     = handoff "50" (the new 5th shade -- very light page wash).
+/// - [line]     = handoff hairline `line` color for dividers/borders drawn
+///   in this institute's context (e.g. the Outline icon box border).
+///
+/// Nothing here was renamed or removed -- `dark`/`mid`/`light`/`pale` are
+/// exactly the fields `lib/screens/web/**` already depends on, unchanged in
+/// name and role. `shade900`, `wash`, and `line` are additions.
 class InstitutePalette {
+  final Color shade900;
   final Color dark;
   final Color mid;
   final Color light;
   final Color pale;
+  final Color wash;
+  final Color line;
 
   const InstitutePalette({
+    required this.shade900,
     required this.dark,
     required this.mid,
     required this.light,
     required this.pale,
+    required this.wash,
+    required this.line,
   });
 }
 
 /// Per-institute color ramps. Institute codes match building codes (each
 /// academic institute is one building on campus).
-///
-/// Each ramp uses the *exact same saturation and lightness as the green
-/// ramp above*, per tier — only the hue rotates. That's deliberate: it's
-/// what keeps every institute's colors feeling as muted/professional as the
-/// original green rather than reading as a saturated, eyesore-y accent.
 class InstituteColors {
-  // IC — violet (hue ~265°)
+  // IC -- indigo-violet (handoff §3.6, matches `.theme-ic` in the preview).
   static const ic = InstitutePalette(
-    dark: Color(0xFF351A5C),
-    mid: Color(0xFF5D2E9E),
-    light: Color(0xFF956ECB),
-    pale: Color(0xFFD4C2ED),
+    shade900: Color(0xFF342F64),
+    dark: Color(0xFF534A9C),
+    mid: Color(0xFF7F79D1),
+    light: Color(0xFF7F79D1),
+    pale: Color(0xFFDADBFC),
+    wash: Color(0xFFF4F4FF),
+    line: Color(0xFFE6E5F5),
   );
 
-  // ILEGG — maroon (hue ~350°)
+  // ILEGG -- berry/plum (handoff §3.6, matches `.theme-ilegg`).
   static const ilegg = InstitutePalette(
-    dark: Color(0xFF5C1A25),
-    mid: Color(0xFF9E2E41),
-    light: Color(0xFFCB6E7D),
-    pale: Color(0xFFEDC2C9),
+    shade900: Color(0xFF5A203A),
+    dark: Color(0xFF8D325C),
+    mid: Color(0xFFC1628A),
+    light: Color(0xFFC1628A),
+    pale: Color(0xFFF8D2DF),
+    wash: Color(0xFFFEF1F5),
+    line: Color(0xFFF2E2E9),
   );
 
-  // ITED — gold (hue ~45°)
+  // ITED -- honey gold (handoff §3.6, matches `.theme-ited`).
   static const ited = InstitutePalette(
-    dark: Color(0xFF5C4B1A),
-    mid: Color(0xFF9E822E),
-    light: Color(0xFFCBB46E),
-    pale: Color(0xFFEDE2C2),
+    shade900: Color(0xFF542C07),
+    dark: Color(0xFF8B5500),
+    mid: Color(0xFFB47D06),
+    light: Color(0xFFB47D06),
+    pale: Color(0xFFF6E7BB),
+    wash: Color(0xFFFCF8E8),
+    line: Color(0xFFF0E6CC),
   );
 
-  // IAAS — blue (hue ~210°)
+  // IAAS -- ocean blue (handoff §3.6, matches `.theme-iaas`).
   static const iaas = InstitutePalette(
-    dark: Color(0xFF1A3B5C),
-    mid: Color(0xFF2E669E),
-    light: Color(0xFF6E9CCB),
-    pale: Color(0xFFC2D8ED),
+    shade900: Color(0xFF003E5F),
+    dark: Color(0xFF006095),
+    mid: Color(0xFF0891C9),
+    light: Color(0xFF0891C9),
+    pale: Color(0xFFC2E4F8),
+    wash: Color(0xFFECF7FE),
+    line: Color(0xFFDCEAF4),
   );
 
-  // ADMIN, the main-admin's own scope, and any unmapped institute — the
-  // app's original green palette.
+  // ADMIN, the main-admin's own scope, and any unmapped institute -- the
+  // app's ORIGINAL green palette, explicitly kept as-is (not rebuilt in
+  // OKLCH) per the handoff. `wash`/`line` use the values the handoff §3.5
+  // already documents for the campus palette. There is no handoff-specified
+  // "900" tier for the green ramp (only the four rebuilt institutes got
+  // one, for their hero gradients) -- [shade900] reuses [dark] rather than
+  // inventing an unspecified darker green. Flag this if a future phase
+  // needs a genuinely darker admin hero tone.
   static const admin = InstitutePalette(
+    shade900: AppColors.greenDark,
     dark: AppColors.greenDark,
     mid: AppColors.greenMid,
     light: AppColors.greenLight,
     pale: AppColors.greenPale,
+    wash: Color(0xFFE6F5EB),
+    line: Color(0xFFDCEBE1),
   );
 
   static const Map<String, InstitutePalette> _byCode = {
@@ -135,11 +189,15 @@ class InstituteTheme extends ThemeExtension<InstituteTheme> {
     if (other is! InstituteTheme) return this;
     return InstituteTheme(
       palette: InstitutePalette(
+        shade900: Color.lerp(palette.shade900, other.palette.shade900, t) ??
+            palette.shade900,
         dark: Color.lerp(palette.dark, other.palette.dark, t) ?? palette.dark,
         mid: Color.lerp(palette.mid, other.palette.mid, t) ?? palette.mid,
         light: Color.lerp(palette.light, other.palette.light, t) ??
             palette.light,
         pale: Color.lerp(palette.pale, other.palette.pale, t) ?? palette.pale,
+        wash: Color.lerp(palette.wash, other.palette.wash, t) ?? palette.wash,
+        line: Color.lerp(palette.line, other.palette.line, t) ?? palette.line,
       ),
     );
   }

@@ -28,6 +28,18 @@ class RangeCalendar extends StatefulWidget {
   final DateTime? initialStart;
   final DateTime? initialEnd;
 
+  /// When true, days strictly before today are un-tappable and rendered
+  /// muted (mobile schedule editor's "Specific date(s)" calendar --
+  /// handoff §4.9 "past days disabled"). Defaults to false so existing
+  /// callers (web automation/analytics date pickers) are unaffected.
+  final bool disablePast;
+
+  /// When false, hides this widget's own built-in bottom info line (e.g. a
+  /// caller that renders its own summary text below the calendar instead --
+  /// see the mobile schedule editor's "Sep 28 – Oct 2 · 5 days" footer).
+  /// Defaults to true, unchanged for existing callers.
+  final bool showInfoText;
+
   const RangeCalendar({
     super.key,
     this.onRangeChanged,
@@ -35,6 +47,8 @@ class RangeCalendar extends StatefulWidget {
     this.onDragActiveChanged,
     this.initialStart,
     this.initialEnd,
+    this.disablePast = false,
+    this.showInfoText = true,
   });
 
   @override
@@ -74,6 +88,14 @@ class _RangeCalendarState extends State<RangeCalendar> {
   bool _isSameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
+  bool _isPastDay(DateTime day) {
+    if (!widget.disablePast) return false;
+    final today = DateTime.now();
+    final d0 = DateTime(day.year, day.month, day.day);
+    final t0 = DateTime(today.year, today.month, today.day);
+    return d0.isBefore(t0);
+  }
+
   void _prevMonth() {
     setState(() {
       _visibleMonth = DateTime(_visibleMonth.year, _visibleMonth.month - 1, 1);
@@ -87,6 +109,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
   }
 
   void _onLongPressStart(DateTime day) {
+    if (_isPastDay(day)) return;
     setState(() {
       _longPressActive = true;
       _anchor = day;
@@ -97,6 +120,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
 
   void _onLongPressMoveUpdate(DateTime day) {
     if (!_longPressActive) return;
+    if (_isPastDay(day)) return;
     if (_focusDay == null || !_isSameDay(_focusDay!, day)) {
       setState(() => _focusDay = day);
     }
@@ -111,6 +135,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
 
   void _onTapDay(DateTime day) {
     if (_longPressActive) return; // ignore stray tap right after a long-press
+    if (_isPastDay(day)) return;
     setState(() {
       if (_anchor == null || _isRange) {
         // nothing selected, or a finished range: start over on this day
@@ -346,6 +371,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
                       isPending: _longPressActive &&
                           _anchor != null &&
                           _isSameDay(_anchor!, day),
+                      isPast: _isPastDay(day),
                       onHoverChanged: (hovering) {
                         setState(() => _hoverDay = hovering ? day : null);
                       },
@@ -355,11 +381,13 @@ class _RangeCalendarState extends State<RangeCalendar> {
               );
             },
           ),
-          const SizedBox(height: 14),
-          Text(
-            _infoText(),
-            style: const TextStyle(fontSize: 13, color: Colors.black54),
-          ),
+          if (widget.showInfoText) ...[
+            const SizedBox(height: 14),
+            Text(
+              _infoText(),
+              style: const TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+          ],
         ],
       ),
     );
@@ -383,6 +411,7 @@ class _DayCell extends StatelessWidget {
   final bool isRangeEnd;
   final bool isInRange;
   final bool isPending;
+  final bool isPast;
   final ValueChanged<bool> onHoverChanged;
 
   const _DayCell({
@@ -392,6 +421,7 @@ class _DayCell extends StatelessWidget {
     required this.isRangeEnd,
     required this.isInRange,
     required this.isPending,
+    this.isPast = false,
     required this.onHoverChanged,
   });
 
@@ -416,6 +446,14 @@ class _DayCell extends StatelessWidget {
       border = Border.all(color: accent, width: 1);
     } else if (isHovered) {
       bg = hoverGrey;
+    }
+
+    if (isPast) {
+      // Muted, un-tappable (see RangeCalendar.disablePast) -- overrides any
+      // selection styling above since a past day can't actually be selected.
+      bg = null;
+      border = null;
+      fg = Colors.black26;
     }
 
     // IgnorePointer: taps/long-presses are handled by the GestureDetector

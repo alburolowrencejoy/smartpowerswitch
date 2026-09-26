@@ -583,7 +583,8 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
               child: Container(
                 height: 28,
                 decoration: BoxDecoration(
-                    color: _palette.pale,
+                    color: Colors.white,
+                    border: Border.all(color: AppColors.hairline),
                     borderRadius: BorderRadius.circular(8)),
                 child: Center(
                   child: Text('View',

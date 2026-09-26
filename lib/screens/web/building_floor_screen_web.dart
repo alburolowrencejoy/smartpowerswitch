@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
@@ -439,34 +442,71 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     }
   }
 
+  /// Room whose delete animation is playing / whose commit is pending.
+  String? _deletingRoom;
+
+  /// Same two-step confirm -> reason flow, red strip, 5s Undo and deferred
+  /// atomic commit (with a `deletion_log` entry) as mobile.
   Future<void> _deleteRoom(String room) async {
-    final n = _roomDeviceEntries(room).length;
-    final ok = await showWebConfirmDialog(
-      context: context,
-      title: 'Delete room?',
-      message: n > 0
-          ? '$room and its $n device${n == 1 ? '' : 's'} will be unassigned.'
-          : '$room will be removed.',
-      onConfirm: () async {
-        final snap = await FirebaseDatabase.instance
-            .ref(
-                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-            .get();
-        if (snap.value is Map) {
-          for (final entry in (snap.value as Map).entries) {
-            final val = entry.value;
-            if (val is Map && val['room'] == room) {
-              await _unassignDevice(entry.key.toString());
-            }
-          }
+    final floor = _selectedFloor;
+    final deviceIds = _roomDeviceEntries(room).map((e) => e.key).toList();
+    final n = deviceIds.length;
+    await showDeleteFlow(
+      context,
+      type: DeleteType.room,
+      itemName: '$room · ${widget.buildingCode} · Floor $floor',
+      impact: [
+        n > 0
+            ? '$n device${n == 1 ? '' : 's'} will be unassigned'
+            : 'No devices are assigned to this room',
+        'Schedules for these devices will stop',
+        'Usage history stays in Analytics',
+      ],
+      onOptimisticRemove: () => setState(() => _deletingRoom = room),
+      onRestore: () {
+        if (mounted) setState(() => _deletingRoom = null);
+      },
+      onCommit: (reason, otherText) async {
+        final base = 'buildings/${widget.buildingCode}/floorData/$floor';
+        final remaining = List<String>.from(_rooms[floor] ?? [])..remove(room);
+        final db = FirebaseDatabase.instance.ref();
+        final user = FirebaseAuth.instance.currentUser;
+        final logRef = db.child('deletion_log').push();
+        final updates = <String, Object?>{
+          '$base/rooms': remaining.isEmpty
+              ? null
+              : {for (var i = 0; i < remaining.length; i++) '$i': remaining[i]},
+          for (final id in deviceIds) ...{
+            '$base/devices/$id': null,
+            'master_devices/$id/assignedTo': '',
+            'devices/$id/building': '',
+            'devices/$id/floor': '',
+            'devices/$id/room': '',
+            'devices/$id/status': 'offline',
+          },
+          'deletion_log/${logRef.key}': {
+            'type': 'room',
+            'buildingCode': widget.buildingCode,
+            'floor': floor,
+            'room': room,
+            'deviceIds': deviceIds,
+            'reason': reason,
+            'otherText': otherText,
+            'deletedBy': user?.uid,
+            'deletedByEmail': user?.email,
+            'timestamp': ServerValue.timestamp,
+          },
+        };
+        try {
+          await db.update(updates);
+        } catch (e) {
+          if (mounted) TopToast.error(context, 'Failed to delete room: $e');
+          rethrow;
+        } finally {
+          if (mounted) setState(() => _deletingRoom = null);
         }
-        final current = List<String>.from(_rooms[_selectedFloor] ?? [])
-          ..remove(room);
-        await _writeRooms(current);
       },
     );
-    if (!ok || !mounted) return;
-    TopToast.success(context, '"$room" deleted.');
   }
 
   static const _utilityOptions = ['Lights', 'Outlets', 'AC'];
@@ -542,64 +582,6 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     if (addedId != null && mounted) {
       TopToast.success(context, '$addedId added as $addedUtility in $room.');
     }
-  }
-
-  /// Changes a device's utility type (Lights / Outlets / AC).
-  Future<void> _editDevice(String deviceId, String utility) async {
-    final current = _utilityOptions.firstWhere(
-        (o) => o.toLowerCase() == utility.toLowerCase(),
-        orElse: () => _utilityOptions.first);
-    final ok = await showWebFormDialog(
-      context: context,
-      title: 'Edit device',
-      subtitle: deviceId,
-      fields: [
-        WebField(
-            id: 'utility',
-            label: 'Utility type',
-            options: _utilityOptions,
-            initial: current),
-      ],
-      onSubmit: (v) async {
-        final next = v['utility']!;
-        if (next == current) return null;
-        await FirebaseDatabase.instance.ref().update({
-          'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/utility':
-              next,
-          'devices/$deviceId/utility': next,
-        });
-        return null;
-      },
-    );
-    if (ok && mounted) TopToast.success(context, '$deviceId updated.');
-  }
-
-  Future<void> _deleteDevice(String deviceId, String utility) async {
-    final ok = await showWebConfirmDialog(
-      context: context,
-      title: 'Remove device?',
-      message: '${_utilityLabel(utility)} ($deviceId) will be unassigned and '
-          'available for reuse.',
-      okLabel: 'Remove',
-      onConfirm: () => _unassignDevice(deviceId),
-    );
-    if (ok && mounted) TopToast.success(context, '$deviceId removed.');
-  }
-
-  Future<void> _unassignDevice(String deviceId) async {
-    await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
-        .remove();
-    await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId')
-        .update({'assignedTo': ''});
-    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-      'building': '',
-      'floor': '',
-      'room': '',
-      'status': 'offline',
-    });
   }
 
   // ── Build (preview layout) ────────────────────────────────────────────
@@ -812,7 +794,15 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
         runSpacing: gap,
         children: [
           for (final room in display)
-            SizedBox(width: w, child: _buildRoomCard(room)),
+            SizedBox(
+              key: ValueKey('room-$room'),
+              width: w,
+              child: DeleteRowTransition(
+                deleting: _deletingRoom == room,
+                message: 'Room deleted',
+                child: _buildRoomCard(room),
+              ),
+            ),
         ],
       );
     });
@@ -866,8 +856,18 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
           )
         else
           for (var i = 0; i < devices.length; i++)
-            _buildDeviceRow(devices[i].key, devices[i].value, room,
-                first: i == 0),
+            // Plays the delete animation after "Remove device" on the
+            // device page brings the user back here.
+            ValueListenableBuilder<Set<String>>(
+              key: ValueKey('device-${devices[i].key}'),
+              valueListenable: pendingRowDeletes,
+              builder: (context, pending, _) => DeleteRowTransition(
+                deleting: pending.contains('device:${devices[i].key}'),
+                message: 'Device removed',
+                child: _buildDeviceRow(devices[i].key, devices[i].value, room,
+                    first: i == 0),
+              ),
+            ),
       ]),
     );
   }
@@ -963,15 +963,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
             ),
             child: const Text('View'),
           ),
-          if (isAdmin)
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              _ghostIcon(Icons.edit_outlined, 'Edit device',
-                  () => _editDevice(deviceId, utility),
-                  size: 28),
-              _ghostIcon(Icons.delete_outline_rounded, 'Remove device',
-                  () => _deleteDevice(deviceId, utility),
-                  danger: true, size: 28),
-            ]),
+          // Edit / remove live on the device page (View), not on this row.
         ]),
       ]),
     );

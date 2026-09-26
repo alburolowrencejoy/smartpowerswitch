@@ -6,6 +6,8 @@ import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
 import '../../services/schedule_windows.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/range_calendar.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
@@ -1436,15 +1438,48 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     }
   }
 
+  /// Schedule whose delete animation is playing / commit is pending.
+  String? _deletingScheduleId;
+
+  /// Same two-step confirm -> reason flow, red strip, 5s Undo and deferred
+  /// commit (with a `deletion_log` entry) as mobile.
   Future<void> _deleteSchedule(WebAutomationSchedule s) async {
-    final ok = await showWebConfirmDialog(
-      context: context,
-      title: 'Delete schedule?',
-      message: '"${s.name}" will stop running and be removed.',
-      onConfirm: () =>
-          FirebaseDatabase.instance.ref('automations/${s.id}').remove(),
+    await showDeleteFlow(
+      context,
+      type: DeleteType.schedule,
+      itemName: s.name,
+      onOptimisticRemove: () => setState(() => _deletingScheduleId = s.id),
+      onRestore: () {
+        if (mounted) setState(() => _deletingScheduleId = null);
+      },
+      onCommit: (reason, otherText) async {
+        final db = FirebaseDatabase.instance.ref();
+        final user = FirebaseAuth.instance.currentUser;
+        final logRef = db.child('deletion_log').push();
+        try {
+          await db.update({
+            'automations/${s.id}': null,
+            'deletion_log/${logRef.key}': {
+              'type': 'schedule',
+              'scheduleId': s.id,
+              'scheduleName': s.name,
+              'scope': s.scope,
+              'target': s.target,
+              'reason': reason,
+              'otherText': otherText,
+              'deletedBy': user?.uid,
+              'deletedByEmail': user?.email,
+              'timestamp': ServerValue.timestamp,
+            },
+          });
+        } catch (e) {
+          if (mounted) TopToast.error(context, 'Failed to delete schedule: $e');
+          rethrow;
+        } finally {
+          if (mounted) setState(() => _deletingScheduleId = null);
+        }
+      },
     );
-    if (ok && mounted) TopToast.show(context, 'Schedule deleted.');
   }
 
   /// Opens the schedule form: a new schedule, or [s]'s timing and days.
@@ -1639,7 +1674,17 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       spacing: 16,
       runSpacing: 16,
       children:
-          items.map((s) => SizedBox(width: 380, child: _buildCard(s))).toList(),
+          items
+              .map((s) => SizedBox(
+                    key: ValueKey('schedule-${s.id}'),
+                    width: 380,
+                    child: DeleteRowTransition(
+                      deleting: _deletingScheduleId == s.id,
+                      message: 'Schedule deleted',
+                      child: _buildCard(s),
+                    ),
+                  ))
+              .toList(),
     );
   }
 

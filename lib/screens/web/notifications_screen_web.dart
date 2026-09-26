@@ -7,6 +7,8 @@ import '../../services/download_open_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
@@ -152,15 +154,74 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
     await prefs.setInt(_lastSeenNotificationTsKey, newestTimestamp);
   }
 
+  /// Notification ids whose delete animation is playing / commit pending.
+  final Set<String> _clearingIds = {};
+
+  /// Same two-step confirm -> reason flow, staggered red strips, 5s Undo
+  /// and deferred commit as mobile. An institute admin only clears their
+  /// own institute's notifications, never the whole campus's.
   Future<void> _clearAll() async {
-    try {
-      await FirebaseDatabase.instance.ref('notifications').remove();
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_lastSeenNotificationTsKey, 0);
-    } catch (_) {
-      if (!mounted) return;
-      TopToast.error(context, 'Unable to clear notifications.');
+    final isInstAdmin = _role == 'institute_admin';
+    final code = (_institute ?? '').trim().toUpperCase();
+    final targets = isInstAdmin
+        ? _notifications
+            .where((n) =>
+                (n['building'] as String? ?? '').trim().toUpperCase() == code)
+            .toList()
+        : _notifications;
+    if (targets.isEmpty) {
+      TopToast.show(context, 'No notifications to clear.', isError: true);
+      return;
     }
+    final ids =
+        targets.map((n) => n['id'] as String?).whereType<String>().toList();
+
+    await showDeleteFlow(
+      context,
+      type: DeleteType.notifications,
+      itemName: isInstAdmin ? '$code notifications' : 'All notifications',
+      onOptimisticRemove: () {
+        for (var i = 0; i < ids.length; i++) {
+          final id = ids[i];
+          Future.delayed(Duration(milliseconds: 60 * i), () {
+            if (mounted) setState(() => _clearingIds.add(id));
+          });
+        }
+      },
+      onRestore: () {
+        if (mounted) setState(() => _clearingIds.clear());
+      },
+      onCommit: (reason, otherText) async {
+        try {
+          final db = FirebaseDatabase.instance.ref();
+          final updates = <String, Object?>{
+            if (isInstAdmin)
+              for (final id in ids) 'notifications/$id': null
+            else
+              'notifications': null,
+          };
+          final logId = db.child('deletion_log').push().key;
+          updates['deletion_log/$logId'] = {
+            'type': 'notifications',
+            'scope': isInstAdmin ? code : 'campus',
+            'count': ids.length,
+            'reason': reason,
+            if (otherText != null && otherText.trim().isNotEmpty)
+              'otherText': otherText.trim(),
+            'deletedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+            'deletedByEmail': FirebaseAuth.instance.currentUser?.email ?? '',
+            'timestamp': ServerValue.timestamp,
+          };
+          await db.update(updates);
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(_lastSeenNotificationTsKey, 0);
+        } catch (_) {
+          if (mounted) setState(() => _clearingIds.removeAll(ids));
+          if (!mounted) return;
+          TopToast.error(context, 'Unable to clear notifications.');
+        }
+      },
+    );
   }
 
   int _notificationTimestamp(dynamic value) {
@@ -530,10 +591,18 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
   Widget _buildList(List<Map<String, dynamic>> items) {
     return Column(
       children: [
-        for (var i = 0; i < items.length; i++) ...[
-          if (i > 0) const SizedBox(height: 8),
-          _buildNotifCard(items[i]),
-        ],
+        for (var i = 0; i < items.length; i++)
+          // Gap outside the transition so the red strip hangs from the card
+          // itself, not from the gap below it.
+          Padding(
+            key: ValueKey(items[i]['id']),
+            padding: EdgeInsets.only(top: i > 0 ? 8 : 0),
+            child: DeleteRowTransition(
+              deleting: _clearingIds.contains(items[i]['id']),
+              message: 'Notification cleared',
+              child: _buildNotifCard(items[i]),
+            ),
+          ),
       ],
     );
   }

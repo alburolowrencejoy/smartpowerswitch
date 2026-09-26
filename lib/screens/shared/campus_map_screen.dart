@@ -1,149 +1,288 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'dart:math' as math;
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart';
+
 import '../../theme/app_colors.dart';
+import '../../theme/app_fonts.dart';
+import '../../theme/app_text_styles.dart';
+import '../../theme/institute_colors.dart';
+import '../../services/history_clock.dart';
+import '../../widgets/app_button.dart';
+import '../../widgets/app_segmented_control.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/outline_icon_box.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../theme/app_fonts.dart';
-import '../../services/history_clock.dart';
 
-// ─── Energy Level ─────────────────────────────────────────────────────────────
-
-enum EnergyLevel { low, mid, high }
-
-EnergyLevel _energyLevel(double kwh) {
-  if (kwh >= 100) return EnergyLevel.high;
-  if (kwh >= 50) return EnergyLevel.mid;
-  return EnergyLevel.low;
-}
-
-Color _energyColor(EnergyLevel level) {
-  switch (level) {
-    case EnergyLevel.high:
-      return const Color(0xFFD64A4A);
-    case EnergyLevel.mid:
-      return const Color(0xFFE8922A);
-    case EnergyLevel.low:
-      return AppColors.greenMid;
-  }
-}
-
-String _energyLabel(EnergyLevel level) {
-  switch (level) {
-    case EnergyLevel.high:
-      return 'HIGH';
-    case EnergyLevel.mid:
-      return 'MID';
-    case EnergyLevel.low:
-      return 'LOW';
-  }
-}
-
-IconData _utilityIcon(String type) {
-  switch (type.toLowerCase()) {
-    case 'lights':
-      return Icons.lightbulb_outline;
-    case 'outlets':
-      return Icons.electrical_services;
-    case 'ac':
-      return Icons.ac_unit;
-    default:
-      return Icons.device_unknown;
-  }
-}
-
-const double _mapAspectRatio = 354 / 496;
-
-class _ContainRect {
-  final double left, top, width, height;
-  const _ContainRect(
-      {required this.left,
-      required this.top,
-      required this.width,
-      required this.height});
-}
-
-// ─── Hotspot Model ────────────────────────────────────────────────────────────
-
-class _HotspotData {
-  final String buildingId;
-  double x, y, w, h; // all 0.0–1.0 fractions
-
-  _HotspotData(
-      {required this.buildingId,
-      required this.x,
-      required this.y,
-      required this.w,
-      required this.h});
-
-  Map<String, dynamic> toMap() => {'x': x, 'y': y, 'w': w, 'h': h};
-}
-
-// ─── Campus Map Screen ────────────────────────────────────────────────────────
-
+/// The mobile "Devices → Map" screen (handoff §4.3/§5/§8), reusing the exact
+/// Firebase data model and Approximate/Precise logic already proven by
+/// `lib/screens/web/campus_map_screen_web.dart` (read-only reference this
+/// phase -- NOT imported here, since the web screen owns its own admin
+/// zone-editing UI that this phase intentionally does not port to phone; see
+/// the class doc below for that trade-off).
+///
+/// Two modes, mirroring the web's Approximate/Precise:
+/// - **Buildings** ("Approximate"): one translucent zone per building
+///   (`hotspots/{code}`, x/y/w/h fractions of the campus image), colored by
+///   that building's *this month* kWh (thresholds: high >= 100, mid 50-100,
+///   low < 50 -- same as `dashboard_screen.dart`'s Building Load section).
+/// - **Devices** ("Precise"): dashed zone outlines + one dot per device,
+///   colored by that device's *today* kWh (high >= 2, mid 1-2, low < 1,
+///   offline = grey). A device without a saved position under
+///   `hotspots/{code}/devices/{id}` is grid-spread inside its zone using the
+///   same column/row formula as the web screen's `_layout`.
+///
+/// An institute admin never sees the mode toggle: per the redesign's ground
+/// truth (`smartswitch-mobile-preview.html`'s `mapView`, which forces
+/// `precise = scopeCode ? true : MAP.mode === 'precise'`), a scoped session
+/// always renders Devices/precise -- a single colored zone blob would be
+/// redundant when there's only ever one building in view. Their map is also
+/// cropped to that building's zone with a flat 6% padding (of the whole
+/// image, matching the preview's `pad = 0.06` -- NOT 6% of the zone's own
+/// size) and has no zoom controls or pan (the preview's cropped `.map-vp` is
+/// `overflow:hidden`, not `overflow:auto`), while a campus admin's view zooms
+/// 1x-3x with drag-to-pan once zoomed in.
+///
+/// Role/institute are self-hydrated from the signed-in user's own
+/// `users/{uid}` record (mirroring `HistoryScreen`'s `_hydrateSessionFromAuth`
+/// pattern) rather than trusting a caller-supplied `role`/institute pair --
+/// this screen is reachable both embedded (`dashboard_screen.dart`'s Devices
+/// tab, which already knows the right role) and as the standalone `/map`
+/// route in `main.dart` (which passes nothing at all today). The `role`
+/// constructor parameter is kept only as the initial paint's best guess
+/// before hydration completes, exactly like the old file's default.
+///
+/// Trade-off flagged for the user: the OLD version of this file let a campus
+/// admin add/move/resize/remove hotspot zones directly on the phone (an
+/// "Edit Zones" toggle with drag handles). Nothing in the redesign handoff
+/// (§4.3/§8) asks for that on phone, and precise corner-drag geometry editing
+/// is a poor fit for a touchscreen anyway -- that capability still exists,
+/// unchanged, on the desktop web map (`campus_map_screen_web.dart`'s
+/// "Edit zones"/"Edit positions" toggle, not touched by this phase). If a
+/// campus admin still needs to place a *new* building's zone from their
+/// phone, that's now a gap -- flagged in the handoff report, not silently
+/// dropped.
 class CampusMapScreen extends StatefulWidget {
+  /// Best-guess role before self-hydration completes (see class doc). Not
+  /// trusted afterwards.
   final String role;
+
+  /// Whether this screen owns its own [AppTopBar] + [Scaffold] (the
+  /// standalone `/map` route) or renders bare content to slot into an
+  /// existing shell's tab body (`dashboard_screen.dart`'s Devices tab,
+  /// which already shows a "Devices" top bar above the List|Map toggle).
   final bool showAppBar;
 
   /// When non-null, called instead of `Navigator.pushNamed(context,
-  /// '/building', ...)` on "view details" -- lets an embedding shell (the
-  /// desktop dashboard) show the building in-place instead of pushing a
-  /// full-screen route that would hide its side nav. Mobile never passes
-  /// this, so its behavior (pushNamed) is unchanged.
+  /// '/building', ...)` on "View building" -- lets an embedding shell (e.g.
+  /// a future desktop-in-shell host) show the building in place instead of
+  /// pushing a full-screen route. Mobile never passes this today.
   final void Function(String buildingCode, String buildingName, int floors)?
       onBuildingTap;
 
-  const CampusMapScreen(
-      {super.key,
-      this.role = 'faculty',
-      this.showAppBar = false,
-      this.onBuildingTap});
+  const CampusMapScreen({
+    super.key,
+    this.role = 'faculty',
+    this.showAppBar = false,
+    this.onBuildingTap,
+  });
 
   @override
   State<CampusMapScreen> createState() => _CampusMapScreenState();
 }
 
-class _CampusMapScreenState extends State<CampusMapScreen> {
-  String? _selectedBuildingId;
-  bool _editMode = false;
+// ─── Energy level (handoff §8): building = this month's kWh, device =
+// today's kWh -- exact thresholds/colors from campus_map_screen_web.dart. ──
 
-  // From Firebase
-  Map<String, Map<String, dynamic>> _buildingData = {}; // energy data
-  Map<String, Map<String, dynamic>> _buildingsInfo = {}; // name, floors
-  Map<String, _HotspotData> _hotspots = {}; // hotspot positions
+enum _Level { low, mid, high, off }
+
+const Map<_Level, Color> _levelColor = {
+  _Level.high: AppColors.error, // #D64A4A
+  _Level.mid: AppColors.warning, // #E8922A
+  _Level.low: AppColors.success, // green
+  _Level.off: AppColors.offline, // #9E9E9E
+};
+
+_Level _buildingLevel(double kwh) =>
+    kwh >= 100 ? _Level.high : (kwh >= 50 ? _Level.mid : _Level.low);
+
+_Level _deviceLevel(bool online, double kwh) => !online
+    ? _Level.off
+    : kwh >= 2
+        ? _Level.high
+        : (kwh >= 1 ? _Level.mid : _Level.low);
+
+String _levelLabel(_Level l) => switch (l) {
+      _Level.high => 'HIGH',
+      _Level.mid => 'MID',
+      _Level.low => 'LOW',
+      _Level.off => 'OFFLINE',
+    };
+
+/// pill colors, matching preview `.pill.ok/.warn/.err/.mute`.
+(Color bg, Color fg) _pillColors(_Level l) => switch (l) {
+      _Level.high => (AppColors.errorBg, AppColors.errorText),
+      _Level.mid => (AppColors.warningBg, AppColors.warningText),
+      _Level.low => (const Color(0xFFE6F5EB), AppColors.successText),
+      _Level.off => (const Color(0xFFEEF2EF), AppColors.inkMid),
+    };
+
+IconData _utilityIcon(String type) => switch (type.toLowerCase()) {
+      'lights' => Icons.lightbulb_outline,
+      'outlets' => Icons.electrical_services,
+      'ac' => Icons.ac_unit,
+      _ => Icons.memory_outlined,
+    };
+
+/// "Aircon" for `ac` (preview wording), otherwise the raw utility string.
+String _deviceLabel(String utility) =>
+    utility.toLowerCase() == 'ac' ? 'Aircon' : (utility.isEmpty ? 'Device' : utility);
+
+double _num(Object? v) =>
+    v is num ? v.toDouble() : double.tryParse('${v ?? ''}') ?? 0.0;
+
+/// Intrinsic campus map image size (`assets/images/campus_map.png`).
+const double _imgW = 354, _imgH = 496;
+
+// ─── Data models ────────────────────────────────────────────────────────────
+
+class _Zone {
+  final String code;
+  double x, y, w, h; // fractions (0-1) of the campus image
+  final Map<String, Offset> devicePositions; // deviceId -> fraction of zone
+
+  _Zone(this.code, this.x, this.y, this.w, this.h, this.devicePositions);
+}
+
+class _MapDevice {
+  final String id;
+  final String building;
+  final String room;
+  final int floor;
+  final String utility;
+  final double kwh; // today's energy
+  final bool online;
+  final bool relay;
+  final double power;
+
+  const _MapDevice({
+    required this.id,
+    required this.building,
+    required this.room,
+    required this.floor,
+    required this.utility,
+    required this.kwh,
+    required this.online,
+    required this.relay,
+    required this.power,
+  });
+}
+
+/// A fraction-space rectangle (0-1 of the campus image).
+class _Box {
+  final double x, y, w, h;
+  const _Box(this.x, this.y, this.w, this.h);
+}
+
+class _CampusMapScreenState extends State<CampusMapScreen> {
+  // ── Session (self-hydrated; see class doc) ─────────────────────────────
+  late String _role = widget.role;
+  String? _institute;
+
+  bool get _isInstituteAdmin => _role == 'institute_admin';
+
+  /// Non-null only for an institute admin with an institute assigned --
+  /// forces the whole screen into a single-building, precise-only, cropped
+  /// view (handoff §5/§8).
+  String? get _lockCode {
+    if (!_isInstituteAdmin) return null;
+    final code = _institute?.trim();
+    if (code == null || code.isEmpty) return null;
+    // Resolve to the stored key case-insensitively, so a user record saying
+    // 'ic' still finds the 'IC' zone, building and devices.
+    final upper = code.toUpperCase();
+    for (final k in [..._zones.keys, ..._buildingsInfo.keys]) {
+      if (k.toUpperCase() == upper) return k;
+    }
+    return upper;
+  }
+
+  /// Where each building sits on the campus image when `hotspots/{code}`
+  /// hasn't been placed yet (handoff §8's by-eye estimates). Only used so an
+  /// institute admin's cropped map still has something to zoom to; the
+  /// real `hotspots` zone always wins once a campus admin places it.
+  static final _defaultZones = <String, List<double>>{
+    'IC': [.41, .29, .20, .10],
+    'ILEGG': [.68, .37, .31, .30],
+    'ITED': [.84, .07, .16, .27],
+    'IAAS': [.66, .85, .33, .10],
+    'ADMIN': [.12, .77, .46, .10],
+  };
+
+  /// The locked institute's zone: the saved hotspot, else its default.
+  _Zone? get _lockZone {
+    final lock = _lockCode;
+    if (lock == null) return null;
+    final saved = _zones[lock];
+    if (saved != null) return saved;
+    final d = _defaultZones[lock.toUpperCase()];
+    return d == null ? null : _Zone(lock, d[0], d[1], d[2], d[3], const {});
+  }
+
+  InstitutePalette get _palette =>
+      InstituteTheme.resolve(_role, _institute).palette;
+
+  Future<void> _hydrateSession() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final data = snap.value;
+      if (data is! Map) return;
+      final map = Map<String, dynamic>.from(data);
+      if (!mounted) return;
+      setState(() {
+        _role = (map['role'] as String?) ?? _role;
+        _institute = (map['institute'] as String?)?.trim();
+      });
+    } catch (_) {
+      // Keep the constructor-supplied role if hydration fails.
+    }
+  }
+
+  // ── Firebase-backed data ────────────────────────────────────────────────
+  Map<String, Map<String, dynamic>> _buildingsInfo = {}; // code -> name/floors
+  List<_MapDevice> _devices = [];
+  Map<String, double> _monthKwh = {}; // code -> this month's kWh
+  Map<String, _Zone> _zones = {};
 
   StreamSubscription? _combinedSub;
-
-  // True until the first combined emission of this screen's 4 Firebase
-  // streams (devices, this month's building history, buildings, hotspots)
-  // has been received; never reverts to true afterwards, so a transient
-  // null on any one path can't blank out data already shown this session.
   bool _isLoading = true;
-
-  // Set only if the combined listener fails (or times out) before the
-  // first successful load ever completes -- gives the skeleton shimmer a
-  // real escape hatch instead of spinning forever.
   String? _errorText;
   Timer? _loadTimeoutTimer;
   bool _postLoadErrorNotified = false;
 
-  bool get isAdmin =>
-      widget.role == 'admin' ||
-      widget.role == 'main_admin' ||
-      widget.role == 'super_admin' ||
-      widget.role == 'institute_admin';
+  // ── Mode / selection / zoom-pan state ───────────────────────────────────
+  bool _devicesModeChoice = false; // user's Buildings(false)/Devices(true) pick
+  bool get _precise => _lockCode != null ? true : _devicesModeChoice;
 
-  bool _isPermissionDenied(Object error) {
-    final text = error.toString().toLowerCase();
-    return text.contains('permission-denied') ||
-        text.contains('permission_denied');
-  }
+  String? _selectedBuilding;
+  String? _selectedDevice;
+
+  double _zoom = 1.0; // 1x-3x, campus admin only
+  Offset _pan = Offset.zero; // fraction offset within the current box
+  Size _viewportSize = Size.zero; // cached for interpreting drag deltas
 
   @override
   void initState() {
     super.initState();
-    _listenAll();
+    _hydrateSession();
+    _listen();
   }
 
   @override
@@ -153,8 +292,6 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     super.dispose();
   }
 
-  /// Clears the error state and re-attaches the combined listener from
-  /// scratch. Used by the Retry button shown when the first load fails.
   void _retryLoad() {
     _combinedSub?.cancel();
     _loadTimeoutTimer?.cancel();
@@ -163,14 +300,22 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       _isLoading = true;
       _postLoadErrorNotified = false;
     });
-    _listenAll();
+    _listen();
   }
 
-  // ── Listen to all 4 Firebase paths this screen needs (devices, this
-  // month's building history, buildings, hotspots) in one combined stream
-  // so a transient null on any single path can't blank out data already
-  // shown this session.
-  void _listenAll() {
+  String _monthKey(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}';
+
+  bool _isPermissionDenied(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('permission-denied') || text.contains('permission_denied');
+  }
+
+  // Same 4 Firebase paths, same combined-listener shape as the web screen
+  // and the old version of this file (devices, this month's building
+  // history, buildings, hotspots) -- a transient null on any one path can't
+  // blank out data already shown this session.
+  void _listen() {
     _loadTimeoutTimer?.cancel();
     _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
       if (!mounted || !_isLoading) return;
@@ -193,139 +338,10 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
-        // ── buildings (processed first: devices' baseline needs the
-        // current set of known building codes) ─────────────────────
-        final buildingsRaw = events[2].snapshot.value;
-        if (buildingsRaw is Map) {
-          final data = Map<String, dynamic>.from(buildingsRaw);
-          final Map<String, Map<String, dynamic>> info = {};
-          data.forEach((code, val) {
-            if (val is! Map) return;
-            final b = Map<String, dynamic>.from(val);
-            info[code] = {
-              'name': (b['name'] ?? code).toString(),
-              'floors': (b['floors'] ?? 1) as int
-            };
-          });
-          _buildingsInfo = info;
-        } else if (_isLoading) {
-          _buildingsInfo = {};
-        }
-
-        // ── devices (per-building energy/device/room aggregates) ──
-        final devicesRaw = events[0].snapshot.value;
-        if (devicesRaw is Map) {
-          final Map<String, Map<String, dynamic>> bData = {};
-          for (final id in _buildingsInfo.keys) {
-            bData[id] = {
-              'kwh': 0.0,
-              'deviceCount': 0,
-              'rooms': <String, Map<String, dynamic>>{}
-            };
-          }
-          final devices = Map<String, dynamic>.from(devicesRaw);
-          devices.forEach((deviceId, val) {
-            if (val is! Map) return;
-            final device = Map<String, dynamic>.from(val);
-            final building = (device['building'] ?? '').toString();
-            final room = (device['room'] ?? '').toString();
-            final utility = (device['utility'] ?? '').toString();
-            final kwh = (device['kwh'] ?? 0.0) as num;
-            final status = (device['status'] ?? 'offline').toString();
-            final relay = (device['relay'] ?? false) as bool;
-            if (!bData.containsKey(building)) {
-              bData[building] = {
-                'kwh': 0.0,
-                'deviceCount': 0,
-                'rooms': <String, Map<String, dynamic>>{}
-              };
-            }
-            bData[building]!['kwh'] =
-                (bData[building]!['kwh'] as double) + kwh.toDouble();
-            bData[building]!['deviceCount'] =
-                (bData[building]!['deviceCount'] as int) + 1;
-            if (room.isNotEmpty) {
-              final rooms = bData[building]!['rooms']
-                  as Map<String, Map<String, dynamic>>;
-              if (!rooms.containsKey(room)) {
-                rooms[room] = {'utilities': <Map<String, dynamic>>[]};
-              }
-              (rooms[room]!['utilities'] as List<Map<String, dynamic>>).add({
-                'id': deviceId,
-                'utility': utility,
-                'kwh': (device['kwh'] ?? 0.0) as num,
-                'status': status,
-                'relay': relay,
-              });
-            }
-          });
-          _buildingData = bData;
-        } else if (_isLoading) {
-          _buildingData = {
-            for (final id in _buildingsInfo.keys)
-              id: {
-                'kwh': 0.0,
-                'deviceCount': 0,
-                'rooms': <String, Map<String, dynamic>>{}
-              }
-          };
-        }
-
-        // ── this month's building history (overrides device-derived kWh
-        // with the more accurate monthly total, same as before). Unlike
-        // the old per-path listener, this doesn't need to persist the
-        // monthly totals in a field -- combineLatestList redelivers this
-        // path's latest snapshot every time, so it's simply reapplied on
-        // top of `_buildingData` each round.
-        final historyRaw = events[1].snapshot.value;
-        if (historyRaw is Map) {
-          final totals = Map<String, dynamic>.from(historyRaw);
-          final updated = Map<String, Map<String, dynamic>>.from(_buildingData);
-
-          totals.forEach((building, value) {
-            final existing =
-                Map<String, dynamic>.from(updated[building.toString()] ??
-                    {
-                      'deviceCount': 0,
-                      'rooms': <String, Map<String, dynamic>>{},
-                      'kwh': 0.0,
-                    });
-
-            if (value is Map) {
-              final data = Map<String, dynamic>.from(value);
-              existing['kwh'] = ((data['kwh'] ?? 0.0) as num).toDouble();
-            } else if (value is num) {
-              existing['kwh'] = value.toDouble();
-            }
-
-            updated[building.toString()] = existing;
-          });
-
-          _buildingData = updated;
-        }
-
-        // ── hotspots ───────────────────────────────────────────────
-        final hotspotsRaw = events[3].snapshot.value;
-        if (hotspotsRaw is Map) {
-          final Map<String, _HotspotData> spots = {};
-          hotspotsRaw.forEach((id, val) {
-            if (val is Map) {
-              final data = Map<String, dynamic>.from(val);
-              // Parse safely as double
-              spots[id.toString()] = _HotspotData(
-                buildingId: id.toString(),
-                x: ((data['x'] ?? 0.1) as num).toDouble(),
-                y: ((data['y'] ?? 0.1) as num).toDouble(),
-                w: ((data['w'] ?? 0.2) as num).toDouble(),
-                h: ((data['h'] ?? 0.1) as num).toDouble(),
-              );
-            }
-          });
-          _hotspots = spots;
-        } else if (_isLoading) {
-          _hotspots = {};
-        }
-
+        _applyBuildings(events[2].snapshot.value);
+        _applyDevices(events[0].snapshot.value);
+        _applyHistory(events[1].snapshot.value);
+        _applyZones(events[3].snapshot.value);
         _isLoading = false;
         _errorText = null;
         _postLoadErrorNotified = false;
@@ -343,403 +359,323 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         });
       } else if (!_postLoadErrorNotified) {
         _postLoadErrorNotified = true;
-        TopToast.show(
-          context,
-          'Lost connection to live map data.',
-          isError: true,
-        );
+        TopToast.show(context, 'Lost connection to live map data.', isError: true);
       }
     });
   }
 
-  String _monthKey(DateTime date) =>
-      '${date.year}-${date.month.toString().padLeft(2, '0')}';
-
-  // Buildings that exist but have no hotspot yet
-  List<String> get _buildingsWithoutHotspot =>
-      _buildingsInfo.keys.where((id) => !_hotspots.containsKey(id)).toList();
-
-  Future<void> _addHotspot(String buildingId) async {
-    // Place in center by default
-    final spot = _HotspotData(
-        buildingId: buildingId, x: 0.35, y: 0.35, w: 0.22, h: 0.10);
-    await FirebaseDatabase.instance
-        .ref('hotspots/$buildingId')
-        .set(spot.toMap());
+  void _applyBuildings(Object? raw) {
+    if (raw is! Map) {
+      if (_isLoading) _buildingsInfo = {};
+      return;
+    }
+    final data = Map<String, dynamic>.from(raw);
+    final info = <String, Map<String, dynamic>>{};
+    data.forEach((code, val) {
+      if (val is! Map) return;
+      final b = Map<String, dynamic>.from(val);
+      info[code.toString()] = {
+        'name': (b['name'] ?? code).toString(),
+        'floors': int.tryParse('${b['floors'] ?? 1}') ?? 1,
+      };
+    });
+    _buildingsInfo = info;
   }
 
-  Future<void> _deleteHotspot(String buildingId) async {
-    await FirebaseDatabase.instance.ref('hotspots/$buildingId').remove();
+  void _applyDevices(Object? raw) {
+    if (raw is! Map) {
+      if (_isLoading) _devices = [];
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final data = Map<String, dynamic>.from(raw);
+    final list = <_MapDevice>[];
+    data.forEach((id, val) {
+      if (val is! Map) return;
+      final d = Map<String, dynamic>.from(val);
+      final building = (d['building'] ?? '').toString();
+      if (building.isEmpty) return;
+      final lastSeen = _num(d['last_seen']);
+      final online = lastSeen > 0
+          ? now - lastSeen < 2 * 60 * 1000
+          : (d['status'] ?? '') == 'online';
+      list.add(_MapDevice(
+        id: id.toString(),
+        building: building,
+        room: (d['room'] ?? '').toString(),
+        floor: int.tryParse('${d['floor'] ?? 1}') ?? 1,
+        utility: (d['utility'] ?? '').toString(),
+        kwh: _num(d['kwh']),
+        online: online,
+        relay: d['relay'] == true,
+        power: _num(d['power']),
+      ));
+    });
+    list.sort((a, b) => a.id.compareTo(b.id));
+    _devices = list;
   }
 
-  Future<void> _saveHotspot(String buildingId) async {
-    final spot = _hotspots[buildingId];
-    if (spot == null) return;
-    // update, not set: keeps the per-device map positions the web map
-    // stores under hotspots/{building}/devices.
-    await FirebaseDatabase.instance
-        .ref('hotspots/$buildingId')
-        .update(spot.toMap());
+  void _applyHistory(Object? raw) {
+    final totals = <String, double>{};
+    for (final d in _devices) {
+      totals[d.building] = (totals[d.building] ?? 0) + d.kwh;
+    }
+    if (raw is Map) {
+      raw.forEach((code, v) {
+        totals[code.toString()] = v is Map ? _num(v['kwh']) : _num(v);
+      });
+    }
+    _monthKwh = totals;
   }
 
-  void _onBuildingTap(String buildingId) {
-    if (_editMode) return;
+  void _applyZones(Object? raw) {
+    if (raw is! Map) {
+      _zones = {};
+      return;
+    }
+    final zones = <String, _Zone>{};
+    raw.forEach((code, val) {
+      if (val is! Map) return;
+      final v = Map<String, dynamic>.from(val);
+      final positions = <String, Offset>{};
+      final devs = v['devices'];
+      if (devs is Map) {
+        devs.forEach((id, p) {
+          if (p is Map) {
+            positions[id.toString()] = Offset(
+              _num(p['x']).clamp(0.0, 1.0),
+              _num(p['y']).clamp(0.0, 1.0),
+            );
+          }
+        });
+      }
+      zones[code.toString()] = _Zone(
+        code.toString(),
+        v['x'] == null ? 0.1 : _num(v['x']),
+        v['y'] == null ? 0.1 : _num(v['y']),
+        v['w'] == null ? 0.2 : _num(v['w']),
+        v['h'] == null ? 0.1 : _num(v['h']),
+        positions,
+      );
+    });
+    _zones = zones;
+  }
+
+  // ── Derived helpers ─────────────────────────────────────────────────────
+
+  String _buildingName(String code) =>
+      (_buildingsInfo[code]?['name'] as String?) ?? code;
+
+  int _buildingFloors(String code) =>
+      (_buildingsInfo[code]?['floors'] as int?) ?? 1;
+
+  List<_MapDevice> get _scopedDevices {
+    final lock = _lockCode;
+    return lock == null ? _devices : _devices.where((d) => d.building == lock).toList();
+  }
+
+  /// Where each device of [zone] sits inside it (0-1 of the zone): its saved
+  /// position, or an even grid over the zone for the rest -- identical
+  /// column/row formula to the web screen's `_layout`, using the image's
+  /// intrinsic aspect ratio (the ratio is all that matters, so the actual
+  /// rendered pixel size doesn't need to be threaded in here).
+  Map<String, Offset> _layoutDots(_Zone zone, List<_MapDevice> devsInBuilding) {
+    final unplaced =
+        devsInBuilding.where((d) => !zone.devicePositions.containsKey(d.id)).toList();
+    final out = <String, Offset>{
+      for (final d in devsInBuilding)
+        if (zone.devicePositions.containsKey(d.id)) d.id: zone.devicePositions[d.id]!,
+    };
+    final n = unplaced.length;
+    if (n > 0) {
+      final pw = math.max(1.0, zone.w * _imgW);
+      final ph = math.max(1.0, zone.h * _imgH);
+      final cols = math.max(1, math.min(n, (math.sqrt(n * pw / ph)).round()));
+      final rows = (n / cols).ceil();
+      for (var i = 0; i < n; i++) {
+        out[unplaced[i].id] = Offset((i % cols + 0.5) / cols, (i ~/ cols + 0.5) / rows);
+      }
+    }
+    return out;
+  }
+
+  /// The visible fraction-space box: the whole image for a campus admin, or
+  /// the locked building's zone padded by a flat 6% of the image on each
+  /// side (handoff §8 / preview `mapView`'s `pad = 0.06`) for an institute
+  /// admin. Falls back to the whole image if their zone doesn't exist yet.
+  _Box get _box {
+    final lock = _lockCode;
+    if (lock != null) {
+      final z = _lockZone;
+      if (z != null) {
+        const pad = 0.06;
+        final bx = math.max(0.0, z.x - pad);
+        final by = math.max(0.0, z.y - pad);
+        final bw = math.min(1.0, z.x + z.w + pad) - bx;
+        final bh = math.min(1.0, z.y + z.h + pad) - by;
+        return _Box(bx, by, bw, bh);
+      }
+    }
+    return const _Box(0, 0, 1, 1);
+  }
+
+  void _clampPan() {
+    final box = _box;
+    final visibleW = box.w / _zoom;
+    final visibleH = box.h / _zoom;
+    _pan = Offset(
+      _pan.dx.clamp(0.0, math.max(0.0, box.w - visibleW)),
+      _pan.dy.clamp(0.0, math.max(0.0, box.h - visibleH)),
+    );
+  }
+
+  void _zoomIn() {
+    if (_lockCode != null) return; // no zoom UI for a scoped session
     setState(() {
-      _selectedBuildingId =
-          _selectedBuildingId == buildingId ? null : buildingId;
+      _zoom = (_zoom + 0.5).clamp(1.0, 3.0);
+      _clampPan();
     });
   }
 
-  void _dismissPopup() => setState(() => _selectedBuildingId = null);
+  void _zoomOut() {
+    if (_lockCode != null) return;
+    setState(() {
+      _zoom = (_zoom - 0.5).clamp(1.0, 3.0);
+      _clampPan();
+    });
+  }
 
-  void _viewBuildingDetails(String buildingId) {
-    final code = buildingId;
-    final info = _buildingsInfo[buildingId] ?? {};
-    final name = info['name'] as String? ?? buildingId;
-    final floors = info['floors'] as int? ?? 1;
-    final role = widget.role;
-    setState(() => _selectedBuildingId = null);
+  void _onPanUpdate(DragUpdateDetails d) {
+    if (_lockCode != null || _zoom <= 1.0) return;
+    final box = _box;
+    final visibleW = box.w / _zoom;
+    final visibleH = box.h / _zoom;
+    if (_viewportSize.width <= 0 || _viewportSize.height <= 0) return;
+    final scaleX = _viewportSize.width / visibleW;
+    final scaleY = _viewportSize.height / visibleH;
+    setState(() {
+      _pan = Offset(
+        (_pan.dx - d.delta.dx / scaleX)
+            .clamp(0.0, math.max(0.0, box.w - visibleW)),
+        (_pan.dy - d.delta.dy / scaleY)
+            .clamp(0.0, math.max(0.0, box.h - visibleH)),
+      );
+    });
+  }
+
+  void _dismissSelection() {
+    if (_selectedBuilding == null && _selectedDevice == null) return;
+    setState(() {
+      _selectedBuilding = null;
+      _selectedDevice = null;
+    });
+  }
+
+  void _onModeChanged(int i) {
+    setState(() {
+      _devicesModeChoice = i == 1;
+      _selectedBuilding = null;
+      _selectedDevice = null;
+    });
+  }
+
+  void _onZoneTap(String code) {
+    if (_precise) return; // dashed zones aren't tappable in Devices mode
+    setState(() {
+      _selectedDevice = null;
+      _selectedBuilding = _selectedBuilding == code ? null : code;
+    });
+  }
+
+  void _onDotTap(String id) {
+    setState(() {
+      _selectedBuilding = null;
+      _selectedDevice = _selectedDevice == id ? null : id;
+    });
+  }
+
+  void _openBuilding(String code) {
+    final name = _buildingName(code);
+    final floors = _buildingFloors(code);
     if (widget.onBuildingTap != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        widget.onBuildingTap!(code, name, floors);
-      });
+      widget.onBuildingTap!(code, name, floors);
       return;
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      Navigator.pushNamed(context, '/building', arguments: {
-        'buildingCode': code,
-        'buildingName': name,
-        'floors': floors,
-        'role': role,
-      });
+    Navigator.pushNamed(context, '/building', arguments: {
+      'buildingCode': code,
+      'buildingName': name,
+      'floors': floors,
+      'role': _role,
     });
   }
 
-  _ContainRect _computeContainRect(BoxConstraints constraints) {
-    final w = constraints.maxWidth;
-    final h = constraints.maxHeight;
-    final aspect = w / h;
-    if (aspect > _mapAspectRatio) {
-      final iW = h * _mapAspectRatio;
-      return _ContainRect(left: (w - iW) / 2, top: 0, width: iW, height: h);
-    }
-    final iH = w / _mapAspectRatio;
-    return _ContainRect(left: 0, top: (h - iH) / 2, width: w, height: iH);
+  void _openDevice(_MapDevice d) {
+    Navigator.pushNamed(context, '/device', arguments: {
+      'deviceId': d.id,
+      'utility': d.utility,
+      'building': d.building,
+      'room': d.room.isEmpty ? 'unknown' : d.room,
+      'floor': d.floor,
+      'role': _role,
+    });
   }
 
-  // ── Build hotspot widget (view mode) ──────────────────────────────────────
-  Widget _buildViewHotspot(_HotspotData spot, _ContainRect rect) {
-    final bData = _buildingData[spot.buildingId];
-    final kwh = (bData?['kwh'] as double?) ?? 0.0;
-    final level = _energyLevel(kwh);
-    final color = _energyColor(level);
-    final isSelected = _selectedBuildingId == spot.buildingId;
+  // ── Build ────────────────────────────────────────────────────────────────
 
-    return Positioned(
-      left: rect.left + spot.x * rect.width,
-      top: rect.top + spot.y * rect.height,
-      width: spot.w * rect.width,
-      height: spot.h * rect.height,
-      child: GestureDetector(
-        onTap: () => _onBuildingTap(spot.buildingId),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          decoration: BoxDecoration(
-            color: color.withAlpha(isSelected ? 120 : 60),
-            border: Border.all(color: color, width: isSelected ? 3 : 1.5),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-              decoration: BoxDecoration(
-                  color: color.withAlpha(200),
-                  borderRadius: BorderRadius.circular(4)),
-              child: Text(spot.buildingId,
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ),
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
+      child: widget.showAppBar
+          ? Scaffold(
+              backgroundColor: Colors.white,
+              body: SafeArea(
+                child: Column(children: [
+                  AppTopBar(
+                    title: 'Campus Map',
+                    subtitle: _lockCode != null
+                        ? '${_buildingName(_lockCode!)} · $_lockCode'
+                        : 'Buildings and devices by energy use',
+                    variant: AppTopBarVariant.small,
+                    showBackButton: true,
+                    showInstituteLine: _lockCode != null,
+                  ),
+                  Expanded(child: _buildBody()),
+                ]),
+              ),
+            )
+          : _buildBody(),
     );
   }
 
-  // ── Build hotspot widget (edit mode) ──────────────────────────────────────
-  Widget _buildEditHotspot(_HotspotData spot, _ContainRect rect) {
-    const double handleSize = 18.0;
-
-    return Positioned(
-      left: rect.left + spot.x * rect.width,
-      top: rect.top + spot.y * rect.height,
-      width: spot.w * rect.width,
-      height: spot.h * rect.height,
-      child: GestureDetector(
-        // Drag the whole zone
-        onPanUpdate: (details) {
-          setState(() {
-            spot.x = (spot.x + details.delta.dx / rect.width)
-                .clamp(0.0, 1.0 - spot.w);
-            spot.y = (spot.y + details.delta.dy / rect.height)
-                .clamp(0.0, 1.0 - spot.h);
-          });
-        },
-        onPanEnd: (_) => _saveHotspot(spot.buildingId),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.greenDark.withAlpha(40),
-            border: Border.all(color: AppColors.greenDark, width: 2),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              // Label
-              Center(
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                  decoration: BoxDecoration(
-                      color: AppColors.greenDark,
-                      borderRadius: BorderRadius.circular(4)),
-                  child: Text(spot.buildingId,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold)),
-                ),
-              ),
-
-              // Delete button top-left
-              Positioned(
-                top: -10,
-                left: -10,
-                child: GestureDetector(
-                  onTap: () async {
-                    await _deleteHotspot(spot.buildingId);
-                  },
-                  child: Container(
-                    width: 22,
-                    height: 22,
-                    decoration: const BoxDecoration(
-                        color: AppColors.error, shape: BoxShape.circle),
-                    child:
-                        const Icon(Icons.close, color: Colors.white, size: 14),
-                  ),
-                ),
-              ),
-
-              // ── Corner resize handles ─────────────────────────────
-
-              // Bottom-right corner
-              Positioned(
-                right: -handleSize / 2,
-                bottom: -handleSize / 2,
-                child: GestureDetector(
-                  onPanUpdate: (d) {
-                    setState(() {
-                      spot.w = (spot.w + d.delta.dx / rect.width)
-                          .clamp(0.05, 1.0 - spot.x);
-                      spot.h = (spot.h + d.delta.dy / rect.height)
-                          .clamp(0.03, 1.0 - spot.y);
-                    });
-                  },
-                  onPanEnd: (_) => _saveHotspot(spot.buildingId),
-                  child: _resizeHandle(),
-                ),
-              ),
-
-              // Bottom-left corner
-              Positioned(
-                left: -handleSize / 2,
-                bottom: -handleSize / 2,
-                child: GestureDetector(
-                  onPanUpdate: (d) {
-                    setState(() {
-                      final newW = (spot.w - d.delta.dx / rect.width)
-                          .clamp(0.05, spot.x + spot.w);
-                      final dx = spot.w - newW;
-                      spot.x = (spot.x + dx).clamp(0.0, 1.0);
-                      spot.w = newW;
-                      spot.h = (spot.h + d.delta.dy / rect.height)
-                          .clamp(0.03, 1.0 - spot.y);
-                    });
-                  },
-                  onPanEnd: (_) => _saveHotspot(spot.buildingId),
-                  child: _resizeHandle(),
-                ),
-              ),
-
-              // Top-right corner
-              Positioned(
-                right: -handleSize / 2,
-                top: -handleSize / 2,
-                child: GestureDetector(
-                  onPanUpdate: (d) {
-                    setState(() {
-                      spot.w = (spot.w + d.delta.dx / rect.width)
-                          .clamp(0.05, 1.0 - spot.x);
-                      final newH = (spot.h - d.delta.dy / rect.height)
-                          .clamp(0.03, spot.y + spot.h);
-                      final dy = spot.h - newH;
-                      spot.y = (spot.y + dy).clamp(0.0, 1.0);
-                      spot.h = newH;
-                    });
-                  },
-                  onPanEnd: (_) => _saveHotspot(spot.buildingId),
-                  child: _resizeHandle(),
-                ),
-              ),
-
-              // Top-left corner
-              Positioned(
-                left: -handleSize / 2,
-                top: -handleSize / 2,
-                child: GestureDetector(
-                  onPanUpdate: (d) {
-                    setState(() {
-                      final newW = (spot.w - d.delta.dx / rect.width)
-                          .clamp(0.05, spot.x + spot.w);
-                      final dx = spot.w - newW;
-                      spot.x = (spot.x + dx).clamp(0.0, 1.0);
-                      spot.w = newW;
-                      final newH = (spot.h - d.delta.dy / rect.height)
-                          .clamp(0.03, spot.y + spot.h);
-                      final dy = spot.h - newH;
-                      spot.y = (spot.y + dy).clamp(0.0, 1.0);
-                      spot.h = newH;
-                    });
-                  },
-                  onPanEnd: (_) => _saveHotspot(spot.buildingId),
-                  child: _resizeHandle(),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _resizeHandle() {
-    return Container(
-      width: 18,
-      height: 18,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: AppColors.greenDark, width: 2),
-        shape: BoxShape.circle,
-      ),
-    );
-  }
-
-  // ── Add hotspot picker ────────────────────────────────────────────────────
-  void _showAddHotspotPicker() {
-    final available = _buildingsWithoutHotspot;
-    if (available.isEmpty) {
-      TopToast.threshold(context, 'All buildings already have hotspots.');
-      return;
-    }
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) {
-        final maxHeight = MediaQuery.of(context).size.height * 0.75;
-        return SafeArea(
-          top: false,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: maxHeight),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  margin: const EdgeInsets.only(top: 10),
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2)),
-                ),
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 14, 20, 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Add Hotspot Zone',
-                      style: TextStyle(
-                          fontFamily: AppFonts.family,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textDark),
-                    ),
-                  ),
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20),
-                  child: Text(
-                    'Select a building to add a hotspot zone on the map.',
-                    style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Flexible(
-                  child: ListView(
-                    padding: EdgeInsets.zero,
-                    shrinkWrap: true,
-                    children: available.map((id) {
-                      final info = _buildingsInfo[id] ?? {};
-                      return ListTile(
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                              color: AppColors.greenPale,
-                              borderRadius: BorderRadius.circular(10)),
-                          child: Center(
-                            child: Text(
-                              id,
-                              style: const TextStyle(
-                                  fontFamily: AppFonts.family,
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.greenDark),
-                            ),
-                          ),
-                        ),
-                        title: Text(info['name'] ?? id,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textDark)),
-                        subtitle: Text('${info['floors'] ?? 1} floors',
-                            style: const TextStyle(
-                                fontSize: 11, color: AppColors.textMuted)),
-                        trailing: const Icon(Icons.add_circle_outline,
-                            color: AppColors.greenMid),
-                        onTap: () async {
-                          Navigator.pop(context);
-                          await _addHotspot(id);
-                          if (!mounted) return;
-                          TopToast.success(context,
-                              'Hotspot added for $id. Drag to position it.');
-                        },
-                      );
-                    }).toList(),
-                  ),
-                ),
-                const SizedBox(height: 16),
+  Widget _buildBody() {
+    if (_errorText != null) return _buildError();
+    return ScreenSkeleton(
+      isLoading: _isLoading,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (_lockCode == null) ...[
+            AppSegmentedControl(
+              palette: _palette,
+              segments: const [
+                AppSegment(label: 'Buildings'),
+                AppSegment(label: 'Devices'),
               ],
+              selectedIndex: _devicesModeChoice ? 1 : 0,
+              onChanged: _onModeChanged,
             ),
-          ),
-        );
-      },
+            const SizedBox(height: 12),
+          ],
+          _mapCard(),
+          const SizedBox(height: 10),
+          _legend(),
+          const SizedBox(height: 16),
+          _panel(),
+        ]),
+      ),
     );
   }
 
@@ -748,551 +684,502 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                  color: AppColors.greenPale,
-                  borderRadius: BorderRadius.circular(20)),
-              child: const Icon(Icons.map_outlined,
-                  size: 34, color: AppColors.greenMid)),
+          OutlineIconBox(icon: Icons.map_outlined, size: 64, iconSize: 30, palette: _palette),
           const SizedBox(height: 16),
-          const Text('Cannot load campus map',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
+          Text('Cannot load campus map',
+              style: AppTextStyles.title.copyWith(color: AppColors.ink)),
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
           const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: _retryLoad,
-            icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-            label:
-                const Text('Retry', style: TextStyle(color: Colors.white)),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.greenDark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-          ),
+          AppOutlineButton(label: 'Retry', icon: Icons.refresh, onPressed: _retryLoad, palette: _palette),
         ]),
       ),
     );
   }
 
-  Widget _buildMap() {
-    if (_errorText != null) {
-      return _buildError();
-    }
-    return ScreenSkeleton(
-      isLoading: _isLoading,
-      child: Stack(
-        children: [
-          // ── Map tap zone ─────────────────────────────────────
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _editMode ? null : _dismissPopup,
-              child: InteractiveViewer(
-                // Disable pan/zoom in edit mode so drags work correctly
-                panEnabled: !_editMode,
-                scaleEnabled: !_editMode,
-                minScale: 0.8,
-                maxScale: 4.0,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final rect = _computeContainRect(constraints);
-                    return Stack(
-                      children: [
-                        Positioned.fill(
-                            child: Image.asset('assets/images/campus_map.png',
-                                fit: BoxFit.contain)),
-                        // Render hotspots
-                        ..._hotspots.values.map((spot) => _editMode
-                            ? _buildEditHotspot(spot, rect)
-                            : _buildViewHotspot(spot, rect)),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
+  // ── Map card ─────────────────────────────────────────────────────────────
 
-          // ── Legend (top left) ─────────────────────────────────
-          if (!_editMode)
-            Positioned(
-              top: 12,
-              left: 12,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(220),
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: const [
-                    BoxShadow(color: Color.fromARGB(20, 0, 0, 0), blurRadius: 8)
-                  ],
-                ),
-                child: const Row(children: [
-                  _LegendDot(color: AppColors.greenMid, label: 'Low'),
-                  SizedBox(width: 8),
-                  _LegendDot(color: Color(0xFFE8922A), label: 'Mid'),
-                  SizedBox(width: 8),
-                  _LegendDot(color: Color(0xFFD64A4A), label: 'High'),
-                ]),
-              ),
-            ),
-
-          // ── Edit Mode toolbar (top right) ─────────────────────
-          if (isAdmin)
-            Positioned(
-              top: 12,
-              right: 12,
-              child: _editMode
-                  ? Row(children: [
-                      // Add hotspot button
-                      GestureDetector(
-                        onTap: _showAddHotspotPicker,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: AppColors.greenMid,
-                            borderRadius: BorderRadius.circular(10),
-                            boxShadow: [
-                              BoxShadow(
-                                  color: Colors.black.withAlpha(30),
-                                  blurRadius: 8)
-                            ],
-                          ),
-                          child: const Row(children: [
-                            Icon(Icons.add, color: Colors.white, size: 16),
-                            SizedBox(width: 4),
-                            Text('Add Zone',
-                                style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600)),
-                          ]),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // Done button
-                      GestureDetector(
-                        onTap: () => setState(() => _editMode = false),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: AppColors.greenDark,
-                            borderRadius: BorderRadius.circular(10),
-                            boxShadow: [
-                              BoxShadow(
-                                  color: Colors.black.withAlpha(30),
-                                  blurRadius: 8)
-                            ],
-                          ),
-                          child: const Row(children: [
-                            Icon(Icons.check, color: Colors.white, size: 16),
-                            SizedBox(width: 4),
-                            Text('Done',
-                                style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600)),
-                          ]),
-                        ),
-                      ),
-                    ])
-                  : GestureDetector(
-                      onTap: () => setState(() {
-                        _editMode = true;
-                        _selectedBuildingId = null;
-                      }),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 7),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withAlpha(220),
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: [
-                            BoxShadow(
-                                color: Colors.black.withAlpha(20),
-                                blurRadius: 8)
-                          ],
-                        ),
-                        child: const Row(children: [
-                          Icon(Icons.edit_location_alt_outlined,
-                              color: AppColors.greenDark, size: 16),
-                          SizedBox(width: 4),
-                          Text('Edit Zones',
-                              style: TextStyle(
-                                  color: AppColors.greenDark,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600)),
-                        ]),
-                      ),
-                    ),
-            ),
-
-          // ── Edit mode hint banner ─────────────────────────────
-          if (_editMode)
-            Positioned(
-              bottom: 16,
-              left: 16,
-              right: 16,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.greenDark.withAlpha(230),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Row(children: [
-                  Icon(Icons.info_outline, color: Colors.white, size: 14),
-                  SizedBox(width: 8),
-                  Expanded(
-                      child: Text(
-                          'Drag zone to move · Drag corners to resize · Tap ✕ to delete',
-                          style: TextStyle(color: Colors.white, fontSize: 11))),
-                ]),
-              ),
-            ),
-
-          // ── Popup ─────────────────────────────────────────────
-          if (_selectedBuildingId != null && !_editMode)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: GestureDetector(
-                onTap: () {},
-                child: _BuildingPopup(
-                  buildingId: _selectedBuildingId!,
-                  buildingName: _buildingsInfo[_selectedBuildingId!]?['name'] ??
-                      _selectedBuildingId!,
-                  floors: _buildingsInfo[_selectedBuildingId!]?['floors'] ?? 1,
-                  data: _buildingData[_selectedBuildingId!] ?? {},
-                  role: widget.role,
-                  onClose: _dismissPopup,
-                  onViewDetails: () =>
-                      _viewBuildingDetails(_selectedBuildingId!),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (widget.showAppBar) {
-      return Scaffold(
-        backgroundColor: const Color(0xFFF0F4F0),
-        appBar: AppBar(
-          backgroundColor: AppColors.greenDark,
-          title: const Text('Campus Map',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700)),
-          iconTheme: const IconThemeData(color: Colors.white),
-        ),
-        body: _buildMap(),
-      );
-    }
-    return _buildMap();
-  }
-}
-
-// ─── Legend Dot ───────────────────────────────────────────────────────────────
-
-class _LegendDot extends StatelessWidget {
-  final Color color;
-  final String label;
-  const _LegendDot({required this.color, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(children: [
-      Container(
-          width: 9,
-          height: 9,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-      const SizedBox(width: 4),
-      Text(label,
-          style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: AppColors.textDark)),
-    ]);
-  }
-}
-
-// ─── Building Popup ───────────────────────────────────────────────────────────
-
-class _BuildingPopup extends StatelessWidget {
-  final String buildingId;
-  final String buildingName;
-  final int floors;
-  final Map<String, dynamic> data;
-  final String role;
-  final VoidCallback onClose;
-  final VoidCallback onViewDetails;
-
-  const _BuildingPopup({
-    required this.buildingId,
-    required this.buildingName,
-    required this.floors,
-    required this.data,
-    required this.role,
-    required this.onClose,
-    required this.onViewDetails,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final kwh = (data['kwh'] as double?) ?? 0.0;
-    final deviceCount = (data['deviceCount'] as int?) ?? 0;
-    final rawRooms = data['rooms'];
-    final rooms = rawRooms is Map
-        ? Map<String, Map<String, dynamic>>.from(rawRooms.map((k, v) =>
-            MapEntry(k.toString(),
-                v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{})))
-        : <String, Map<String, dynamic>>{};
-    final level = _energyLevel(kwh);
-    final color = _energyColor(level);
+  Widget _mapCard() {
+    final box = _box;
+    final aspectRatio = (box.w * _imgW) / (box.h * _imgH);
+    final zoomable = _lockCode == null;
 
     return Container(
-      constraints: const BoxConstraints(maxHeight: 400),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE9EFE9),
+        border: Border.all(color: _palette.line),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Stack(children: [
+        AspectRatio(
+          aspectRatio: aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : _imgW / _imgH,
+          child: LayoutBuilder(builder: (context, constraints) {
+            _viewportSize = Size(constraints.maxWidth, constraints.maxHeight);
+            final visibleW = box.w / _zoom;
+            final visibleH = box.h / _zoom;
+            final visibleX = (box.x + _pan.dx).clamp(box.x, math.max(box.x, box.x + box.w - visibleW));
+            final visibleY = (box.y + _pan.dy).clamp(box.y, math.max(box.y, box.y + box.h - visibleH));
+            final scaleX = visibleW > 0 ? constraints.maxWidth / visibleW : 0.0;
+            final scaleY = visibleH > 0 ? constraints.maxHeight / visibleH : 0.0;
+
+            Offset toPx(double fx, double fy) =>
+                Offset((fx - visibleX) * scaleX, (fy - visibleY) * scaleY);
+
+            final lockZone = _lockZone;
+            final zones = _lockCode != null
+                ? [if (lockZone != null) lockZone]
+                : _zones.values.toList();
+
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _dismissSelection,
+              onPanUpdate: zoomable ? _onPanUpdate : null,
+              child: ClipRect(
+                child: Stack(children: [
+                  Positioned(
+                    left: toPx(0, 0).dx,
+                    top: toPx(0, 0).dy,
+                    width: scaleX,
+                    height: scaleY,
+                    child: Image.asset('assets/images/campus_map.png', fit: BoxFit.fill),
+                  ),
+                  for (final zone in zones)
+                    _zoneWidget(zone, toPx, scaleX, scaleY),
+                ]),
+              ),
+            );
+          }),
+        ),
+        if (zoomable)
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: Column(children: [
+              _zoomButton(Icons.add, _zoomIn),
+              const SizedBox(height: 6),
+              _zoomButton(Icons.remove, _zoomOut),
+            ]),
+          ),
+      ]),
+    );
+  }
+
+  Widget _zoomButton(IconData icon, VoidCallback onTap) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: _palette.line),
+          ),
+          child: Icon(icon, size: 20, color: AppColors.ink),
+        ),
+      ),
+    );
+  }
+
+  Widget _zoneWidget(_Zone zone, Offset Function(double, double) toPx, double scaleX, double scaleY) {
+    final topLeft = toPx(zone.x, zone.y);
+    final size = Size(zone.w * scaleX, zone.h * scaleY);
+    final devsInBuilding = _devices.where((d) => d.building == zone.code).toList();
+
+    if (_precise) {
+      final layout = _layoutDots(zone, devsInBuilding);
+      const dot = 14.0;
+      return Positioned(
+        left: topLeft.dx,
+        top: topLeft.dy,
+        width: size.width,
+        height: size.height,
+        child: Stack(clipBehavior: Clip.none, children: [
+          IgnorePointer(
+            child: CustomPaint(
+              size: size,
+              painter: _DashedRectPainter(color: Colors.white.withAlpha(230)),
+            ),
+          ),
+          Positioned(
+            left: 4,
+            top: 4,
+            child: _zoneLabel(zone.code),
+          ),
+          for (final d in devsInBuilding)
+            if (layout[d.id] != null)
+              Positioned(
+                left: layout[d.id]!.dx * size.width - dot / 2,
+                top: layout[d.id]!.dy * size.height - dot / 2,
+                width: dot,
+                height: dot,
+                child: _dotWidget(d),
+              ),
+        ]),
+      );
+    }
+
+    final level = _buildingLevel(_monthKwh[zone.code] ?? 0);
+    final color = _levelColor[level]!;
+    final selected = _selectedBuilding == zone.code;
+    return Positioned(
+      left: topLeft.dx,
+      top: topLeft.dy,
+      width: size.width,
+      height: size.height,
+      child: GestureDetector(
+        onTap: () => _onZoneTap(zone.code),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          decoration: BoxDecoration(
+            color: color.withAlpha(selected ? 120 : 60),
+            border: Border.all(color: color, width: selected ? 3 : 1.5),
+            borderRadius: BorderRadius.circular(6),
+            boxShadow: selected
+                ? const [BoxShadow(color: Colors.white, blurRadius: 0, spreadRadius: 3)]
+                : null,
+          ),
+          child: Align(alignment: Alignment.topLeft, child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: _zoneLabel(zone.code),
+          )),
+        ),
+      ),
+    );
+  }
+
+  Widget _zoneLabel(String code) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withAlpha(40),
-              blurRadius: 16,
-              offset: const Offset(0, -4))
-        ],
+        borderRadius: BorderRadius.circular(6),
+        boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 2)],
       ),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-            margin: const EdgeInsets.only(top: 10),
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2))),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-          child: Row(children: [
-            Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(buildingName,
-                      style: const TextStyle(
-                          fontFamily: AppFonts.family,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.greenDark)),
-                  const SizedBox(height: 4),
-                  Row(children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                          color: color.withAlpha(30),
-                          border: Border.all(color: color),
-                          borderRadius: BorderRadius.circular(20)),
-                      child: Row(children: [
-                        Icon(Icons.circle, color: color, size: 8),
-                        const SizedBox(width: 4),
-                        Text(_energyLabel(level),
-                            style: TextStyle(
-                                color: color,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold)),
-                      ]),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('${kwh.toStringAsFixed(1)} kWh',
-                        style:
-                            TextStyle(color: Colors.grey[600], fontSize: 12)),
-                  ]),
-                ])),
-            IconButton(
-                onPressed: onClose,
-                icon: const Icon(Icons.close),
-                color: Colors.grey),
-          ]),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(children: [
-            _StatBox(icon: Icons.layers, label: 'Floors', value: '$floors'),
-            const SizedBox(width: 8),
-            _StatBox(
-                icon: Icons.meeting_room,
-                label: 'Rooms',
-                value: '${rooms.length}'),
-            const SizedBox(width: 8),
-            _StatBox(
-                icon: Icons.electrical_services,
-                label: 'Devices',
-                value: '$deviceCount'),
-            const SizedBox(width: 8),
-            _StatBox(
-                icon: Icons.bolt, label: 'kWh', value: kwh.toStringAsFixed(1)),
-          ]),
-        ),
-        const SizedBox(height: 10),
-        const Divider(height: 1),
-        rooms.isEmpty
-            ? Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                    deviceCount == 0
-                        ? 'No devices assigned yet'
-                        : 'No room data',
-                    style: const TextStyle(
-                        fontSize: 13, color: AppColors.textMuted)))
-            : Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  children: rooms.entries.map((entry) {
-                    final roomName = entry.key;
-                    final utilities = (entry.value['utilities']
-                            as List<Map<String, dynamic>>?) ??
-                        [];
-                    final roomKwh =
-                        utilities.fold(0.0, (s, u) => s + (u['kwh'] as num).toDouble());
-                    return _RoomTile(
-                        roomName: roomName,
-                        utilities: utilities,
-                        roomKwh: roomKwh);
-                  }).toList(),
-                ),
-              ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: onViewDetails,
-              icon: const Icon(Icons.arrow_forward, size: 16),
-              label: const Text('View Building Details'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.greenDark,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-            ),
-          ),
-        ),
-      ]),
+      child: Text(code,
+          style: const TextStyle(
+              fontFamily: AppFonts.family,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.ink)),
     );
   }
-}
 
-// ─── Stat Box ─────────────────────────────────────────────────────────────────
-
-class _StatBox extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  const _StatBox(
-      {required this.icon, required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+  Widget _dotWidget(_MapDevice d) {
+    final level = _deviceLevel(d.online, d.kwh);
+    final color = _levelColor[level]!;
+    final selected = _selectedDevice == d.id;
+    final size = selected ? 20.0 : 14.0;
+    return GestureDetector(
+      onTap: () => _onDotTap(d.id),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: size,
+        height: size,
         decoration: BoxDecoration(
-            color: AppColors.greenPale,
-            borderRadius: BorderRadius.circular(10)),
-        child: Column(children: [
-          Icon(icon, color: AppColors.greenDark, size: 16),
-          const SizedBox(height: 4),
-          Text(value,
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  color: AppColors.greenDark)),
-          Text(label, style: TextStyle(fontSize: 9, color: Colors.grey[600])),
-        ]),
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: selected ? 3 : 2),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withAlpha(selected ? 90 : 50), blurRadius: 4),
+          ],
+        ),
       ),
+    );
+  }
+
+  // ── Legend (handoff §8, exact web wording) ──────────────────────────────
+
+  Widget _legend() {
+    final items = _precise
+        ? const [_Level.low, _Level.mid, _Level.high, _Level.off]
+        : const [_Level.low, _Level.mid, _Level.high];
+    return Wrap(
+      spacing: 14,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: Text(
+            _precise ? "Today's kWh per device:" : "This month's kWh:",
+            style: AppTextStyles.caption.copyWith(color: AppColors.inkMid),
+          ),
+        ),
+        for (final l in items)
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: _levelColor[l], shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              _precise
+                  ? switch (l) {
+                      _Level.low => 'Low (<1)',
+                      _Level.mid => 'Mid (1-2)',
+                      _Level.high => 'High (>=2)',
+                      _Level.off => 'Offline',
+                    }
+                  : switch (l) {
+                      _Level.low => 'Low (<50)',
+                      _Level.mid => 'Mid (50-100)',
+                      _ => 'High (>=100)',
+                    },
+              style: AppTextStyles.caption.copyWith(color: AppColors.ink),
+            ),
+          ]),
+      ],
+    );
+  }
+
+  // ── Detail panel ─────────────────────────────────────────────────────────
+
+  Widget _panel() {
+    if (_precise && _selectedDevice != null) {
+      final matches = _devices.where((x) => x.id == _selectedDevice);
+      return matches.isEmpty ? _emptyPanel() : _deviceCard(matches.first);
+    }
+    if (!_precise && _selectedBuilding != null) {
+      return _buildingCard(_selectedBuilding!);
+    }
+    return _emptyPanel();
+  }
+
+  BoxDecoration get _panelDecoration => BoxDecoration(
+        border: Border.all(color: _palette.line),
+        borderRadius: BorderRadius.circular(16),
+      );
+
+  Widget _statRow(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFFDCEBE1))),
+      ),
+      child: Row(children: [
+        Expanded(
+          child: Text(label,
+              style: const TextStyle(
+                  fontFamily: AppFonts.family,
+                  fontSize: 15,
+                  height: 20 / 15,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.inkMid)),
+        ),
+        Text(value,
+            style: const TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 15,
+                height: 20 / 15,
+                fontWeight: FontWeight.w700,
+                color: AppColors.ink)),
+      ]),
+    );
+  }
+
+  Widget _levelPill(_Level level) {
+    final (_, fg) = _pillColors(level);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: fg.withAlpha(140)),
+          borderRadius: BorderRadius.circular(20)),
+      child: Text(_levelLabel(level),
+          style: TextStyle(
+              fontFamily: AppFonts.family, fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+    );
+  }
+
+  Widget _onOffPill(bool on) {
+    final fg = on ? AppColors.successText : AppColors.inkMid;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: fg.withAlpha(140)),
+          borderRadius: BorderRadius.circular(20)),
+      child: Text(on ? 'ON' : 'OFF',
+          style: TextStyle(
+              fontFamily: AppFonts.family, fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+    );
+  }
+
+  Widget _emptyPanel() {
+    final wantsDevice = _precise;
+    final zonesOnMap = _zones.length;
+    final totalBuildings = _buildingsInfo.length;
+    final scoped = _scopedDevices;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _panelDecoration,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(wantsDevice ? 'Pick a device' : 'Pick a building',
+            style: const TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 17,
+                height: 22 / 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.ink)),
+        const SizedBox(height: 2),
+        Text(
+          'Tap ${wantsDevice ? 'a dot' : 'a zone'} on the map to see its details.',
+          style: const TextStyle(
+              fontFamily: AppFonts.family, fontSize: 14, height: 20 / 14, color: AppColors.inkMid),
+        ),
+        if (_lockCode == null) _statRow('Buildings on map', '$zonesOnMap of $totalBuildings'),
+        _statRow('Devices assigned', '${scoped.length}'),
+        _statRow('Online now', '${scoped.where((d) => d.online).length}'),
+      ]),
+    );
+  }
+
+  Widget _buildingCard(String code) {
+    final name = _buildingName(code);
+    final floors = _buildingFloors(code);
+    final kwh = _monthKwh[code] ?? 0.0;
+    final level = _buildingLevel(kwh);
+    final devs = _devices.where((d) => d.building == code).toList();
+    final rooms = <String>{for (final d in devs) d.room.isEmpty ? 'No room' : d.room};
+    final online = devs.where((d) => d.online).length;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _panelDecoration,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name,
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 17,
+                      height: 22 / 17,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink)),
+              Text('$code · ${kwh.toStringAsFixed(1)} kWh this month',
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family, fontSize: 14, height: 20 / 14, color: AppColors.inkMid)),
+            ]),
+          ),
+          _levelPill(level),
+        ]),
+        _statRow('Floors', '$floors'),
+        _statRow('Rooms', '${rooms.length}'),
+        _statRow('Devices', '${devs.length}'),
+        _statRow('Online now', '$online'),
+        const SizedBox(height: 12),
+        AppPrimaryButton(
+          label: 'View building',
+          icon: Icons.arrow_forward,
+          palette: _palette,
+          expand: true,
+          onPressed: () => _openBuilding(code),
+        ),
+      ]),
+    );
+  }
+
+  Widget _deviceCard(_MapDevice d) {
+    final level = _deviceLevel(d.online, d.kwh);
+    final label = _deviceLabel(d.utility);
+    final on = d.relay && d.online;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _panelDecoration,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          OutlineIconBox(icon: _utilityIcon(d.utility), palette: _palette),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$label · ${d.room.isEmpty ? 'No room' : d.room}',
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 17,
+                      height: 22 / 17,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink)),
+              Text('${d.building} · Floor ${d.floor} · ${d.id}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family, fontSize: 14, height: 20 / 14, color: AppColors.inkMid)),
+            ]),
+          ),
+          _onOffPill(on),
+        ]),
+        _statRow('Status', d.online ? 'Online' : 'Offline'),
+        _statRow("Today's energy", '${d.kwh.toStringAsFixed(2)} kWh'),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: Color(0xFFDCEBE1))),
+          ),
+          child: Row(children: [
+            const Expanded(
+              child: Text('Level',
+                  style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 15,
+                      height: 20 / 15,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.inkMid)),
+            ),
+            _levelPill(level),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        AppPrimaryButton(
+          label: 'View device',
+          icon: Icons.arrow_forward,
+          palette: _palette,
+          expand: true,
+          onPressed: () => _openDevice(d),
+        ),
+      ]),
     );
   }
 }
 
-// ─── Room Tile ────────────────────────────────────────────────────────────────
-
-class _RoomTile extends StatelessWidget {
-  final String roomName;
-  final List<Map<String, dynamic>> utilities;
-  final double roomKwh;
-  const _RoomTile(
-      {required this.roomName, required this.utilities, required this.roomKwh});
+/// Dashed rounded-rect outline for a zone in Devices/precise mode (preview
+/// `.zone.zp`: `border: 1.5px dashed rgba(255,255,255,.9)`).
+class _DashedRectPainter extends CustomPainter {
+  final Color color;
+  const _DashedRectPainter({required this.color});
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Icon(Icons.meeting_room_outlined,
-              size: 14, color: AppColors.greenMid),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              roomName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                  color: AppColors.greenDark),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text('${roomKwh.toStringAsFixed(1)} kWh',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-        ]),
-        const SizedBox(height: 4),
-        Wrap(
-          spacing: 10,
-          runSpacing: 4,
-          children: utilities.map((u) {
-            final status = (u['status'] as String?) ?? 'offline';
-            final utility = (u['utility'] as String?) ?? '';
-            final kwh = (u['kwh'] as num?)?.toDouble() ?? 0.0;
-            final isOnline = status == 'online';
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(_utilityIcon(utility),
-                    size: 12,
-                    color: isOnline ? AppColors.greenMid : AppColors.textMuted),
-                const SizedBox(width: 3),
-                Text('${kwh.toStringAsFixed(1)} kWh',
-                    style: TextStyle(fontSize: 10, color: Colors.grey[600])),
-              ],
-            );
-          }).toList(),
-        ),
-        const Divider(height: 12),
-      ]),
+  void paint(Canvas canvas, Size size) {
+    final rrect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(6),
     );
+    final path = Path()..addRRect(rrect);
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    const dashWidth = 5.0, dashGap = 4.0;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final next = math.min(distance + dashWidth, metric.length);
+        canvas.drawPath(metric.extractPath(distance, next), paint);
+        distance = next + dashGap;
+      }
+    }
   }
+
+  @override
+  bool shouldRepaint(covariant _DashedRectPainter oldDelegate) => oldDelegate.color != color;
 }

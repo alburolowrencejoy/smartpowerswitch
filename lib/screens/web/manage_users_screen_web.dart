@@ -11,6 +11,7 @@ import 'package:rxdart/rxdart.dart';
 import '../../firebase_options.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/delete_flow.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
@@ -459,24 +460,40 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
     if (code != null && mounted) TopToast.show(context, 'Assigned to $code.');
   }
 
+  /// Same two-step confirm -> reason flow and 5s Undo as mobile's Users
+  /// screen. The `deleteUser` Cloud Function only runs once Undo expires,
+  /// then the `deletion_log` entry is written.
   Future<void> _delete(Map<String, dynamic> u) async {
     final email = u['email'] as String? ?? '';
-    final ok = await showWebConfirmDialog(
-      context: context,
-      title: 'Delete account?',
-      message: '"$email" will be removed from the system. '
-          "This can't be undone.",
-      onConfirm: () async {
+    final uid = u['uid'] as String? ?? '';
+    await showDeleteFlow(
+      context,
+      type: DeleteType.account,
+      itemName: _nameOf(u).isNotEmpty ? _nameOf(u) : email,
+      onCommit: (reason, otherText) async {
         try {
           await FirebaseFunctions.instance
               .httpsCallable('deleteUser')
-              .call({'uid': u['uid']});
+              .call({'uid': uid});
+          final me = FirebaseAuth.instance.currentUser;
+          await FirebaseDatabase.instance.ref('deletion_log').push().set({
+            'type': 'account',
+            'itemName': email.isNotEmpty ? email : uid,
+            'reason': reason,
+            if (otherText != null && otherText.trim().isNotEmpty)
+              'otherText': otherText.trim(),
+            'deletedBy': me?.uid ?? 'unknown',
+            'deletedByEmail': me?.email ?? '',
+            'timestamp': ServerValue.timestamp,
+          });
+          if (mounted) TopToast.show(context, '$email removed.');
         } on FirebaseFunctionsException catch (err) {
-          throw _functionsError(err);
+          if (mounted) {
+            TopToast.show(context, _functionsError(err), isError: true);
+          }
         }
       },
     );
-    if (ok && mounted) TopToast.show(context, '$email removed.');
   }
 
   // ── Build ──────────────────────────────────────────────────────────────

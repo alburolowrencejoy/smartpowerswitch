@@ -5,19 +5,88 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_text_styles.dart';
+import '../../theme/breakpoints.dart';
 import '../../theme/institute_colors.dart';
-import '../../services/automation_scheduler_service.dart';
+import '../../utils/last_seen.dart';
 import '../../utils/placeholder_data.dart';
+import '../../widgets/app_bottom_nav.dart';
+import '../../widgets/app_bottom_sheet.dart';
+import '../../widgets/app_button.dart';
+import '../../widgets/app_chip.dart';
+import '../../widgets/app_segmented_control.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
+import '../../widgets/outline_icon_box.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../widgets/trend_chart_painters.dart';
 import 'automation_screen.dart';
 import 'building_floor_screen.dart';
+import 'history_screen.dart';
+import 'more_screen.dart';
 import '../shared/campus_map_screen.dart';
+import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
 import '../../services/history_clock.dart';
 import '../../widgets/history_fallback_notice.dart';
+
+/// One-shot snapshot of what deleting a building would touch, used to build
+/// a real (not sample) impact list for its two-step delete dialog.
+class _BuildingDeleteImpact {
+  const _BuildingDeleteImpact({
+    required this.assignedDeviceIds,
+    required this.roomCount,
+    required this.floorCount,
+    required this.scheduleCount,
+  });
+
+  final Set<String> assignedDeviceIds;
+  final int roomCount;
+  final int floorCount;
+  final int scheduleCount;
+}
+
+/// One room's live load, grouped from the flat `devices` node's `room`
+/// field (see `_listenInstituteScoped`). [kwh] is today's live figure, not
+/// a "this month" total -- there is no per-room node under `history/` to
+/// read a real monthly figure from (only per-device and per-building sums
+/// are written, see `history_service.dart`), so the Home tab's "Room load"
+/// section is honestly labelled "Today" here rather than showing a
+/// fabricated monthly number.
+class _RoomLoad {
+  const _RoomLoad({
+    required this.name,
+    required this.floor,
+    required this.deviceCount,
+    required this.kwh,
+  });
+
+  final String name;
+  final int floor;
+  final int deviceCount;
+  final double kwh;
+}
+
+/// One tile in the Home tab's 2x2 KPI grid (handoff §4.1/§5).
+class _KpiItem {
+  const _KpiItem({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.unit,
+    this.foot,
+    this.footColor,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final String? unit;
+  final String? foot;
+  final Color? footColor;
+}
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -33,14 +102,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
   String _role = 'faculty';
   String? _institute;
+  // Hydrated from the user's session; used to derive the top bar avatar's
+  // initials (see `_initials`) now that the top bar shows a real avatar
+  // (handoff §2/§3.7) instead of the old burger menu.
   String _userName = '';
   bool _roleLoaded = false;
-  bool _compactMenuOpen = false;
+
+  // ── Devices tab (redesign phase 2: List | Map segmented) ───────────────
+  int _devicesViewMode = 0; // 0 = List, 1 = Map
+  int _devicesStatusFilter = 0; // 0 All, 1 Online, 2 Offline, 3 Unassigned
+  final TextEditingController _deviceSearchCtrl = TextEditingController();
+  String _deviceSearchQuery = '';
+  final Set<String> _deletingBuildingCodes = {};
 
   bool get _isSuperAdmin =>
       _role == 'main_admin' || _role == 'admin' || _role == 'super_admin';
   bool get _isInstituteAdmin => _role == 'institute_admin';
-  bool get _canAccessManagement => _isSuperAdmin || _isInstituteAdmin;
+
+  /// Initials for the top bar avatar (mirrors `more_screen.dart`'s own
+  /// `_initials`, the screen that avatar tap opens).
+  String get _initials {
+    final source = _userName.isNotEmpty
+        ? _userName
+        : (FirebaseAuth.instance.currentUser?.email ?? '');
+    if (source.isEmpty) return '?';
+    final parts = source.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return source.substring(0, source.length >= 2 ? 2 : 1).toUpperCase();
+  }
 
   /// Resolution now lives centrally in `InstituteTheme.resolve` (see
   /// theme/institute_colors.dart) instead of being recomputed here.
@@ -86,15 +177,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _instituteMonthlyKwh = 0.0;
   int _instituteAssignedDevices = 0;
   int _instituteOnlineDevices = 0;
+  List<_RoomLoad> _instituteRooms = [];
   StreamSubscription? _instituteSub;
   Map<String, int> _buildingDeviceCounts = {};
   Map<String, double> _buildingEnergy = {};
-  Map<String, double> _utilityTotals = {};
-  String _analyticsRange = 'daily';
-  String _trendChartType = 'line';
-  List<Map<String, dynamic>> _historyData = [];
-  // Raw `history` node cached so the analytics range can be re-parsed
-  // locally (see _setAnalyticsRange) without re-touching Firebase.
+
+  // ── Redesign (phase 2) additions: real per-building/per-device signals
+  // sourced from the same `devices` snapshot already read in `_listenAll`,
+  // kept as separate maps rather than folded into the existing ones above
+  // so the pre-existing fields' meaning doesn't shift under older callers.
+  int _onlineDevicesCount = 0;
+  Map<String, double> _buildingTodayKwh = {}; // code -> today's live kWh
+  Map<String, int> _buildingOnlineCounts = {}; // code -> devices seen <2min
+  Map<String, int> _buildingOfflineCounts =
+      {}; // code -> devices not recently seen
+  Map<String, int> _buildingOnCounts = {}; // code -> devices with relay==true
+
+  // Automations, read once here (campus-wide) purely so the institute admin
+  // home tab can show a real "Schedules" KPI -- campus admin doesn't use
+  // this. Heuristic: a schedule counts toward an institute if its `scope`
+  // is 'building' and `target` equals that institute's code. Device-scoped
+  // schedules (`scope == 'device'`) are not resolved to a building here
+  // (would need a deviceId -> building join); flagged as a known gap.
+  int _instituteScheduleCount = 0;
+  int _instituteActiveScheduleCount = 0;
+
+  // Raw `history` node cached so per-building/weekly/monthly lookups and
+  // `_peakHourLabel` can re-derive their figures locally without
+  // re-touching Firebase.
   Map<String, dynamic> _historyRoot = {};
   int _unreadNotificationCount = 0;
   int _lastSeenNotificationTimestamp = 0;
@@ -122,6 +232,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // reset the unread count back to 0.
   bool _notificationsLoadedOnce = false;
 
+  // Reported up by the embedded `AutomationScreen` via its
+  // `onSubtitleChanged` callback (see `_buildTopBar`/`_topBarSubtitle`) so
+  // the shared shell top bar can show "N of M schedules active" the same
+  // way Devices/Analytics already get a subtitle computed here, instead of
+  // that text living inside AutomationScreen's own scrollable body.
+  String? _automationSubtitle;
+
   StreamSubscription? _combinedSub;
   StreamSubscription? _notificationsSub;
 
@@ -144,6 +261,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void dispose() {
     _loadTimeoutTimer?.cancel();
     _cancelRealtimeSubs();
+    _deviceSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -310,6 +428,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref('history').onValue,
+      FirebaseDatabase.instance.ref('automations').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -369,30 +488,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _buildingDeviceCounts = {};
         }
 
-        // ── devices (today's energy totals) ───────────────────────
+        // ── devices (today's energy totals + per-building signals) ─
         final devicesRaw = events[2].snapshot.value;
         if (devicesRaw is Map) {
           final data = Map<String, dynamic>.from(devicesRaw);
           double totalKwh = 0;
-          Map<String, double> uTotals = {};
+          int onlineCount = 0;
+          Map<String, double> buildingTodayKwh = {};
+          Map<String, int> buildingOnline = {};
+          Map<String, int> buildingOffline = {};
+          Map<String, int> buildingOnCounts = {};
           data.forEach((id, val) {
             if (val is! Map) return;
             final device = Map<String, dynamic>.from(val);
-            final utility = (device['utility'] ?? '').toString();
             final kwhValue = device['kwh'];
             final kwh = kwhValue is num
                 ? kwhValue.toDouble()
                 : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
 
             totalKwh += kwh;
-            final n = _capitalizeFirst(utility);
-            if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh;
+
+            final building = (device['building'] ?? '').toString();
+            final lastSeen = device['last_seen'];
+            bool isOnline = false;
+            if (lastSeen != null && lastSeen != 0) {
+              final ms = lastSeen is num
+                  ? lastSeen.toInt()
+                  : int.tryParse(lastSeen.toString()) ?? 0;
+              if (ms > 0) {
+                final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+                isOnline = DateTime.now().difference(dt).inMinutes < 2;
+              }
+            }
+            if (isOnline) onlineCount++;
+
+            if (building.isNotEmpty) {
+              buildingTodayKwh[building] =
+                  (buildingTodayKwh[building] ?? 0) + kwh;
+              if (isOnline) {
+                buildingOnline[building] = (buildingOnline[building] ?? 0) + 1;
+              } else {
+                buildingOffline[building] =
+                    (buildingOffline[building] ?? 0) + 1;
+              }
+              if (device['relay'] == true) {
+                buildingOnCounts[building] =
+                    (buildingOnCounts[building] ?? 0) + 1;
+              }
+            }
           });
           _totalKwh = totalKwh;
-          _utilityTotals = uTotals;
+          _onlineDevicesCount = onlineCount;
+          _buildingTodayKwh = buildingTodayKwh;
+          _buildingOnlineCounts = buildingOnline;
+          _buildingOfflineCounts = buildingOffline;
+          _buildingOnCounts = buildingOnCounts;
         } else if (_isLoading) {
           _totalKwh = 0;
-          _utilityTotals = {};
+          _onlineDevicesCount = 0;
+          _buildingTodayKwh = {};
+          _buildingOnlineCounts = {};
+          _buildingOfflineCounts = {};
+          _buildingOnCounts = {};
         }
 
         // ── electricity rate ───────────────────────────────────────
@@ -407,15 +564,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final historyRaw = events[4].snapshot.value;
         if (historyRaw is Map) {
           _historyRoot = Map<String, dynamic>.from(historyRaw);
-          _historyData = _parseAnalyticsEntries(_historyRoot, _analyticsRange);
           _buildingEnergy = _currentMonthBuildingEnergy(_historyRoot);
           _updateMonthlyTotals(_historyRoot);
         } else if (_isLoading) {
           _historyRoot = {};
-          _historyData = [];
           _buildingEnergy = {};
           _monthlyKwh = 0;
           _monthlyCostPhp = 0;
+        }
+
+        // ── automations (institute admin "Schedules" KPI only) ─────
+        final automationsRaw = events[5].snapshot.value;
+        if (automationsRaw is Map && _institute != null) {
+          final code = _institute!;
+          int total = 0;
+          int active = 0;
+          automationsRaw.forEach((id, val) {
+            if (val is! Map) return;
+            final schedule = Map<String, dynamic>.from(val);
+            final scope = (schedule['scope'] ?? '').toString();
+            final target = (schedule['target'] ?? '').toString();
+            if (scope != 'building' || target != code) return;
+            total++;
+            final enabled = schedule['enabled'];
+            final isEnabled = enabled is bool
+                ? enabled
+                : (enabled ?? true).toString().toLowerCase().trim() == 'true';
+            if (isEnabled) active++;
+          });
+          _instituteScheduleCount = total;
+          _instituteActiveScheduleCount = active;
+        } else if (_isLoading) {
+          _instituteScheduleCount = 0;
+          _instituteActiveScheduleCount = 0;
         }
 
         // Cost is always shown live against the current rate.
@@ -475,30 +656,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
-        // ── devices: today's institute kWh + online count ──────────
+        // ── devices: today's institute kWh + online count + per-room
+        // grouping for the Home tab's "Room load" section (handoff §5) --
+        // grouped by whichever room each live device reports, so it's real
+        // data with no extra Firebase reads (there is no per-room history
+        // node to read a true "this month" figure from; see `_RoomLoad`
+        // doc for why this is today's live kWh, not a monthly total). ────
         final devicesRaw = events[0].snapshot.value;
         if (devicesRaw is Map) {
           final data = Map<String, dynamic>.from(devicesRaw);
           double kwh = 0;
           int online = 0;
+          final rooms = <String, _RoomLoad>{};
           data.forEach((id, val) {
             if (val is! Map) return;
             final device = Map<String, dynamic>.from(val);
             final building = (device['building'] ?? '').toString();
             if (building != code) return;
-            kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
+            final deviceKwh = ((device['kwh'] ?? 0.0) as num).toDouble();
+            kwh += deviceKwh;
 
-            final lastSeen = device['last_seen'];
-            if (lastSeen != null && lastSeen != 0) {
-              final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-              if (DateTime.now().difference(dt).inMinutes < 2) online++;
+            if (isRecentlySeen(device['last_seen'])) online++;
+
+            final room = (device['room'] ?? '').toString();
+            if (room.isNotEmpty) {
+              final floor =
+                  int.tryParse((device['floor'] ?? '').toString()) ?? 1;
+              final existing = rooms[room];
+              rooms[room] = _RoomLoad(
+                name: room,
+                floor: floor,
+                deviceCount: (existing?.deviceCount ?? 0) + 1,
+                kwh: (existing?.kwh ?? 0) + deviceKwh,
+              );
             }
           });
           _instituteKwh = kwh;
           _instituteOnlineDevices = online;
+          _instituteRooms = rooms.values.toList()
+            ..sort((a, b) => b.kwh.compareTo(a.kwh));
         } else {
           _instituteKwh = 0;
           _instituteOnlineDevices = 0;
+          _instituteRooms = [];
         }
 
         // ── master_devices: assigned count for this institute only ─
@@ -589,95 +789,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  void _setAnalyticsRange(String range) {
-    // Re-parse from the already-cached `history` root instead of touching
-    // Firebase again -- avoids a spurious re-subscription for a value we
-    // already have.
-    setState(() {
-      _analyticsRange = range;
-      _historyData = _parseAnalyticsEntries(_historyRoot, range);
-    });
-  }
-
-  Map<String, dynamic> _pickRangeNode(
-      Map<String, dynamic> root, String targetRange) {
-    final direct = root[targetRange];
-    if (direct is Map) {
-      final directMap = Map<String, dynamic>.from(direct);
-      if (_matchingKeyCount(directMap, targetRange) > 0) return directMap;
-    }
-
-    final keys = ['daily', 'weekly', 'monthly', 'yearly'];
-    String bestKey = targetRange;
-    int bestScore = -1;
-
-    for (final k in keys) {
-      final node = root[k];
-      if (node is! Map) continue;
-      final map = Map<String, dynamic>.from(node);
-      final score = _matchingKeyCount(map, targetRange);
-      if (score > bestScore) {
-        bestScore = score;
-        bestKey = k;
-      }
-    }
-
-    final best = root[bestKey];
-    return best is Map ? Map<String, dynamic>.from(best) : <String, dynamic>{};
-  }
-
-  List<Map<String, dynamic>> _parseAnalyticsEntries(
-      Map<String, dynamic> root, String rangeKey) {
-    final data = _pickRangeNode(root, rangeKey);
-    final list = <Map<String, dynamic>>[];
-
-    data.forEach((key, val) {
-      if (val is! Map) return;
-      final entry = Map<String, dynamic>.from(val);
-      list.add({
-        'label': key,
-        'kwh': (entry['total_kwh'] ?? 0.0) as num,
-        'cost': (entry['total_cost'] ?? 0.0) as num,
-      });
-    });
-
-    if (list.isNotEmpty) {
-      list.sort((a, b) => a['label'].compareTo(b['label']));
-      return list;
-    }
-
-    final rawRoot = root['raw'];
-    if (rawRoot is! Map) return list;
-
-    final grouped = <String, Map<String, dynamic>>{};
-    final rawMap = Map<String, dynamic>.from(rawRoot);
-
-    rawMap.forEach((key, val) {
-      if (val is! Map) return;
-      final entry = Map<String, dynamic>.from(val);
-      final timestamp = _analyticsRawTimestamp(entry, key.toString());
-      if (timestamp == null) return;
-
-      final label = _analyticsRangeLabel(timestamp, rangeKey);
-      final kwh = _asDouble(entry['kwh']);
-      final cost = _asDouble(entry['cost']);
-
-      final bucket = grouped.putIfAbsent(
-          label,
-          () => {
-                'label': label,
-                'kwh': 0.0,
-                'cost': 0.0,
-              });
-      bucket['kwh'] = (bucket['kwh'] as double) + kwh;
-      bucket['cost'] = (bucket['cost'] as double) + cost;
-    });
-
-    final groupedList = grouped.values.toList()
-      ..sort((a, b) => a['label'].compareTo(b['label']));
-    return groupedList;
-  }
-
   DateTime? _analyticsRawTimestamp(
       Map<String, dynamic> entry, String fallbackKey) {
     final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
@@ -702,21 +813,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return null;
   }
 
-  String _analyticsRangeLabel(DateTime timestamp, String rangeKey) {
-    switch (rangeKey) {
-      case 'daily':
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-      case 'weekly':
-        return '${timestamp.year}-W${_pad(_isoWeek(timestamp))}';
-      case 'monthly':
-        return '${timestamp.year}-${_pad(timestamp.month)}';
-      case 'yearly':
-        return '${timestamp.year}';
-      default:
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-    }
-  }
-
   double _asDouble(dynamic value) {
     if (value is num) return value.toDouble();
     if (value is String) return double.tryParse(value) ?? 0.0;
@@ -730,56 +826,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
     return weekNumber < 1 ? 1 : weekNumber;
   }
-
-  int _matchingKeyCount(Map<String, dynamic> node, String range) {
-    int count = 0;
-    for (final k in node.keys) {
-      if (_isExpectedKeyForRange(k, range)) count++;
-    }
-    return count;
-  }
-
-  bool _isExpectedKeyForRange(String key, String range) {
-    switch (range) {
-      case 'daily':
-        return RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(key);
-      case 'weekly':
-        return RegExp(r'^\d{4}-W\d{2}$').hasMatch(key);
-      case 'monthly':
-        return RegExp(r'^\d{4}-\d{2}$').hasMatch(key);
-      case 'yearly':
-        return RegExp(r'^\d{4}$').hasMatch(key);
-      default:
-        return false;
-    }
-  }
-
-  /// History data for the chart, backfilled with realistic-looking
-  /// placeholder rows while the first load is still in flight so the
-  /// skeleton shimmer has something to draw bones over.
-  List<Map<String, dynamic>> get _historyDisplay =>
-      _historyData.isEmpty && _isLoading
-          ? placeholderHistoryList()
-          : _historyData;
-
-  double get _maxKwh => _historyDisplay.isEmpty
-      ? 1
-      : _historyDisplay.fold(
-          0.0,
-          (m, d) => (d['kwh'] as num).toDouble() > m
-              ? (d['kwh'] as num).toDouble()
-              : m);
-
-  Future<void> _logout() async {
-    await _cancelRealtimeSubs();
-    await AutomationSchedulerService.stop();
-    await FirebaseAuth.instance.signOut();
-    if (!mounted) return;
-    Navigator.pushReplacementNamed(context, '/login');
-  }
-
-  String _capitalizeFirst(String s) =>
-      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
 
   String _safeFormatDouble(dynamic value, int decimals) {
     if (value == null) return '0.${'0' * decimals}';
@@ -796,10 +842,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _monthKey(DateTime date) =>
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
+  // Thresholds match the web dashboard (>=100 kWh/month = high, 50-100 =
+  // mid, <50 = low) -- NOT the redesign preview's scaled-for-sample-data
+  // 400/200 figures. See handoff §8's explicit callout to use web values.
   String _energyLevel(String code) {
     final kwh = _buildingEnergy[code] ?? 0;
-    if (kwh > 100) return 'HIGH';
-    if (kwh > 50) return 'MID';
+    if (kwh >= 100) return 'HIGH';
+    if (kwh >= 50) return 'MID';
     return 'LOW';
   }
 
@@ -817,212 +866,342 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // ── Add Building ─────────────────────────────────────────────────────────
-  Future<void> _addBuilding() async {
+  // ── Redesign (phase 2) helpers: real numbers for the Home hero/KPI/
+  // building-load/last-7-days/history sections, all derived from the
+  // already-loaded `_historyRoot` (the whole `history` node, fetched once
+  // by `_listenAll` for every role) or the per-building maps populated
+  // above -- nothing here is a new Firebase listener.
+  static const _weekdayNames = [
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+    'Sunday' //
+  ];
+  static const _monthShort = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  String _dailyKeyFor(DateTime d) =>
+      '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
+
+  /// "Thursday, Sep 24" -- the real device date, never the preview's
+  /// hardcoded sample date.
+  String get _dashboardDateLabel {
+    final now = HistoryClock.instance.now();
+    return '${_weekdayNames[now.weekday - 1]}, ${_monthShort[now.month - 1]} ${now.day}';
+  }
+
+  Map<String, dynamic>? _dailyNode(DateTime d) {
+    final daily = _historyRoot['daily'];
+    if (daily is! Map) return null;
+    final node = daily[_dailyKeyFor(d)];
+    return node is Map ? Map<String, dynamic>.from(node) : null;
+  }
+
+  /// Campus-wide total kWh recorded for day [d], or null if that day has no
+  /// recorded history yet (distinct from a real 0 kWh day).
+  double? _dailyTotalKwh(DateTime d) {
+    final node = _dailyNode(d);
+    final v = node?['total_kwh'];
+    return v is num ? v.toDouble() : null;
+  }
+
+  /// One building's kWh for day [d], or null if unrecorded.
+  double? _dailyBuildingKwh(DateTime d, String code) {
+    final node = _dailyNode(d);
+    final buildings = node?['buildings'];
+    if (buildings is! Map) return null;
+    final b = buildings[code];
+    if (b is Map) {
+      final v = b['kwh'];
+      return v is num ? v.toDouble() : null;
+    }
+    if (b is num) return b.toDouble();
+    return null;
+  }
+
+  double? _weeklyTotalKwh(DateTime d) {
+    final weekly = _historyRoot['weekly'];
+    if (weekly is! Map) return null;
+    final node = weekly[_weeklyKeyForDate(d)];
+    if (node is! Map) return null;
+    final v = node['total_kwh'];
+    return v is num ? v.toDouble() : null;
+  }
+
+  double? _weeklyBuildingKwh(DateTime d, String code) {
+    final weekly = _historyRoot['weekly'];
+    if (weekly is! Map) return null;
+    final node = weekly[_weeklyKeyForDate(d)];
+    if (node is! Map) return null;
+    final buildings = node['buildings'];
+    if (buildings is! Map) return null;
+    final b = buildings[code];
+    if (b is Map) {
+      final v = b['kwh'];
+      return v is num ? v.toDouble() : null;
+    }
+    return null;
+  }
+
+  double? _monthlyTotalCost(DateTime d) {
+    final monthly = _historyRoot['monthly'];
+    if (monthly is! Map) return null;
+    final node = monthly[_monthKey(d)];
+    if (node is! Map) return null;
+    final v = node['total_cost'];
+    return v is num ? v.toDouble() : null;
+  }
+
+  double? _monthlyBuildingCost(DateTime d, String code) {
+    final monthly = _historyRoot['monthly'];
+    if (monthly is! Map) return null;
+    final node = monthly[_monthKey(d)];
+    if (node is! Map) return null;
+    final buildings = node['buildings'];
+    if (buildings is! Map) return null;
+    final b = buildings[code];
+    if (b is! Map) return null;
+    final cost = b['cost'];
+    if (cost is num) return cost.toDouble();
+    final kwh = b['kwh'];
+    if (kwh is num) return kwh.toDouble() * _electricityRate;
+    return null;
+  }
+
+  String _weeklyKeyForDate(DateTime d) => '${d.year}-W${_pad(_isoWeek(d))}';
+
+  /// Attempts to bucket today's `history/raw` entries (if any exist) by
+  /// hour of day, to find the busiest hour so far -- there is no dedicated
+  /// hourly-history node in this app's Firebase schema (see
+  /// `history_service.dart`: only daily/weekly/monthly/yearly totals are
+  /// ever written), so this degrades to `null` ("no data yet") rather than
+  /// inventing a figure when `history/raw` is empty, which is the normal
+  /// case today.
+  String? _peakHourLabel({String? buildingCode}) {
+    final raw = _historyRoot['raw'];
+    if (raw is! Map) return null;
+    final now = HistoryClock.instance.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final hourly = List<double>.filled(24, 0);
+    bool any = false;
+    raw.forEach((key, val) {
+      if (val is! Map) return;
+      final entry = Map<String, dynamic>.from(val);
+      if (buildingCode != null &&
+          (entry['building'] ?? '').toString() != buildingCode) {
+        return;
+      }
+      final ts = _analyticsRawTimestamp(entry, key.toString());
+      if (ts == null || ts.isBefore(startOfDay) || ts.isAfter(now)) return;
+      hourly[ts.hour] += _asDouble(entry['kwh']);
+      any = true;
+    });
+    if (!any) return null;
+    var peakHour = 0;
+    var peakVal = -1.0;
+    for (var h = 0; h <= now.hour; h++) {
+      if (hourly[h] > peakVal) {
+        peakVal = hourly[h];
+        peakHour = h;
+      }
+    }
+    return _hourRangeLabel(peakHour);
+  }
+
+  String _hourRangeLabel(int hour) {
+    String fmt(int h) {
+      final period = h < 12 ? 'AM' : 'PM';
+      var h12 = h % 12;
+      if (h12 == 0) h12 = 12;
+      return '$h12 $period';
+    }
+
+    final next = (hour + 1) % 24;
+    // Same AM/PM suffix on both sides of the dash when they match (e.g.
+    // "2–3 PM"), full "12 AM – 1 AM" style only when they differ.
+    final aSuffix = hour < 12 ? 'AM' : 'PM';
+    final bSuffix = next < 12 ? 'AM' : 'PM';
+    if (aSuffix == bSuffix) {
+      final a = hour % 12 == 0 ? 12 : hour % 12;
+      final b = next % 12 == 0 ? 12 : next % 12;
+      return '$a–$b $aSuffix';
+    }
+    return '${fmt(hour)} – ${fmt(next)}';
+  }
+
+  /// Last 7 days of kWh (oldest first, last entry = today), campus-wide or
+  /// scoped to one building. Missing days read as 0 -- shown, not hidden,
+  /// since a 0-kWh day is a real (if unlikely) data point once a building
+  /// has any recorded history at all.
+  List<double> _last7DaysKwh({String? buildingCode}) {
+    final now = HistoryClock.instance.now();
+    return [
+      for (var i = 6; i >= 0; i--)
+        (buildingCode == null
+                ? _dailyTotalKwh(now.subtract(Duration(days: i)))
+                : _dailyBuildingKwh(
+                    now.subtract(Duration(days: i)), buildingCode)) ??
+            0.0,
+    ];
+  }
+
+  List<String> get _last7DaysLabels {
+    final now = HistoryClock.instance.now();
+    const short = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return [
+      for (var i = 6; i >= 0; i--)
+        i == 0 ? 'Today' : short[now.subtract(Duration(days: i)).weekday - 1],
+    ];
+  }
+
+  String _buildingDisplayName(String code) {
+    final match = _buildings.firstWhere(
+      (b) => (b['code'] ?? '').toString() == code,
+      orElse: () => <String, dynamic>{},
+    );
+    return (match['name'] as String?) ?? code;
+  }
+
+  // ── Add building (redesign phase 2, handoff §10.2) ─────────────────────
+  // Same Firebase write shape and validation as the web "Add building"
+  // dialog (`dashboard_web.dart._addBuilding`): code = 2-8 letters/numbers,
+  // unique; name required; floors 1-20.
+  static final _buildingCodePattern = RegExp(r'^[A-Z0-9]{2,8}$');
+
+  String? _floorsError(String raw) {
+    final f = int.tryParse(raw);
+    if (f == null || f < 1 || f > 20)
+      return 'Enter a whole number from 1 to 20.';
+    return null;
+  }
+
+  void _showAddBuildingSheet() {
     final codeCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
     final floorCtrl = TextEditingController(text: '1');
-    String? error;
-    String? codeError;
-    String? nameError;
-    int shake = 0;
+    final existing = {
+      for (final b in _buildings) (b['code'] ?? '').toString().toUpperCase()
+    };
 
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text(
-            'Add Building',
-            style: TextStyle(
-                fontFamily: AppFonts.family, fontWeight: FontWeight.w600),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AppTextField(
-                controller: codeCtrl,
-                shakeTrigger: shake,
-                textCapitalization: TextCapitalization.characters,
-                decoration: _inputDeco('Building Code (e.g. IC)', Icons.tag)
-                    .copyWith(errorText: codeError),
-                autofocus: true,
-                onChanged: (_) {
-                  if (codeError != null) setS(() => codeError = null);
-                },
-              ),
-              const SizedBox(height: 12),
-              AppTextField(
-                controller: nameCtrl,
-                shakeTrigger: shake,
-                decoration: _inputDeco('Building Name', Icons.business)
-                    .copyWith(errorText: nameError),
-                onChanged: (_) {
-                  if (nameError != null) setS(() => nameError = null);
-                },
-              ),
-              const SizedBox(height: 12),
-              AppTextField(
-                controller: floorCtrl,
-                keyboardType: TextInputType.number,
-                decoration: _inputDeco('Building Floors', Icons.layers),
-              ),
-              if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  error!,
-                  style: const TextStyle(fontSize: 12, color: AppColors.error),
+    showAppBottomSheet(
+      context,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setS) {
+          String? codeError;
+          String? nameError;
+          String? floorsError;
+          int shake = 0;
+          bool submitting = false;
+
+          Future<void> submit(void Function(void Function()) setState) async {
+            final code = codeCtrl.text.trim().toUpperCase();
+            final name = nameCtrl.text.trim();
+            final floorsRaw = floorCtrl.text.trim();
+            String? ce, ne, fe;
+            if (code.isEmpty) {
+              ce = 'Building code is required.';
+            } else if (!_buildingCodePattern.hasMatch(code)) {
+              ce = 'Use 2–8 letters or numbers, no spaces.';
+            } else if (existing.contains(code)) {
+              ce = 'That code already exists.';
+            }
+            if (name.isEmpty) ne = 'Building name is required.';
+            fe = _floorsError(floorsRaw);
+            if (ce != null || ne != null || fe != null) {
+              setState(() {
+                codeError = ce;
+                nameError = ne;
+                floorsError = fe;
+                shake++;
+              });
+              return;
+            }
+            setState(() => submitting = true);
+            try {
+              await FirebaseDatabase.instance.ref('buildings/$code').set({
+                'name': name,
+                'floors': int.parse(floorsRaw),
+              });
+              if (!sheetCtx.mounted) return;
+              Navigator.pop(sheetCtx);
+              if (mounted) TopToast.show(context, '$code added.');
+            } catch (e) {
+              if (!sheetCtx.mounted) return;
+              setState(() {
+                submitting = false;
+                ce = 'Could not add building: $e';
+                codeError = ce;
+              });
+            }
+          }
+
+          return BottomSheetScaffold(
+            title: 'Add building',
+            palette: _palette,
+            body: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Building code',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 6),
+                AppTextField(
+                  controller: codeCtrl,
+                  shakeTrigger: shake,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    hintText: 'e.g. CLINIC',
+                    errorText: codeError,
+                    border: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(12))),
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 14),
+                Text('Building name',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 6),
+                AppTextField(
+                  controller: nameCtrl,
+                  shakeTrigger: shake,
+                  decoration: InputDecoration(
+                    hintText: 'e.g. Clinic Building',
+                    errorText: nameError,
+                    border: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(12))),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text('Floors',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 6),
+                AppTextField(
+                  controller: floorCtrl,
+                  shakeTrigger: shake,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    errorText: floorsError,
+                    border: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(12))),
+                  ),
                 ),
               ],
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: AppColors.textMuted),
-              ),
             ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _palette.dark,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-              onPressed: () async {
-                final code = codeCtrl.text.trim().toUpperCase();
-                final name = nameCtrl.text.trim();
-                final floors = int.tryParse(floorCtrl.text.trim()) ?? 1;
-
-                if (code.isEmpty || name.isEmpty) {
-                  setS(() {
-                    codeError = code.isEmpty ? 'Code is required' : null;
-                    nameError = name.isEmpty ? 'Name is required' : null;
-                    error = null;
-                    shake++;
-                  });
-                  return;
-                }
-
-                try {
-                  await FirebaseDatabase.instance.ref('buildings/$code').set({
-                    'name': name,
-                    'floors': floors,
-                  });
-                  if (!mounted || !ctx.mounted) return;
-                  Navigator.pop(ctx);
-                  TopToast.show(context, '$code added.');
-                } catch (e) {
-                  setS(() => error = 'Failed: $e');
-                }
-              },
-              child: const Text(
-                'Add',
-                style: TextStyle(color: Colors.white),
-              ),
+            footer: BottomSheetFooter(
+              palette: _palette,
+              onCancel: () => Navigator.pop(sheetCtx),
+              applyLabel: submitting ? 'Adding…' : 'Add',
+              onApply: submitting ? null : () => submit(setS),
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
 
-  Future<void> _editBuildingName(Map<String, dynamic> building) async {
-    final code = building['code'] as String;
-    final currentName = (building['name'] ?? code).toString();
-    final nameCtrl = TextEditingController(text: currentName);
-    String? error;
-    String? nameError;
-    int shake = 0;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Edit Building Name',
-              style: TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Code: $code',
-                  style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textMuted,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(height: 10),
-              AppTextField(
-                controller: nameCtrl,
-                shakeTrigger: shake,
-                decoration: _inputDeco('Building Name', Icons.business)
-                    .copyWith(errorText: nameError),
-                autofocus: true,
-                onChanged: (_) {
-                  if (nameError != null) setS(() => nameError = null);
-                },
-              ),
-              if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!,
-                    style:
-                        const TextStyle(fontSize: 12, color: AppColors.error)),
-              ],
-            ],
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: () async {
-                final newName = nameCtrl.text.trim();
-                if (newName.isEmpty) {
-                  setS(() {
-                    nameError = 'Name is required';
-                    error = null;
-                    shake++;
-                  });
-                  return;
-                }
-                if (newName == currentName) {
-                  if (!ctx.mounted) return;
-                  Navigator.pop(ctx);
-                  return;
-                }
-
-                try {
-                  await FirebaseDatabase.instance
-                      .ref('buildings/$code/name')
-                      .set(newName);
-                  if (!mounted || !ctx.mounted) return;
-                  Navigator.pop(ctx);
-                  TopToast.show(context, '$code renamed.');
-                } catch (e) {
-                  setS(() => error = 'Failed: $e');
-                }
-              },
-              child: const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Delete Building ───────────────────────────────────────────────────────
-  Future<void> _deleteBuilding(Map<String, dynamic> building) async {
-    final code = building['code'] as String;
-
+  /// One-shot read of exactly how many rooms/devices/schedules a building
+  /// delete would touch, for the delete dialog's impact list (handoff §7.2
+  /// "adapt the actual counts to the real building's data").
+  Future<_BuildingDeleteImpact> _loadBuildingDeleteImpact(String code) async {
     final assignedDeviceIds = <String>{};
 
     final devicesSnap = await FirebaseDatabase.instance.ref('devices').get();
@@ -1031,8 +1210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       devices.forEach((id, val) {
         if (val is! Map) return;
         final device = Map<String, dynamic>.from(val);
-        final buildingCode = (device['building'] ?? '').toString();
-        if (buildingCode == code) {
+        if ((device['building'] ?? '').toString() == code) {
           assignedDeviceIds.add(id.toString());
         }
       });
@@ -1052,264 +1230,143 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     }
 
-    final assignedCount = assignedDeviceIds.length;
-    final warning = assignedCount > 0
-        ? 'This building has $assignedCount assigned device${assignedCount == 1 ? '' : 's'}. Deleting will unassign them from rooms.'
-        : 'This will also remove its hotspot from the map.';
-
-    if (!mounted) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Building',
-            style: TextStyle(
-                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Delete "$code"?'),
-            const SizedBox(height: 8),
-            Text(
-              warning,
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    final updates = <String, dynamic>{
-      'buildings/$code': null,
-      'hotspots/$code': null,
-    };
-
-    for (final deviceId in assignedDeviceIds) {
-      updates['master_devices/$deviceId/assignedTo'] = '';
-      updates['devices/$deviceId/building'] = '';
-      updates['devices/$deviceId/floor'] = '';
-      updates['devices/$deviceId/room'] = '';
-      updates['devices/$deviceId/status'] = 'offline';
+    var roomCount = 0;
+    var floorCount = 0;
+    final floorDataSnap =
+        await FirebaseDatabase.instance.ref('buildings/$code/floorData').get();
+    if (floorDataSnap.value is Map) {
+      final floorData = Map<String, dynamic>.from(floorDataSnap.value as Map);
+      floorCount = floorData.length;
+      for (final floor in floorData.values) {
+        if (floor is! Map) continue;
+        final rooms = floor['rooms'];
+        if (rooms is List) {
+          roomCount += rooms.length;
+        } else if (rooms is Map) {
+          roomCount += rooms.length;
+        }
+      }
     }
 
-    await FirebaseDatabase.instance.ref().update(updates);
+    var scheduleCount = 0;
+    final automationsSnap =
+        await FirebaseDatabase.instance.ref('automations').get();
+    if (automationsSnap.value is Map) {
+      final automations =
+          Map<String, dynamic>.from(automationsSnap.value as Map);
+      automations.forEach((id, val) {
+        if (val is! Map) return;
+        final schedule = Map<String, dynamic>.from(val);
+        final scope = (schedule['scope'] ?? '').toString();
+        final target = (schedule['target'] ?? '').toString();
+        if (scope == 'building' && target == code) {
+          scheduleCount++;
+        } else if (scope == 'device' && assignedDeviceIds.contains(target)) {
+          scheduleCount++;
+        }
+      });
+    }
 
+    return _BuildingDeleteImpact(
+      assignedDeviceIds: assignedDeviceIds,
+      roomCount: roomCount,
+      floorCount: floorCount,
+      scheduleCount: scheduleCount,
+    );
+  }
+
+  /// Runs the shared two-step delete flow (`showDeleteFlow`) for one
+  /// building row on the Devices list, wiring its optimistic-remove /
+  /// restore hooks into [_deletingBuildingCodes] (drives each row's
+  /// [DeleteRowTransition]) and deferring the actual Firebase write until
+  /// the 5s Undo window elapses, per handoff §7.4.
+  Future<void> _deleteBuildingViaFlow(Map<String, dynamic> building) async {
+    final code = building['code'] as String;
+    final name = (building['name'] ?? code).toString();
+
+    _BuildingDeleteImpact? impact;
+    try {
+      impact = await _loadBuildingDeleteImpact(code);
+    } catch (e) {
+      if (mounted) {
+        TopToast.error(
+            context, 'Could not check what this building affects: $e');
+      }
+      return;
+    }
     if (!mounted) return;
-    TopToast.show(
+
+    final assignedCount = impact.assignedDeviceIds.length;
+    final impactLines = [
+      if (impact.floorCount > 0)
+        '${impact.floorCount} ${impact.floorCount == 1 ? 'floor' : 'floors'}'
+            '${impact.roomCount > 0 ? ' and ${impact.roomCount} ${impact.roomCount == 1 ? 'room' : 'rooms'}' : ''}',
+      '$assignedCount device${assignedCount == 1 ? '' : 's'} will be unassigned',
+      if (impact.scheduleCount > 0)
+        '${impact.scheduleCount} schedule${impact.scheduleCount == 1 ? '' : 's'} will stop',
+      'Usage history stays in Analytics',
+    ];
+
+    await showDeleteFlow(
       context,
-      assignedCount > 0
-          ? '$code removed. $assignedCount device${assignedCount == 1 ? '' : 's'} unassigned.'
-          : '$code removed.',
+      type: DeleteType.building,
+      itemName: name,
+      impact: impactLines,
+      onOptimisticRemove: () =>
+          setState(() => _deletingBuildingCodes.add(code)),
+      onRestore: () => setState(() => _deletingBuildingCodes.remove(code)),
+      onCommit: (reason, otherText) async {
+        final updates = <String, dynamic>{
+          'buildings/$code': null,
+          'hotspots/$code': null,
+        };
+        for (final deviceId in impact!.assignedDeviceIds) {
+          updates['master_devices/$deviceId/assignedTo'] = '';
+          updates['devices/$deviceId/building'] = '';
+          updates['devices/$deviceId/floor'] = '';
+          updates['devices/$deviceId/room'] = '';
+          updates['devices/$deviceId/status'] = 'offline';
+        }
+        final logRef = FirebaseDatabase.instance.ref('deletion_log').push();
+        updates['deletion_log/${logRef.key}'] = {
+          'type': 'building',
+          'code': code,
+          'name': name,
+          'reason': reason,
+          if (otherText != null && otherText.isNotEmpty) 'otherText': otherText,
+          'deletedBy': FirebaseAuth.instance.currentUser?.uid ?? '',
+          'timestamp': ServerValue.timestamp,
+          'impact': {
+            'devicesUnassigned': assignedCount,
+            'floors': impact.floorCount,
+            'rooms': impact.roomCount,
+            'schedulesStopped': impact.scheduleCount,
+          },
+        };
+        await FirebaseDatabase.instance.ref().update(updates);
+      },
     );
-  }
-
-  // ── Manage Buildings Sheet ────────────────────────────────────────────────
-  void _showManageBuildings() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.55,
-          maxChildSize: 0.85,
-          builder: (_, ctrl) => Column(children: [
-            Container(
-              margin: const EdgeInsets.only(top: 10),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2)),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-              child: Row(children: [
-                const Text('Manage Buildings',
-                    style: TextStyle(
-                        fontFamily: AppFonts.family,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textDark)),
-                const Spacer(),
-                ElevatedButton.icon(
-                  onPressed: () async {
-                    Navigator.pop(ctx);
-                    await _addBuilding();
-                  },
-                  icon: const Icon(Icons.add, size: 16, color: Colors.white),
-                  label: const Text('Add',
-                      style: TextStyle(color: Colors.white, fontSize: 12)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _palette.dark,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ]),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: _buildings.isEmpty
-                  ? const Center(
-                      child: Text('No buildings found.',
-                          style: TextStyle(
-                              fontSize: 13, color: AppColors.textMuted)))
-                  : ListView.builder(
-                      controller: ctrl,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                      itemCount: _buildings.length,
-                      itemBuilder: (_, i) {
-                        final b = _buildings[i];
-                        final code = b['code'] as String;
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: AppColors.cardBg,
-                            borderRadius: BorderRadius.circular(14),
-                            border:
-                                Border.all(color: _palette.mid.withAlpha(31)),
-                          ),
-                          child: Row(children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                  color: _palette.pale,
-                                  borderRadius: BorderRadius.circular(10)),
-                              child: Center(
-                                  child: Text(code,
-                                      style: TextStyle(
-                                          fontFamily: AppFonts.family,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                          color: _palette.dark))),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                  Text(b['name'],
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600,
-                                          color: AppColors.textDark)),
-                                  Text(
-                                      '${b['floors']} ${b['floors'] == 1 ? 'floor' : 'floors'}',
-                                      style: const TextStyle(
-                                          fontSize: 11,
-                                          color: AppColors.textMuted)),
-                                ])),
-                            Row(mainAxisSize: MainAxisSize.min, children: [
-                              GestureDetector(
-                                onTap: () async {
-                                  Navigator.pop(ctx);
-                                  await _editBuildingName(b);
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: _palette.pale,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Icon(Icons.edit_outlined,
-                                      size: 18, color: _palette.dark),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              GestureDetector(
-                                onTap: () async {
-                                  Navigator.pop(ctx);
-                                  await _deleteBuilding(b);
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.error.withAlpha(15),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: const Icon(Icons.delete_outline,
-                                      size: 18, color: AppColors.error),
-                                ),
-                              ),
-                            ]),
-                          ]),
-                        );
-                      },
-                    ),
-            ),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  InputDecoration _inputDeco(String hint, IconData icon) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
-      prefixIcon: Icon(icon, size: 18, color: AppColors.textMuted),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid)),
-    );
+    if (mounted) setState(() => _deletingBuildingCodes.remove(code));
   }
 
   @override
   Widget build(BuildContext context) {
-    final showAnalytics = !_isInstituteAdmin;
-    final safeIndex =
-        (!showAnalytics && _selectedIndex == 2) ? 0 : _selectedIndex;
-
-    // Local theme override carrying the resolved InstituteTheme extension,
-    // so any genuine descendant widget (its own BuildContext, below this
-    // point in the tree) can read `context.institutePalette`. This State's
-    // own `_palette` getter does not rely on this -- see its doc comment.
+    // Analytics is always a visible tab now -- per the redesign handoff §2,
+    // institute admins DO get Analytics (the embedded HistoryScreen below
+    // self-locks their view to their own institute; see its `_lockCode`),
+    // so there's no hidden-tab/safe-index fallback to compute here anymore.
     return Theme(
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: Scaffold(
-        backgroundColor: AppColors.surface,
+        backgroundColor: Colors.white,
         body: SafeArea(
           child: Column(children: [
-            _buildTopBar(),
+            _buildTopBar(_selectedIndex),
             Expanded(
               child: IndexedStack(
-                index: safeIndex,
+                index: _selectedIndex,
                 children: [
                   _isInstituteAdmin
                       ? _buildInstituteHomeTab()
@@ -1317,24 +1374,290 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ? _buildError()
                           : ScreenSkeleton(
                               isLoading: _isLoading, child: _buildHomeTab())),
-                  CampusMapScreen(role: _role, showAppBar: false),
-                  _errorText != null
-                      ? _buildError()
-                      : ScreenSkeleton(
-                          isLoading: _isLoading, child: _buildAnalyticsTab()),
-                  AutomationScreen(role: _role),
+                  _buildDevicesTab(),
+                  const HistoryScreen(showBackButton: false),
+                  AutomationScreen(
+                    role: _role,
+                    onSubtitleChanged: (subtitle) {
+                      if (!mounted || subtitle == _automationSubtitle) return;
+                      setState(() => _automationSubtitle = subtitle);
+                    },
+                  ),
+                  const MoreScreen(showBackButton: false),
                 ],
               ),
             ),
           ]),
         ),
-        bottomNavigationBar: _buildBottomNav(showAnalytics: showAnalytics),
+        bottomNavigationBar: _buildBottomNav(),
+      ),
+    );
+  }
+
+  /// The "Devices" tab (handoff §4.2/§4.3/§5): a List | Map segmented
+  /// control. List is a new campus-wide Buildings list (add/delete building
+  /// live here now, not inside the building) for campus admins, or the
+  /// existing [BuildingFloorScreen] embed (moved here from Home, see
+  /// `_buildInstituteHomeTab`'s doc) for institute admins. Map embeds
+  /// [CampusMapScreen] (handoff §8: Buildings/Devices modes, institute crop).
+  Widget _buildDevicesTab() {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+        child: AppSegmentedControl(
+          palette: _palette,
+          segments: const [
+            AppSegment(label: 'List', icon: Icons.view_list_outlined),
+            AppSegment(label: 'Map', icon: Icons.map_outlined),
+          ],
+          selectedIndex: _devicesViewMode,
+          onChanged: (i) => setState(() => _devicesViewMode = i),
+        ),
+      ),
+      Expanded(
+        child: _devicesViewMode == 1
+            ? CampusMapScreen(role: _role, showAppBar: false)
+            : (_isInstituteAdmin
+                ? _buildInstituteDevicesList()
+                : (_errorText != null
+                    ? _buildError()
+                    : ScreenSkeleton(
+                        isLoading: _isLoading,
+                        child: _buildCampusDevicesList()))),
+      ),
+    ]);
+  }
+
+  Widget _buildInstituteDevicesList() {
+    final code = _institute ?? '';
+    if (code.isEmpty) {
+      return const Center(
+        child: Text('No institute assigned yet.',
+            style: TextStyle(color: AppColors.inkMid)),
+      );
+    }
+    final match = _buildings.firstWhere(
+      (b) => (b['code'] ?? '').toString() == code,
+      orElse: () => <String, dynamic>{},
+    );
+    final floors = (match['floors'] as int?) ?? 1;
+    final name = (match['name'] as String?) ?? code;
+    return BuildingFloorScreen(
+      key: ValueKey('devices-institute-$code'),
+      buildingCode: code,
+      buildingName: name,
+      floors: floors,
+      role: _role,
+      showBackButton: false,
+    );
+  }
+
+  Widget _buildCampusDevicesList() {
+    final query = _deviceSearchQuery.trim().toLowerCase();
+    var buildings = [..._buildings]..sort((a, b) {
+        final aCode = (a['code'] ?? '').toString();
+        final bCode = (b['code'] ?? '').toString();
+        final aKwh = _buildingTodayKwh[aCode] ?? 0;
+        final bKwh = _buildingTodayKwh[bCode] ?? 0;
+        final byKwh = bKwh.compareTo(aKwh);
+        if (byKwh != 0) return byKwh;
+        return aCode.compareTo(bCode);
+      });
+    if (query.isNotEmpty) {
+      buildings = buildings.where((b) {
+        final code = (b['code'] ?? '').toString().toLowerCase();
+        final name = (b['name'] ?? '').toString().toLowerCase();
+        return code.contains(query) || name.contains(query);
+      }).toList();
+    }
+    switch (_devicesStatusFilter) {
+      case 1: // Online
+        buildings = buildings
+            .where((b) =>
+                (_buildingOnlineCounts[(b['code'] ?? '').toString()] ?? 0) > 0)
+            .toList();
+      case 2: // Offline
+        buildings = buildings
+            .where((b) =>
+                (_buildingOfflineCounts[(b['code'] ?? '').toString()] ?? 0) > 0)
+            .toList();
+      case 3: // Unassigned -- devices, not buildings; nothing to narrow the
+        // buildings list to, so show all buildings plus an explanatory note
+        // above the list instead of an empty result.
+        break;
+    }
+
+    final totalOnline = _onlineDevicesCount;
+    final totalOffline = (_assignedDevices - totalOnline)
+        .clamp(0, _assignedDevices > 0 ? _assignedDevices : 0);
+
+    return LayoutBuilder(builder: (context, constraints) {
+      final isCompact = constraints.maxWidth < Breakpoints.compact;
+      return SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+            isCompact ? 16 : 20, 16, isCompact ? 16 : 20, 20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const SizedBox(height: 16),
+          AppTextField(
+            controller: _deviceSearchCtrl,
+            onChanged: (v) => setState(() => _deviceSearchQuery = v),
+            decoration: const InputDecoration(
+              hintText: 'Search building or code',
+              prefixIcon: Icon(Icons.search, size: 20),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(12))),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            AppFilterChip(
+              label: 'All $_assignedDevices',
+              selected: _devicesStatusFilter == 0,
+              onTap: () => setState(() => _devicesStatusFilter = 0),
+              palette: _palette,
+            ),
+            AppFilterChip(
+              label: 'Online $totalOnline',
+              selected: _devicesStatusFilter == 1,
+              onTap: () => setState(() => _devicesStatusFilter = 1),
+              palette: _palette,
+            ),
+            AppFilterChip(
+              label: 'Offline $totalOffline',
+              selected: _devicesStatusFilter == 2,
+              onTap: () => setState(() => _devicesStatusFilter = 2),
+              palette: _palette,
+            ),
+            AppFilterChip(
+              label: 'Unassigned $_unassignedDevices',
+              selected: _devicesStatusFilter == 3,
+              onTap: () => setState(() => _devicesStatusFilter = 3),
+              palette: _palette,
+            ),
+          ]),
+          if (_devicesStatusFilter == 3 && _unassignedDevices > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                'Unassigned devices aren\'t linked to a building yet -- assign them from a building\'s room screen.',
+                style: AppTextStyles.caption.copyWith(color: AppColors.inkMid),
+              ),
+            ),
+          const SizedBox(height: 20),
+          Row(children: [
+            Expanded(
+              child: _sectionHeader('Buildings',
+                  subtitle: 'Sorted by usage today'),
+            ),
+            if (_isSuperAdmin) ...[
+              const SizedBox(width: 8),
+              IconAddButton(
+                onPressed: _showAddBuildingSheet,
+                palette: _palette,
+                semanticLabel: 'Add building',
+              ),
+            ],
+          ]),
+          const SizedBox(height: 8),
+          if (buildings.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text('No buildings match.',
+                    style:
+                        AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+              ),
+            )
+          else
+            ...buildings
+                .map((b) => _buildDevicesBuildingRow(b, compact: isCompact)),
+        ]),
+      );
+    });
+  }
+
+  Widget _buildDevicesBuildingRow(Map<String, dynamic> building,
+      {bool compact = false}) {
+    final code = (building['code'] ?? '').toString();
+    final floors = (building['floors'] as int?) ?? 1;
+    final onCount = _buildingOnCounts[code] ?? 0;
+    final totalCount = _buildingDeviceCounts[code] ?? 0;
+    final todayKwh = _buildingTodayKwh[code] ?? 0;
+    final buildingPalette = InstituteColors.forCode(code);
+    final icon =
+        code.toUpperCase() == 'ADMIN' ? Icons.account_balance : Icons.apartment;
+    final deleting = _deletingBuildingCodes.contains(code);
+
+    return DeleteRowTransition(
+      key: ValueKey('devices-building-$code'),
+      deleting: deleting,
+      message: '$code deleted',
+      onDeleteAnimationComplete: () {
+        // The row is already visually gone; nothing further to remove from
+        // local state -- `_buildings` updates itself once the Firebase
+        // write in `_deleteBuildingViaFlow`'s onCommit lands.
+      },
+      child: GestureDetector(
+        onTap: () => Navigator.pushNamed(context, '/building', arguments: {
+          'buildingCode': code,
+          'buildingName': building['name'],
+          'floors': building['floors'],
+          'role': _role,
+        }),
+        child: Container(
+          padding: EdgeInsets.symmetric(vertical: compact ? 10 : 12),
+          decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: _palette.line))),
+          child: Row(children: [
+            OutlineIconBox(
+                icon: icon, palette: buildingPalette, size: compact ? 36 : 40),
+            SizedBox(width: compact ? 10 : 12),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text((building['name'] ?? code).toString(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.subtitle.copyWith(
+                          color: AppColors.ink, fontSize: compact ? 14 : 16)),
+                  const SizedBox(height: 2),
+                  Text(
+                      '$floors ${floors > 1 ? 'floors' : 'floor'} · $onCount/$totalCount on',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.inkMid)),
+                ])),
+            const SizedBox(width: 8),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(_safeFormatDouble(todayKwh, 1),
+                  style: AppTextStyles.subtitle.copyWith(
+                      color: AppColors.ink, fontSize: compact ? 14 : 16)),
+              Text('kWh today',
+                  style:
+                      AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+            ]),
+            if (_isSuperAdmin) ...[
+              const SizedBox(width: 4),
+              IconDeleteButton(
+                onPressed: () => _deleteBuildingViaFlow(building),
+                semanticLabel: 'Delete $code',
+              ),
+            ],
+          ]),
+        ),
       ),
     );
   }
 
   /// An institute admin's "Dashboard" tab: their institute's rooms directly,
   /// themed to their institute's color — no campus-wide buildings list.
+  /// An institute admin's Home tab (handoff §5): hero + KPIs + Room load +
+  /// Last 7 days + History, all scoped to `_institute` only. The live
+  /// floor/room screen used to be embedded directly here -- it now lives on
+  /// the Devices tab instead (see `_buildDevicesTab`), matching the
+  /// redesign's split between "overview" (Home) and "control" (Devices).
   Widget _buildInstituteHomeTab() {
     final code = _institute ?? '';
     if (code.isEmpty) {
@@ -1354,33 +1677,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
       orElse: () => <String, dynamic>{},
     );
     final floors = (match['floors'] as int?) ?? 1;
-    final name = (match['name'] as String?) ?? code;
-    return Column(children: [
-      _buildInstituteEnergyCard(),
-      Expanded(
-        child: BuildingFloorScreen(
-          key: ValueKey('dash-institute-$code'),
-          buildingCode: code,
-          buildingName: name,
-          floors: floors,
-          role: _role,
-          showBackButton: false,
-        ),
-      ),
-    ]);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isCompact = constraints.maxWidth < Breakpoints.compact;
+        return SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            isCompact ? 16 : 20,
+            isCompact ? 14 : 18,
+            isCompact ? 16 : 20,
+            isCompact ? 18 : 20,
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const HistoryFallbackNotice(),
+            SizedBox(height: isCompact ? 14 : 20),
+            _buildInstituteEnergyHero(
+                code: code, floors: floors, compact: isCompact),
+            SizedBox(height: isCompact ? 18 : 24),
+            _buildKpiGrid(_instituteKpis(code, floors), compact: isCompact),
+            SizedBox(height: isCompact ? 18 : 24),
+            _sectionHeader('Room load', subtitle: 'Today, heaviest first'),
+            SizedBox(height: isCompact ? 10 : 12),
+            if (_instituteRooms.isEmpty)
+              Container(
+                padding: EdgeInsets.all(isCompact ? 16 : 20),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBg,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: _palette.line),
+                ),
+                child: const Center(
+                  child: Text('No room devices yet',
+                      style: TextStyle(fontSize: 13, color: AppColors.inkMid)),
+                ),
+              )
+            else
+              ..._instituteRooms
+                  .map((r) => _buildRoomLoadRow(r, compact: isCompact)),
+            SizedBox(height: isCompact ? 18 : 24),
+            _sectionHeader('Last 7 days', subtitle: 'kWh per day'),
+            SizedBox(height: isCompact ? 10 : 12),
+            _buildLast7DaysCard(
+                _last7DaysKwh(buildingCode: code), _last7DaysLabels),
+            SizedBox(height: isCompact ? 18 : 24),
+            HistoryTrendPanel(
+              palette: _palette,
+              instituteCode: code,
+              days: 5,
+              onOpen: () => setState(() => _selectedIndex = 2),
+            ),
+          ]),
+        );
+      },
+    );
   }
 
-  /// Institute-scoped summary card shown above the floor/room picker on an
-  /// institute_admin's home tab. Visually mirrors `_buildEnergyCards()` (the
-  /// main-admin equivalent) but every number is filtered to `_institute`
-  /// only -- see `_listenInstituteScoped()`. Branded with `_palette` instead
-  /// of the hardcoded main-admin green.
-  Widget _buildInstituteEnergyCard() {
-    final monthlyCost = _instituteMonthlyKwh * _electricityRate;
+  Widget _buildInstituteEnergyHero(
+      {required String code, required int floors, bool compact = false}) {
+    final now = HistoryClock.instance.now();
+    final yesterday =
+        _dailyBuildingKwh(now.subtract(const Duration(days: 1)), code);
+    double? deltaPct;
+    if (yesterday != null && yesterday > 0) {
+      deltaPct = ((_instituteKwh - yesterday) / yesterday) * 100;
+    }
+    final weekKwh = _weeklyBuildingKwh(now, code);
+    final roomCount = _instituteRooms.length;
+
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.all(compact ? 16 : 20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
             colors: [_palette.dark, _palette.mid],
@@ -1395,39 +1762,156 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Energy consumed today',
-            style: TextStyle(fontSize: 12, color: Colors.white)),
-        const SizedBox(height: 6),
+        Row(children: [
+          Text('$code energy today',
+              style: AppTextStyles.label.copyWith(color: Colors.white)),
+          const Spacer(),
+          _livePill(),
+        ]),
+        SizedBox(height: compact ? 8 : 10),
         Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Text(_safeFormatDouble(_instituteKwh, 2),
-              style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 40,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white)),
-          const Padding(
-              padding: EdgeInsets.only(bottom: 6, left: 6),
+              style: AppTextStyles.display
+                  .copyWith(color: Colors.white, fontSize: compact ? 32 : 36)),
+          Padding(
+              padding: EdgeInsets.only(bottom: compact ? 4 : 6, left: 6),
               child: Text('kWh',
                   style: TextStyle(
-                      fontSize: 14,
+                      fontFamily: AppFonts.family,
+                      fontSize: compact ? 13 : 14,
                       color: Colors.white,
                       fontWeight: FontWeight.w500))),
         ]),
-        const SizedBox(height: 16),
+        if (deltaPct != null) ...[
+          const SizedBox(height: 6),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(deltaPct <= 0 ? Icons.trending_down : Icons.trending_up,
+                size: 18, color: Colors.white),
+            const SizedBox(width: 4),
+            Text(
+              '${deltaPct.abs().toStringAsFixed(0)}% ${deltaPct <= 0 ? 'less' : 'more'} than yesterday',
+              style: AppTextStyles.bodySm.copyWith(color: Colors.white),
+            ),
+          ]),
+        ],
+        SizedBox(height: compact ? 12 : 16),
         Container(
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(compact ? 10 : 12),
           decoration: BoxDecoration(
               color: Colors.white.withAlpha(15),
               borderRadius: BorderRadius.circular(12)),
           child: Row(children: [
-            _miniStat('Month Cost', '₱ ${_safeFormatDouble(monthlyCost, 0)}'),
+            _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 0),
+                'This week',
+                compact: compact),
             _vertDivider(),
-            _miniStat('Assigned', '$_instituteAssignedDevices devices'),
+            _miniStat(_safeFormatDouble(_instituteMonthlyKwh, 0), 'This month',
+                compact: compact),
             _vertDivider(),
-            _miniStat('Online', '$_instituteOnlineDevices devices'),
+            _miniStat('$floors ${floors > 1 ? 'floors' : 'floor'}',
+                '$roomCount rooms',
+                compact: compact),
           ]),
         ),
       ]),
+    );
+  }
+
+  List<_KpiItem> _instituteKpis(String code, int floors) {
+    final now = HistoryClock.instance.now();
+    final lastMonth = DateTime(now.year, now.month - 1, 1);
+    final lastMonthCost = _monthlyBuildingCost(lastMonth, code);
+    final monthCost = _instituteMonthlyKwh * _electricityRate;
+    double? costDeltaPct;
+    if (lastMonthCost != null && lastMonthCost > 0) {
+      costDeltaPct = ((monthCost - lastMonthCost) / lastMonthCost) * 100;
+    }
+    final total = _instituteAssignedDevices;
+    final offline =
+        (total - _instituteOnlineDevices).clamp(0, total > 0 ? total : 0);
+
+    return [
+      _KpiItem(
+        icon: Icons.payments_outlined,
+        label: 'Month cost',
+        value: '₱${_safeFormatDouble(monthCost, 0)}',
+        foot: costDeltaPct == null
+            ? '₱${_electricityRate.toStringAsFixed(2)} per kWh'
+            : '${costDeltaPct >= 0 ? '▲' : '▼'} ${costDeltaPct.abs().toStringAsFixed(0)}% vs last month',
+        footColor: costDeltaPct == null
+            ? null
+            : (costDeltaPct >= 0 ? AppColors.errorText : AppColors.successText),
+      ),
+      _KpiItem(
+        icon: Icons.wifi_tethering,
+        label: 'Online',
+        value: '$_instituteOnlineDevices',
+        unit: '/ $total',
+        foot: '$offline offline',
+      ),
+      _KpiItem(
+        icon: Icons.meeting_room_outlined,
+        label: 'Rooms',
+        value: '${_instituteRooms.length}',
+        foot: '$floors ${floors > 1 ? 'floors' : 'floor'}',
+      ),
+      _KpiItem(
+        icon: Icons.schedule_outlined,
+        label: 'Schedules',
+        value: '$_instituteScheduleCount',
+        foot: '$_instituteActiveScheduleCount active',
+      ),
+    ];
+  }
+
+  Widget _buildRoomLoadRow(_RoomLoad room, {bool compact = false}) {
+    final maxKwh =
+        _instituteRooms.fold<double>(1, (m, r) => r.kwh > m ? r.kwh : m);
+    return GestureDetector(
+      onTap: () => setState(() => _selectedIndex = 1),
+      child: Container(
+        padding: EdgeInsets.symmetric(vertical: compact ? 10 : 12),
+        decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: _palette.line))),
+        child: Row(children: [
+          OutlineIconBox(icon: Icons.meeting_room, size: compact ? 36 : 40),
+          SizedBox(width: compact ? 10 : 12),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(room.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.subtitle.copyWith(
+                        color: AppColors.ink, fontSize: compact ? 14 : 16)),
+                const SizedBox(height: 2),
+                Text(
+                    'Floor ${room.floor} · ${room.deviceCount} ${room.deviceCount == 1 ? 'device' : 'devices'}',
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.inkMid)),
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value:
+                        maxKwh <= 0 ? 0 : (room.kwh / maxKwh).clamp(0.0, 1.0),
+                    minHeight: 6,
+                    backgroundColor: AppColors.skeleton,
+                    valueColor: AlwaysStoppedAnimation<Color>(_palette.dark),
+                  ),
+                ),
+              ])),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(_safeFormatDouble(room.kwh, 1),
+                style: AppTextStyles.subtitle.copyWith(
+                    color: AppColors.ink, fontSize: compact ? 14 : 16)),
+            Text('kWh',
+                style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+          ]),
+        ]),
+      ),
     );
   }
 
@@ -1440,7 +1924,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white,
+                  border: Border.all(color: AppColors.hairline),
                   borderRadius: BorderRadius.circular(20)),
               child:
                   Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid)),
@@ -1470,222 +1955,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  /// The top-bar role badge, 3-way branched on `_isSuperAdmin` /
-  /// `_isInstituteAdmin` (not the raw `_role` string -- that only matched
-  /// the literal `'admin'`, mislabeling `main_admin`/`super_admin` and
-  /// `institute_admin` accounts as "Faculty"). Institute admins get their
-  /// own label/icon, styled off `_palette` to stay institute-branded.
-  Widget _roleBadge() {
-    final IconData icon;
-    final String label;
-    final Color color;
-    final bool highlighted;
-    if (_isSuperAdmin) {
-      icon = Icons.star;
-      label = 'Admin';
-      // _palette always resolves to the green admin ramp for this role
-      // (see InstituteTheme.resolve), so this is equivalent to the old
-      // hardcoded AppColors.greenLight but routes through the single
-      // resolver instead of duplicating the literal.
-      color = _palette.light;
-      highlighted = true;
-    } else if (_isInstituteAdmin) {
-      icon = Icons.school;
-      label = 'Institute Admin';
-      color = _palette.light;
-      highlighted = true;
-    } else {
-      icon = Icons.person;
-      label = 'Faculty';
-      color = Colors.white;
-      highlighted = false;
-    }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: highlighted ? color.withAlpha(51) : Colors.white.withAlpha(26),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-            color: highlighted
-                ? color.withAlpha(102)
-                : Colors.white.withAlpha(51)),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 11, color: color),
-        const SizedBox(width: 4),
-        Text(label,
-            style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
-      ]),
+  /// The shared root-tab top bar (handoff §2/§3.4): white `AppTopBar` with
+  /// a bell (unread badge) + avatar (→ More), replacing the old green bar
+  /// and its burger `PopupMenuButton` (Notifications/Manage Users/Settings/
+  /// Logout now live in `MoreScreen`, reachable from the avatar and the
+  /// bottom nav's "More" tab -- see `_buildBottomNav`). Home gets the big
+  /// 30/36 "Dashboard" + date title (handoff §3.4/§4.1); the other 3 root
+  /// tabs use the standard title size.
+  Widget _buildTopBar(int tabIndex) {
+    const titles = ['Dashboard', 'Devices', 'Analytics', 'Automation', 'More'];
+    final isHome = tabIndex == 0;
+    return AppTopBar(
+      title: titles[tabIndex],
+      subtitle: _topBarSubtitle(tabIndex, isHome: isHome),
+      variant: isHome ? AppTopBarVariant.big : AppTopBarVariant.standard,
+      palette: _palette,
+      showInstituteLine: _isInstituteAdmin,
+      // The More tab's own top bar is where the avatar leads *to* -- showing
+      // it there too would be a circular affordance the preview never has
+      // (its More screen top bar is title + bell only). Every other root
+      // tab keeps the avatar as the way to reach More.
+      showAvatar: _navTabOrder[tabIndex] != AppNavTab.more,
+      avatarInitials: _initials,
+      onAvatarTap: () =>
+          setState(() => _selectedIndex = _navTabOrder.indexOf(AppNavTab.more)),
+      actions: [
+        AppTopBarAction(
+          icon: Icons.notifications_outlined,
+          tooltip: 'Notifications',
+          badgeCount: _unreadNotificationCount,
+          onTap: () => unawaited(_openNotifications()),
+        ),
+      ],
     );
   }
 
-  Widget _buildTopBar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-      decoration: BoxDecoration(
-        color: _palette.dark,
-      ),
-      child: Row(children: [
-        Container(
-          width: 34,
-          height: 34,
-          padding: const EdgeInsets.all(4),
-          child: Image.asset(
-            'promo/img/logo.png',
-            fit: BoxFit.contain,
-          ),
-        ),
-        const SizedBox(width: 10),
-        const Expanded(
-          child: Text('Smart Switch',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white)),
-        ),
-        // Always the compact burger menu (not just under the old 430px
-        // breakpoint) -- one menu button reading Notifications/Manage
-        // Users/Settings/Logout is cleaner than 4 separate icons, and
-        // the unread-notification badge still shows as an overlay dot
-        // on the menu icon itself (see below).
-        _roleBadge(),
-        PopupMenuButton<String>(
-          // Bug fix: this hardcoded the main-admin green (both the
-          // menu surface and its border) instead of following
-          // `_palette`, so an institute_admin viewing e.g. IC
-          // (violet) got a top bar that went violet everywhere
-          // except this popup, which silently stayed green.
-          color: _palette.dark,
-          surfaceTintColor: Colors.transparent,
-          elevation: 12,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-              side: BorderSide(color: _palette.light.withAlpha(140))),
-          onOpened: () {
-            if (mounted) setState(() => _compactMenuOpen = true);
-          },
-          icon: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOut,
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _compactMenuOpen
-                      ? _palette.light.withAlpha(46)
-                      : Colors.white.withAlpha(20),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.white.withAlpha(60)),
-                ),
-                child: AnimatedRotation(
-                  turns: _compactMenuOpen ? 0.125 : 0,
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOut,
-                  child: Icon(
-                      _compactMenuOpen
-                          ? Icons.close_rounded
-                          : Icons.menu_rounded,
-                      color: Colors.white,
-                      size: 20),
-                ),
-              ),
-              if (_unreadNotificationCount > 0)
-                Positioned(
-                  right: -4,
-                  top: -4,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    constraints: const BoxConstraints(minWidth: 16),
-                    decoration: BoxDecoration(
-                      color: AppColors.warning,
-                      borderRadius: BorderRadius.circular(99),
-                      // This border exists only to mask the badge's
-                      // corner against the top bar behind it, so it
-                      // must match the top bar's own background
-                      // (_palette.dark, set in _buildTopBar) rather
-                      // than a hardcoded green -- else a visible
-                      // green ring shows through on non-green
-                      // institutes.
-                      border: Border.all(color: _palette.dark, width: 1.2),
-                    ),
-                    child: Text(
-                      _unreadNotificationCount > 99
-                          ? '99+'
-                          : _unreadNotificationCount.toString(),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          onCanceled: () {
-            if (mounted) setState(() => _compactMenuOpen = false);
-          },
-          onSelected: (value) {
-            if (mounted) setState(() => _compactMenuOpen = false);
-            if (value == 'notifications') {
-              unawaited(_openNotifications());
-            } else if (value == 'manage-users') {
-              Navigator.pushNamed(context, '/manage-users', arguments: {
-                'role': _role,
-                'institute': _institute,
-              });
-            } else if (value == 'settings') {
-              Navigator.pushNamed(context, '/settings');
-            } else if (value == 'logout') {
-              _logout();
-            }
-          },
-          itemBuilder: (context) => [
-            const PopupMenuItem<String>(
-                value: 'notifications',
-                child: Row(children: [
-                  Icon(Icons.notifications_outlined,
-                      size: 18, color: Colors.white),
-                  SizedBox(width: 10),
-                  Text('Notifications', style: TextStyle(color: Colors.white))
-                ])),
-            if (_canAccessManagement)
-              const PopupMenuItem<String>(
-                  value: 'manage-users',
-                  child: Row(children: [
-                    Icon(Icons.admin_panel_settings_outlined,
-                        size: 18, color: Colors.white),
-                    SizedBox(width: 10),
-                    Text('Manage Users', style: TextStyle(color: Colors.white))
-                  ])),
-            if (_canAccessManagement)
-              const PopupMenuItem<String>(
-                  value: 'settings',
-                  child: Row(children: [
-                    Icon(Icons.settings_outlined,
-                        size: 18, color: Colors.white),
-                    SizedBox(width: 10),
-                    Text('Settings', style: TextStyle(color: Colors.white))
-                  ])),
-            const PopupMenuItem<String>(
-                value: 'logout',
-                child: Row(children: [
-                  Icon(Icons.logout, size: 18, color: Colors.white),
-                  SizedBox(width: 10),
-                  Text('Logout', style: TextStyle(color: Colors.white))
-                ])),
-          ],
-        ),
-      ]),
-    );
+  /// Per-tab subtitle for the shared shell top bar. Home keeps its date
+  /// label; Devices and Analytics mirror the subtitle each tab's own screen
+  /// used to compute for itself before the embedded screens' own top bars
+  /// were suppressed (see `_buildCampusDevicesList` and `HistoryScreen`'s
+  /// `build()`) -- kept here instead so there's exactly one top bar per tab.
+  /// Automation's subtitle ("N of M schedules active") is reported up by
+  /// the embedded `AutomationScreen` itself via `_automationSubtitle` (see
+  /// its `onSubtitleChanged` callback above), since the schedule counts it
+  /// reflects live only in that screen's own state. More (and an institute
+  /// admin's Devices tab, which embeds `BuildingFloorScreen` and already
+  /// shows an equivalent summary of its own) get no subtitle.
+  String? _topBarSubtitle(int tabIndex, {required bool isHome}) {
+    if (isHome) return _dashboardDateLabel;
+    if (tabIndex == 1 && !_isInstituteAdmin) {
+      return '$_assignedDevices devices in ${_buildings.length} buildings';
+    }
+    if (tabIndex == 2) {
+      final code = _institute;
+      if (_isInstituteAdmin && code != null && code.isNotEmpty) {
+        return '${_buildingDisplayName(code)} energy and forecast';
+      }
+      return 'Energy and forecast';
+    }
+    if (tabIndex == 3) return _automationSubtitle;
+    return null;
   }
 
   Widget _buildHomeTab() {
@@ -1704,66 +2033,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isCompact = constraints.maxWidth < 380;
+        final isCompact = constraints.maxWidth < Breakpoints.compact;
 
         return SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
             isCompact ? 16 : 20,
-            isCompact ? 16 : 20,
+            isCompact ? 14 : 18,
             isCompact ? 16 : 20,
             isCompact ? 18 : 20,
           ),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _buildGreeting(compact: isCompact),
-            const HistoryFallbackNotice(padding: EdgeInsets.only(top: 10)),
+            const HistoryFallbackNotice(),
             SizedBox(height: isCompact ? 14 : 20),
-            _buildEnergyCards(compact: isCompact),
+            _buildEnergyHero(compact: isCompact),
             SizedBox(height: isCompact ? 18 : 24),
-            // ── Buildings header with edit action ──────────────
-            Row(children: [
-              const Expanded(
-                child: Text('Campus Buildings',
-                    style: TextStyle(
-                        fontFamily: AppFonts.family,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-              ),
-              const SizedBox(width: 6),
-              if (_role == 'admin')
-                GestureDetector(
-                  onTap: _showManageBuildings,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: _palette.pale,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.edit_outlined,
-                            size: 14, color: _palette.dark),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Edit',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: _palette.dark,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(width: 8),
-              Text('${buildingsSource.length} buildings',
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.textMuted)),
-            ]),
+            _buildKpiGrid(_campusKpis(), compact: isCompact),
+            SizedBox(height: isCompact ? 18 : 24),
+            _sectionHeader('Building load', subtitle: 'This month'),
             SizedBox(height: isCompact ? 10 : 12),
             if (buildingsSource.isEmpty)
               Container(
@@ -1773,178 +2060,339 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: _palette.mid.withAlpha(31)),
                 ),
-                child: Center(
-                  child: Column(children: [
-                    const Icon(Icons.business_outlined,
-                        size: 32, color: AppColors.textMuted),
-                    const SizedBox(height: 8),
-                    const Text('No buildings yet',
-                        style: TextStyle(
-                            fontSize: 13, color: AppColors.textMuted)),
-                    if (_role == 'admin') ...[
-                      const SizedBox(height: 8),
-                      TextButton.icon(
-                        onPressed: _addBuilding,
-                        icon: const Icon(Icons.add, size: 16),
-                        label: const Text('Add Building'),
-                        style: TextButton.styleFrom(
-                            foregroundColor: _palette.dark),
-                      ),
-                    ],
-                  ]),
+                child: const Center(
+                  child: Text('No buildings yet',
+                      style: TextStyle(fontSize: 13, color: AppColors.inkMid)),
                 ),
               )
             else
-              ...sortedBuildings.map((building) => _buildBuildingCard(
+              ...sortedBuildings.map((building) => _buildBuildingLoadRow(
                     building,
                     compact: isCompact,
                   )),
+            SizedBox(height: isCompact ? 18 : 24),
+            _sectionHeader('Last 7 days', subtitle: 'kWh per day'),
+            SizedBox(height: isCompact ? 10 : 12),
+            _buildLast7DaysCard(_last7DaysKwh(), _last7DaysLabels),
+            SizedBox(height: isCompact ? 18 : 24),
+            HistoryTrendPanel(
+              palette: _palette,
+              days: 5,
+              onOpen: () => setState(() => _selectedIndex = 2),
+            ),
           ]),
         );
       },
     );
   }
 
-  Widget _buildGreeting({bool compact = false}) {
-    final hour = DateTime.now().hour;
-    final greeting = hour < 12
-        ? 'Good morning'
-        : hour < 17
-            ? 'Good afternoon'
-            : 'Good evening';
-    return Row(children: [
-      Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(greeting,
-            style: TextStyle(
-                fontSize: compact ? 12 : 13, color: AppColors.textMuted)),
-        Row(children: [
-          Text(_userName.isNotEmpty ? _userName : 'User',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: compact ? 19 : 22,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textDark)),
-          if (_role == 'admin') ...[
-            const SizedBox(width: 8),
-            Icon(Icons.star, size: compact ? 18 : 22, color: _palette.light),
-          ],
-        ]),
-      ])),
-      Container(
-        padding: EdgeInsets.symmetric(
-            horizontal: compact ? 8 : 10, vertical: compact ? 5 : 6),
-        decoration: BoxDecoration(
-            color: _palette.pale,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: _palette.mid.withAlpha(60))),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-              width: 7,
-              height: 7,
-              decoration:
-                  BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
-          const SizedBox(width: 5),
-          Text('Live',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.dark)),
-        ]),
-      ),
-    ]);
+  Widget _sectionHeader(String title,
+      {String? subtitle, VoidCallback? onLink, String? linkLabel}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+              if (subtitle != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(subtitle,
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: AppColors.inkMid)),
+                ),
+            ],
+          ),
+        ),
+        if (onLink != null)
+          AppTextButton(
+              label: linkLabel ?? 'All', onPressed: onLink, palette: _palette),
+      ],
+    );
   }
 
-  Widget _buildEnergyCards({bool compact = false}) {
-    return Column(children: [
-      Container(
-        width: double.infinity,
-        padding: EdgeInsets.all(compact ? 16 : 20),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-              colors: [_palette.dark, _palette.mid],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight),
-          borderRadius: BorderRadius.circular(22),
-          boxShadow: [
-            BoxShadow(
-                color: _palette.dark.withAlpha(77),
-                blurRadius: 20,
-                offset: const Offset(0, 8))
-          ],
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Energy consumed today',
-              style:
-                  TextStyle(fontSize: compact ? 11 : 12, color: Colors.white)),
-          SizedBox(height: compact ? 4 : 6),
-          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text(_safeFormatDouble(_totalKwh, 2),
-                style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: compact ? 32 : 40,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white)),
-            Padding(
-                padding: EdgeInsets.only(bottom: compact ? 4 : 6, left: 6),
-                child: Text('kWh',
-                    style: TextStyle(
-                        fontSize: compact ? 13 : 14,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500))),
-          ]),
-          SizedBox(height: compact ? 12 : 16),
-          Container(
-            padding: EdgeInsets.all(compact ? 10 : 12),
-            decoration: BoxDecoration(
-                color: Colors.white.withAlpha(15),
-                borderRadius: BorderRadius.circular(12)),
-            child: Row(children: [
-              _miniStat(
-                  'Month Cost', '₱ ${_safeFormatDouble(_monthlyCostPhp, 0)}',
-                  compact: compact),
-              _vertDivider(),
-              _miniStat('Assigned', '$_assignedDevices devices',
-                  compact: compact),
-              _vertDivider(),
-              _miniStat('Unassigned', '$_unassignedDevices devices',
-                  compact: compact),
-            ]),
-          ),
-        ]),
+  /// The redesigned "Energy today" hero card (handoff §4.1): title + Live
+  /// pill, big kWh, a real "% vs yesterday" delta (hidden when yesterday
+  /// has no recorded history), and 3 stat cells (This week / This month /
+  /// Peak hour). No fabricated hourly sparkline -- see `_peakHourLabel`'s
+  /// doc for why "Peak hour" degrades to "—" rather than inventing a time.
+  Widget _buildEnergyHero({bool compact = false}) {
+    final now = HistoryClock.instance.now();
+    final yesterday = _dailyTotalKwh(now.subtract(const Duration(days: 1)));
+    double? deltaPct;
+    if (yesterday != null && yesterday > 0) {
+      deltaPct = ((_totalKwh - yesterday) / yesterday) * 100;
+    }
+    final weekKwh = _weeklyTotalKwh(now);
+    final peakHour = _peakHourLabel();
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(compact ? 16 : 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+            colors: [_palette.dark, _palette.mid],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+              color: _palette.dark.withAlpha(77),
+              blurRadius: 20,
+              offset: const Offset(0, 8))
+        ],
       ),
-    ]);
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text('Energy today',
+              style: AppTextStyles.label.copyWith(color: Colors.white)),
+          const Spacer(),
+          _livePill(),
+        ]),
+        SizedBox(height: compact ? 8 : 10),
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(_safeFormatDouble(_totalKwh, 2),
+              style: AppTextStyles.display
+                  .copyWith(color: Colors.white, fontSize: compact ? 32 : 36)),
+          Padding(
+              padding: EdgeInsets.only(bottom: compact ? 4 : 6, left: 6),
+              child: Text('kWh',
+                  style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: compact ? 13 : 14,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500))),
+        ]),
+        if (deltaPct != null) ...[
+          const SizedBox(height: 6),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(deltaPct <= 0 ? Icons.trending_down : Icons.trending_up,
+                size: 18, color: Colors.white),
+            const SizedBox(width: 4),
+            Text(
+              '${deltaPct.abs().toStringAsFixed(0)}% ${deltaPct <= 0 ? 'less' : 'more'} than yesterday',
+              style: AppTextStyles.bodySm.copyWith(color: Colors.white),
+            ),
+          ]),
+        ],
+        SizedBox(height: compact ? 12 : 16),
+        Container(
+          padding: EdgeInsets.all(compact ? 10 : 12),
+          decoration: BoxDecoration(
+              color: Colors.white.withAlpha(15),
+              borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 0),
+                'This week',
+                compact: compact),
+            _vertDivider(),
+            _miniStat(_safeFormatDouble(_monthlyKwh, 0), 'This month',
+                compact: compact),
+            _vertDivider(),
+            _miniStat(peakHour ?? '—', 'Peak hour', compact: compact),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _livePill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(30),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+                color: Colors.white, shape: BoxShape.circle)),
+        const SizedBox(width: 5),
+        const Text('Live',
+            style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.white)),
+      ]),
+    );
   }
 
   Widget _vertDivider() => Container(
       width: 1,
-      height: 28,
+      height: 32,
       margin: const EdgeInsets.symmetric(horizontal: 10),
       color: Colors.white.withAlpha(30));
 
-  Widget _miniStat(String label, String value, {bool compact = false}) {
+  /// A hero stat cell: **value** above a caption label (handoff §4.1 "3
+  /// cells" / preview `.h-cell`). Kept as `(value, label)` -- the order
+  /// callers pass this in changed from the pre-redesign `(label, value)`
+  /// signature, so every call site above was updated together with this.
+  Widget _miniStat(String value, String label, {bool compact = false}) {
     return Expanded(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: TextStyle(fontSize: compact ? 9 : 10, color: Colors.white)),
-      const SizedBox(height: 2),
       Text(value,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-              fontSize: compact ? 11 : 12,
-              fontWeight: FontWeight.w600,
+              fontFamily: AppFonts.family,
+              fontSize: compact ? 15 : 16,
+              fontWeight: FontWeight.w700,
               color: Colors.white)),
+      const SizedBox(height: 2),
+      Text(label,
+          style: TextStyle(fontSize: compact ? 10 : 11, color: Colors.white70)),
     ]));
   }
 
-  Widget _buildBuildingCard(Map<String, dynamic> building,
+  /// The real KPI numbers for the campus admin's 2x2 grid (handoff §4.1).
+  List<_KpiItem> _campusKpis() {
+    final now = HistoryClock.instance.now();
+    final lastMonth = DateTime(now.year, now.month - 1, 1);
+    final lastMonthCost = _monthlyTotalCost(lastMonth);
+    double? costDeltaPct;
+    if (lastMonthCost != null && lastMonthCost > 0) {
+      costDeltaPct = ((_monthlyCostPhp - lastMonthCost) / lastMonthCost) * 100;
+    }
+    final totalForOnline = _assignedDevices;
+    final offline = (totalForOnline - _onlineDevicesCount)
+        .clamp(0, totalForOnline > 0 ? totalForOnline : 0);
+    final highLoadBuildings = _buildings
+        .where((b) => _energyLevel((b['code'] ?? '').toString()) == 'HIGH')
+        .toList();
+    final highLoadName = highLoadBuildings.isEmpty
+        ? null
+        : _buildingDisplayName(
+            (highLoadBuildings.first['code'] ?? '').toString());
+
+    return [
+      _KpiItem(
+        icon: Icons.payments_outlined,
+        label: 'Month cost',
+        value: '₱${_safeFormatDouble(_monthlyCostPhp, 0)}',
+        foot: costDeltaPct == null
+            ? null
+            : '${costDeltaPct >= 0 ? '▲' : '▼'} ${costDeltaPct.abs().toStringAsFixed(0)}% vs last month',
+        footColor: costDeltaPct == null
+            ? null
+            : (costDeltaPct >= 0 ? AppColors.errorText : AppColors.successText),
+      ),
+      _KpiItem(
+        icon: Icons.wifi_tethering,
+        label: 'Online',
+        value: '$_onlineDevicesCount',
+        unit: '/ $totalForOnline',
+        foot: '$offline offline',
+      ),
+      _KpiItem(
+        icon: Icons.local_fire_department_outlined,
+        label: 'High load',
+        value: '${highLoadBuildings.length}',
+        foot: highLoadName ?? 'None this month',
+      ),
+      _KpiItem(
+        icon: Icons.device_unknown_outlined,
+        label: 'Unassigned',
+        value: '$_unassignedDevices',
+        foot: _unassignedDevices > 0 ? 'Need a room' : 'All assigned',
+      ),
+    ];
+  }
+
+  /// The 2x2 KPI grid, split by hairlines with no tile fills (handoff
+  /// §3.1 "no boxes" / §3.2 outline system).
+  Widget _buildKpiGrid(List<_KpiItem> items, {bool compact = false}) {
+    final line = _palette.line;
+    Widget cell(_KpiItem item,
+        {bool borderRight = false, bool borderBottom = false}) {
+      return Expanded(
+        child: Container(
+          padding: EdgeInsets.symmetric(
+              vertical: compact ? 10 : 12, horizontal: compact ? 10 : 12),
+          decoration: BoxDecoration(
+            border: Border(
+              right: borderRight ? BorderSide(color: line) : BorderSide.none,
+              bottom: borderBottom ? BorderSide(color: line) : BorderSide.none,
+            ),
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(item.icon, size: 16, color: _palette.dark),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(item.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption.copyWith(
+                        color: AppColors.ink, fontWeight: FontWeight.w600)),
+              ),
+            ]),
+            SizedBox(height: compact ? 6 : 8),
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(item.value,
+                  style: AppTextStyles.statTabular.copyWith(
+                      color: AppColors.ink, fontSize: compact ? 20 : 24)),
+              if (item.unit != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 3, bottom: 2),
+                  child: Text(item.unit!,
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.inkMid)),
+                ),
+            ]),
+            if (item.foot != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(item.foot!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption
+                        .copyWith(color: item.footColor ?? AppColors.inkMid)),
+              ),
+          ]),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+          border: Border.all(color: line),
+          borderRadius: BorderRadius.circular(16)),
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: [
+        Row(children: [
+          cell(items[0], borderRight: true, borderBottom: true),
+          cell(items[1], borderBottom: true),
+        ]),
+        Row(children: [
+          cell(items[2], borderRight: true),
+          cell(items[3]),
+        ]),
+      ]),
+    );
+  }
+
+  /// A building-load row for the Home tab (handoff §4.1): outline icon
+  /// colored per-institute (Admin = `account_balance`, others =
+  /// `apartment`), no building-code badge, load bar + HIGH/MID/LOW pill.
+  Widget _buildBuildingLoadRow(Map<String, dynamic> building,
       {bool compact = false}) {
-    final code = building['code'] as String;
+    final code = (building['code'] ?? '').toString();
     final level = _energyLevel(code);
     final color = _energyColor(code);
     final devices = _buildingDeviceCounts[code] ?? 0;
+    final kwh = _buildingEnergy[code] ?? 0;
+    final maxKwh =
+        _buildingEnergy.values.fold<double>(1, (m, v) => v > m ? v : m);
+    final buildingPalette = InstituteColors.forCode(code);
+    final icon =
+        code.toUpperCase() == 'ADMIN' ? Icons.account_balance : Icons.apartment;
+
     return GestureDetector(
       onTap: () => Navigator.pushNamed(context, '/building', arguments: {
         'buildingCode': code,
@@ -1953,546 +2401,176 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'role': _role,
       }),
       child: Container(
-        margin: EdgeInsets.only(bottom: compact ? 8 : 10),
-        padding: EdgeInsets.all(compact ? 12 : 14),
+        padding: EdgeInsets.symmetric(vertical: compact ? 10 : 12),
         decoration: BoxDecoration(
-            color: AppColors.cardBg,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _palette.mid.withAlpha(31))),
+            border: Border(bottom: BorderSide(color: _palette.line))),
         child: Row(children: [
-          Container(
-              width: compact ? 40 : 44,
-              height: compact ? 40 : 44,
-              decoration: BoxDecoration(
-                  color: _palette.pale,
-                  borderRadius: BorderRadius.circular(12)),
-              child: Center(
-                  child: Text(code,
-                      style: TextStyle(
-                          fontFamily: AppFonts.family,
-                          fontSize: compact ? 9 : 10,
-                          fontWeight: FontWeight.w700,
-                          color: _palette.dark)))),
+          OutlineIconBox(
+              icon: icon, palette: buildingPalette, size: compact ? 36 : 40),
           SizedBox(width: compact ? 10 : 12),
           Expanded(
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Text(building['name'],
+                Text((building['name'] ?? code).toString(),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: compact ? 12 : 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
+                    style: AppTextStyles.subtitle.copyWith(
+                        color: AppColors.ink, fontSize: compact ? 14 : 16)),
                 const SizedBox(height: 2),
-                Text(
-                    '${building['floors']} ${building['floors'] == 1 ? 'floor' : 'floors'} · $devices devices',
+                Text('$devices ${devices == 1 ? 'device' : 'devices'}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: compact ? 10 : 11,
-                        color: AppColors.textMuted)),
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.inkMid)),
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: maxKwh <= 0 ? 0 : (kwh / maxKwh).clamp(0.0, 1.0),
+                    minHeight: 6,
+                    backgroundColor: AppColors.skeleton,
+                    valueColor: AlwaysStoppedAnimation<Color>(color),
+                  ),
+                ),
               ])),
+          const SizedBox(width: 10),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text(
-                '${_safeFormatDouble(_buildingEnergy[code] ?? 0, 1)} kWh this month',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    TextStyle(fontSize: compact ? 9 : 10, color: Colors.black)),
+            Text(_safeFormatDouble(kwh, 1),
+                style: AppTextStyles.subtitle.copyWith(
+                    color: AppColors.ink, fontSize: compact ? 14 : 16)),
             const SizedBox(height: 3),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                  color: color.withAlpha(26),
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: color.withAlpha(77))),
               child: Text(level,
                   style: TextStyle(
-                      fontSize: compact ? 9 : 10,
-                      fontWeight: FontWeight.w700,
-                      color: color)),
+                      fontSize: 10, fontWeight: FontWeight.w700, color: color)),
             ),
           ]),
-          const SizedBox(width: 6),
-          const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
         ]),
       ),
     );
   }
 
-  Widget _buildAnalyticsTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Analytics',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
-        const SizedBox(height: 4),
-        const Text('Realtime energy insights',
-            style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
-        const SizedBox(height: 20),
-        _buildRangeSelector(),
-        const SizedBox(height: 20),
-        _buildLineChart(),
-        const SizedBox(height: 16),
-        _buildDeviceStatusCard(),
-        const SizedBox(height: 16),
-        _buildTopUtilityCard(),
-        const SizedBox(height: 16),
-        _buildTopBuildingCard(),
-        const SizedBox(height: 16),
+  /// Last-7-days bar chart (handoff §4.1/§5): today emphasized + value
+  /// label, the highest non-today day in orange, the rest in light green.
+  Widget _buildLast7DaysCard(List<double> values, List<String> labels) {
+    final maxVal = values.fold<double>(0, (m, v) => v > m ? v : m);
+    var peakIndex = -1;
+    var peakVal = -1.0;
+    for (var i = 0; i < values.length - 1; i++) {
+      if (values[i] > peakVal) {
+        peakVal = values[i];
+        peakIndex = i;
+      }
+    }
+    const chartHeight = 110.0;
+    final todayIndex = values.length - 1;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _palette.line),
+      ),
+      child: Column(children: [
         SizedBox(
-          width: double.infinity,
-          height: 50,
-          child: OutlinedButton.icon(
-            onPressed: () => Navigator.pushNamed(context, '/history'),
-            icon: const Icon(Icons.history, size: 18),
-            label: const Text('View Full History'),
-            style: OutlinedButton.styleFrom(
-                foregroundColor: _palette.dark,
-                side: BorderSide(color: _palette.mid, width: 1.5),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14))),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildRangeSelector() {
-    final ranges = [
-      {'key': 'daily', 'label': 'Daily'},
-      {'key': 'weekly', 'label': 'Weekly'},
-      {'key': 'monthly', 'label': 'Monthly'},
-      {'key': 'yearly', 'label': 'Yearly'},
-    ];
-    return Container(
-      height: 42,
-      decoration: BoxDecoration(
-          color: _palette.pale, borderRadius: BorderRadius.circular(12)),
-      child: Row(
-          children: ranges.map((r) {
-        final isSelected = _analyticsRange == r['key'];
-        return Expanded(
-            child: GestureDetector(
-          onTap: () => _setAnalyticsRange(r['key']!),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            margin: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-                color: isSelected ? _palette.dark : Colors.transparent,
-                borderRadius: BorderRadius.circular(8)),
-            child: Center(
-                child: Text(r['label']!,
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: isSelected ? Colors.white : _palette.dark))),
-          ),
-        ));
-      }).toList()),
-    );
-  }
-
-  Widget _buildLineChart() {
-    final historyDisplay = _historyDisplay;
-    final canSwitchChart = historyDisplay.length > 1;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: _palette.mid.withAlpha(26))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text('Consumption Trend',
-                    style: TextStyle(
-                        fontFamily: AppFonts.family,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-                SizedBox(height: 2),
-                Text('kWh over time · realtime',
-                    style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
-              ])),
-          if (canSwitchChart) ...[
-            _chartTypeButton('line', Icons.show_chart),
-            const SizedBox(width: 6),
-            _chartTypeButton('bar', Icons.bar_chart),
-            const SizedBox(width: 10),
-          ],
-          Container(
-              width: 8,
-              height: 8,
-              decoration:
-                  BoxDecoration(color: _palette.mid, shape: BoxShape.circle)),
-          const SizedBox(width: 5),
-          Text('Live',
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.mid)),
-        ]),
-        const SizedBox(height: 20),
-        historyDisplay.isEmpty
-            ? const Center(
-                child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: 40),
-                    child: Text('No data yet',
-                        style: TextStyle(
-                            fontSize: 13, color: AppColors.textMuted))))
-            : SizedBox(
-                height: 160,
-                child: CustomPaint(
-                    painter: _trendChartType == 'bar'
-                        ? BarChartPainter(
-                            data: historyDisplay
-                                .map((d) => (d['kwh'] as num).toDouble())
-                                .toList(),
-                            maxKwh: _maxKwh)
-                        : LineChartPainter(
-                            data: historyDisplay
-                                .map((d) => (d['kwh'] as num).toDouble())
-                                .toList(),
-                            maxKwh: _maxKwh),
-                    child: Container())),
-        if (historyDisplay.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(historyDisplay.first['label'],
-                style:
-                    const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            if (historyDisplay.length > 2)
-              Text(historyDisplay[historyDisplay.length ~/ 2]['label'],
-                  style:
-                      const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-            Text(historyDisplay.last['label'],
-                style:
-                    const TextStyle(fontSize: 9, color: AppColors.textMuted)),
-          ]),
-        ],
-      ]),
-    );
-  }
-
-  Widget _chartTypeButton(String type, IconData icon) {
-    final isSelected = _trendChartType == type;
-    return GestureDetector(
-      onTap: () {
-        if (_trendChartType == type) return;
-        setState(() => _trendChartType = type);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(
-          color: isSelected ? _palette.dark : _palette.pale,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-              color: isSelected ? _palette.dark : _palette.mid.withAlpha(80)),
-        ),
-        child: Icon(
-          icon,
-          size: 14,
-          color: isSelected ? Colors.white : _palette.dark,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDeviceStatusCard() {
-    final total = _assignedDevices + _unassignedDevices;
-    final assignedPct = total == 0 ? 0.0 : _assignedDevices / total;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: _palette.mid.withAlpha(26))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Device Status',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        // Semantic: Assigned (green) vs Unassigned (AppColors.warning) is a
-        // 2-state status pairing in the same widget -- deliberately NOT
-        // retheme'd (assignment status, not brand chrome).
-        Row(children: [
-          Expanded(
-              child: _statusBadge('Assigned', _assignedDevices,
-                  AppColors.greenMid, Icons.check_circle_outline)),
-          const SizedBox(width: 12),
-          Expanded(
-              child: _statusBadge('Unassigned', _unassignedDevices,
-                  AppColors.warning, Icons.device_unknown_outlined)),
-        ]),
-        const SizedBox(height: 14),
-        // Same semantic pairing as above (assigned-fill on a warning-color
-        // track) -- NOT retheme'd for the same reason.
-        ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-                value: assignedPct,
-                minHeight: 8,
-                backgroundColor: AppColors.warning.withAlpha(40),
-                valueColor:
-                    const AlwaysStoppedAnimation<Color>(AppColors.greenMid))),
-        const SizedBox(height: 6),
-        Text('${_safeFormatDouble(assignedPct * 100, 0)}% devices assigned',
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-      ]),
-    );
-  }
-
-  Widget _statusBadge(String label, int count, Color color, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-          color: color.withAlpha(20),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withAlpha(50))),
-      child: Row(children: [
-        Icon(icon, size: 18, color: color),
-        const SizedBox(width: 8),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('$count',
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: color,
-                  fontFamily: AppFonts.family)),
-          Text(label,
-              style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-        ]),
-      ]),
-    );
-  }
-
-  Widget _buildTopUtilityCard() {
-    if (_utilityTotals.isEmpty) return const SizedBox();
-    final sorted = _utilityTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final maxVal = sorted.first.value;
-    // Categorical legend colors for utility types -- 'Lights' used the
-    // brand green as its arbitrary default series color (no semantic
-    // meaning vs Outlets/AC), so it's rethemed along with the rest of this
-    // screen's brand chrome; Outlets/AC keep their own fixed hues.
-    final Map<String, Color> colors = {
-      'Lights': _palette.mid,
-      'Outlets': const Color(0xFFE8922A),
-      'AC': const Color(0xFF2196F3)
-    };
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: _palette.mid.withAlpha(26))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Top Consuming Utilities',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        ...sorted.map((e) {
-          final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
-          final color = colors[e.key] ?? _palette.mid;
-          return Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Row(children: [
-                              Container(
-                                  width: 10,
-                                  height: 10,
-                                  decoration: BoxDecoration(
-                                      color: color, shape: BoxShape.circle)),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  e.key,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500,
-                                      color: AppColors.textDark),
-                                ),
-                              ),
-                            ]),
-                          ),
-                          const SizedBox(width: 8),
-                          Text('${_safeFormatDouble(e.value, 1)} kWh',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: _palette.dark)),
-                        ]),
-                    const SizedBox(height: 6),
-                    ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: LinearProgressIndicator(
-                            value: pct,
-                            minHeight: 7,
-                            backgroundColor: color.withAlpha(25),
-                            valueColor: AlwaysStoppedAnimation<Color>(color))),
-                  ]));
-        }),
-      ]),
-    );
-  }
-
-  Widget _buildTopBuildingCard() {
-    if (_buildingEnergy.isEmpty) return const SizedBox();
-    final sorted = _buildingEnergy.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final maxVal = sorted.first.value;
-    // Ordinal rank-cycling colors for the bars (rank 1/2/3 reuse the brand
-    // ramp's dark/mid/light tiers purely for visual variety, not tied to
-    // any specific real institute's identity) -- rethemed like the rest of
-    // this screen's chrome; the blue/orange entries keep their fixed hues.
-    final List<Color> barColors = [
-      _palette.dark,
-      _palette.mid,
-      _palette.light,
-      const Color(0xFF2196F3),
-      const Color(0xFFE8922A)
-    ];
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-          color: AppColors.cardBg,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: _palette.mid.withAlpha(26))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Top Consuming Institutes This Month',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
-        const SizedBox(height: 16),
-        ...sorted.asMap().entries.map((entry) {
-          final i = entry.key;
-          final e = entry.value;
-          final pct = maxVal == 0 ? 0.0 : e.value / maxVal;
-          final color = barColors[i % barColors.length];
-          return Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: Row(children: [
-                Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                        color: i == 0 ? _palette.dark : _palette.pale,
-                        shape: BoxShape.circle),
-                    child: Center(
-                        child: Text('${i + 1}',
-                            style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color:
-                                    i == 0 ? Colors.white : _palette.dark)))),
-                const SizedBox(width: 10),
+          height: chartHeight + 24,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (var i = 0; i < values.length; i++)
                 Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
                     child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(e.key,
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
-                                    color: AppColors.textDark)),
-                            Text('${_safeFormatDouble(e.value, 1)} kWh',
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: _palette.dark)),
-                          ]),
-                      const SizedBox(height: 5),
-                      ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: LinearProgressIndicator(
-                              value: pct,
-                              minHeight: 7,
-                              backgroundColor: color.withAlpha(25),
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(color))),
-                    ])),
-              ]));
-        }),
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        if (i == todayIndex)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(_safeFormatDouble(values[i], 0),
+                                style: AppTextStyles.caption.copyWith(
+                                    color: AppColors.ink,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                        Container(
+                          height: maxVal <= 0
+                              ? 4
+                              : (8 + (values[i] / maxVal) * (chartHeight - 8)),
+                          decoration: BoxDecoration(
+                            color: i == todayIndex
+                                ? _palette.dark
+                                : (i == peakIndex
+                                    ? AppColors.warning
+                                    : _palette.light),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(labels[i],
+                            style: AppTextStyles.caption
+                                .copyWith(color: AppColors.inkMuted)),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          _legendDot(_palette.dark, 'Today'),
+          const SizedBox(width: 14),
+          _legendDot(AppColors.warning, 'Peak'),
+          const SizedBox(width: 14),
+          _legendDot(_palette.light, 'Earlier'),
+        ]),
       ]),
     );
   }
 
-  Widget _buildBottomNav({required bool showAnalytics}) {
-    // The IndexedStack keeps fixed conceptual slots (0 Dashboard, 1 Map,
-    // 2 Analytics, 3 Automation); this just hides the Analytics slot from
-    // the nav bar and remaps taps to the slot they actually mean.
-    final tabIndices = <int>[0, 1, if (showAnalytics) 2, 3];
-    final navSlot = tabIndices.indexOf(_selectedIndex);
-    final currentNavSlot = navSlot < 0 ? 0 : navSlot;
+  Widget _legendDot(Color color, String label) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      const SizedBox(width: 5),
+      Text(label,
+          style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+    ]);
+  }
 
-    return Container(
-      decoration: BoxDecoration(color: Colors.white, boxShadow: [
-        BoxShadow(
-            color: Colors.black.withAlpha(15),
-            blurRadius: 16,
-            offset: const Offset(0, -4))
-      ]),
-      child: BottomNavigationBar(
-        currentIndex: currentNavSlot,
-        onTap: (slot) => setState(() => _selectedIndex = tabIndices[slot]),
-        backgroundColor: Colors.white,
-        selectedItemColor: _palette.dark,
-        unselectedItemColor: AppColors.textMuted,
-        selectedLabelStyle:
-            const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-        unselectedLabelStyle: const TextStyle(fontSize: 11),
-        elevation: 0,
-        type: BottomNavigationBarType.fixed,
-        items: [
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.dashboard_outlined),
-              activeIcon: Icon(Icons.dashboard),
-              label: 'Dashboard'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.map_outlined),
-              activeIcon: Icon(Icons.map),
-              label: 'Map'),
-          if (showAnalytics)
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.bar_chart_outlined),
-                activeIcon: Icon(Icons.bar_chart),
-                label: 'Analytics'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.schedule_outlined),
-              activeIcon: Icon(Icons.schedule),
-              label: 'Automation'),
-        ],
-      ),
+  // The IndexedStack keeps fixed conceptual slots (0 Dashboard, 1 Devices
+  // [List | Map segmented], 2 Analytics, 3 Automation, 4 More) -- this maps
+  // them to the matching `AppNavTab`s for the `AppBottomNav` widget (handoff
+  // §2/§3.7). More is a real 5th tab in the same IndexedStack (embedding
+  // `MoreScreen(showBackButton: false)`, see `build()`), not a pushed route
+  // -- only the screens More itself links out to (Manage Users, Settings,
+  // Notifications) are pushed routes with a back arrow.
+  static const _navTabOrder = [
+    AppNavTab.home,
+    AppNavTab.devices,
+    AppNavTab.analytics,
+    AppNavTab.automation,
+    AppNavTab.more,
+  ];
+
+  Widget _buildBottomNav() {
+    return AppBottomNav(
+      palette: _palette,
+      selected: _navTabOrder[_selectedIndex],
+      // Analytics is never hidden anymore -- see the `build()` comment above
+      // this widget's call site.
+      hiddenTabs: const {},
+      onSelect: (tab) =>
+          setState(() => _selectedIndex = _navTabOrder.indexOf(tab)),
     );
   }
 }

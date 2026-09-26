@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import 'room_devices_panel.dart';
@@ -37,7 +36,7 @@ class RoomDevicesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.surface,
+      backgroundColor: Colors.white,
       body: SafeArea(
         child: Column(children: [
           _buildHeader(context),

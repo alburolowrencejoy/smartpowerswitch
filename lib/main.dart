@@ -17,6 +17,7 @@ import 'screens/mobile/history_screen.dart';
 import 'screens/shared/manage_users_screen.dart';
 import 'screens/mobile/notifications_screen.dart';
 import 'screens/mobile/settings_screen.dart';
+import 'screens/mobile/more_screen.dart';
 import 'screens/shared/campus_map_screen.dart';
 import 'services/runtime_mode_service.dart';
 import 'services/device_service.dart';
@@ -148,7 +149,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
       theme: ThemeData(
         fontFamily: AppFonts.family,
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.greenDark),
-        scaffoldBackgroundColor: AppColors.greenPale,
+        scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
       ),
       initialRoute: '/',
@@ -160,6 +161,7 @@ class SmartPowerSwitchApp extends StatelessWidget {
         '/history': (_) => const HistoryScreen(),
         '/notifications': (_) => const NotificationsScreen(),
         '/settings': (_) => const SettingsScreen(),
+        '/more': (_) => const MoreScreen(),
         '/map': (_) => const CampusMapScreen(),
       },
       onGenerateRoute: (settings) {
@@ -230,26 +232,13 @@ class SmartPowerSwitchApp extends StatelessWidget {
         if (settings.name == '/manage-users') {
           final args = settings.arguments as Map<String, dynamic>? ?? {};
           return MaterialPageRoute(
-            builder: (_) => Scaffold(
-              backgroundColor: AppColors.surface,
-              appBar: AppBar(
-                backgroundColor: AppColors.greenDark,
-                iconTheme: const IconThemeData(color: Colors.white),
-                title: const Text(
-                  'Manage Users',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontFamily: AppFonts.family,
-                      fontWeight: FontWeight.w700),
-                ),
-              ),
-              body: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: ManageUsersScreen(
-                  role: args['role'] as String? ?? 'faculty',
-                  institute: args['institute'] as String?,
-                ),
-              ),
+            // ManageUsersScreen owns its full Scaffold (AppTopBar, white
+            // background) as of the mobile redesign -- no extra
+            // Scaffold/AppBar wrapper here anymore (that used to double up
+            // the top bar).
+            builder: (_) => ManageUsersScreen(
+              role: args['role'] as String? ?? 'faculty',
+              institute: args['institute'] as String?,
             ),
             settings: settings,
           );

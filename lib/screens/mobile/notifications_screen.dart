@@ -4,19 +4,34 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../services/download_open_service.dart';
 import '../../utils/placeholder_data.dart';
+import '../../widgets/app_chip.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../theme/app_fonts.dart';
 
+/// Notifications (handoff §4.10, institute-admin variant §5).
+///
+/// This is a single **shared** Firebase list (`notifications`), not a
+/// per-user inbox -- there is no per-notification "read by me" flag, so
+/// "unread" is derived client-side from a locally-stored
+/// [_lastSeenNotificationTsKey] timestamp (as the old screen already did).
+/// [_lastSeenAtOpen] captures that value once, *before* this screen's own
+/// visit silently advances it, so rows opened this session still render
+/// their correct unread dot instead of a lastSeen value that already moved.
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
+
+enum _NotifFilter { all, alerts, rate, updates }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
   static const String _lastSeenNotificationTsKey =
@@ -26,6 +41,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _loading = true;
   String? _errorText;
   StreamSubscription<DatabaseEvent>? _notificationsSub;
+
+  // Unread bookkeeping -- see class doc.
+  int? _lastSeenAtOpen;
+  bool _lastSeenCaptured = false;
+
+  _NotifFilter _filter = _NotifFilter.all;
+
+  // Ids currently mid-clear-all animation (see [_clearAll]). Rows stay
+  // mounted (never spliced out of [_notifications] by this screen) while an
+  // id is in here -- DeleteRowTransition animates them out locally, and the
+  // real removal only becomes visible once the deferred Firebase delete
+  // commits and the listener naturally drops the row.
+  final Set<String> _clearingIds = {};
 
   // ── Institute theming ──────────────────────────────────────────────────
   // This screen is a standalone pushed route (no role/institute constructor
@@ -37,6 +65,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   InstitutePalette get _palette =>
       InstituteTheme.resolve(_role, _institute).palette;
+
+  bool get _isInstituteAdmin =>
+      _role == 'institute_admin' && (_institute?.trim().isNotEmpty ?? false);
+
+  String? get _instituteCode => _institute?.trim().toUpperCase();
 
   Future<void> _hydrateSessionFromAuth() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -62,6 +95,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   void initState() {
     super.initState();
+    _captureLastSeen();
     _hydrateSessionFromAuth();
     _listenToNotifications();
   }
@@ -70,6 +104,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   void dispose() {
     _notificationsSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _captureLastSeen() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _lastSeenAtOpen = prefs.getInt(_lastSeenNotificationTsKey) ?? 0;
+      _lastSeenCaptured = true;
+    });
   }
 
   void _listenToNotifications() {
@@ -133,15 +176,99 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     await prefs.setInt(_lastSeenNotificationTsKey, newestTimestamp);
   }
 
+  Future<void> _markAllRead() async {
+    if (_notifications.isEmpty) return;
+    final newest = _notificationTimestamp(_notifications.first['timestamp']);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lastSeenNotificationTsKey, newest);
+    if (!mounted) return;
+    setState(() => _lastSeenAtOpen = newest);
+    TopToast.success(context, 'All notifications marked as read.');
+  }
+
+  /// The two-step delete flow for "clear all" (handoff §4.10/§5/§7).
+  ///
+  /// Bug fix: `notifications` is one shared Firebase list, not a per-user
+  /// inbox. The previous implementation always ran an unscoped
+  /// `ref('notifications').remove()` -- an institute admin tapping "clear
+  /// all" wiped every user's notifications, including other institutes' and
+  /// campus-wide (rate/update) ones. Per handoff §5 ("clear all clears
+  /// institute notifications"), an institute admin's clear-all must only
+  /// remove the rows scoped to their own institute (`building` matches
+  /// their institute code); campus/main admins keep clearing the whole
+  /// node. The actual Firebase write is deferred to [DeleteCommit], which
+  /// only runs once the 5s Undo window in [showDeleteFlow] elapses.
   Future<void> _clearAll() async {
-    try {
-      await FirebaseDatabase.instance.ref('notifications').remove();
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_lastSeenNotificationTsKey, 0);
-    } catch (_) {
-      if (!mounted) return;
-      TopToast.error(context, 'Unable to clear notifications.');
+    if (_notifications.isEmpty) return;
+
+    final isInstAdmin = _isInstituteAdmin;
+    final code = _instituteCode;
+    final targets = isInstAdmin
+        ? _notifications
+            .where((n) =>
+                (n['building'] as String? ?? '').trim().toUpperCase() == code)
+            .toList()
+        : _notifications;
+
+    if (targets.isEmpty) {
+      TopToast.show(context, 'No notifications to clear for $code.',
+          isError: true);
+      return;
     }
+
+    final ids = targets
+        .map((n) => n['id'] as String?)
+        .whereType<String>()
+        .toList();
+
+    await showDeleteFlow(
+      context,
+      type: DeleteType.notifications,
+      itemName: isInstAdmin ? '$code notifications' : 'All notifications',
+      onOptimisticRemove: () {
+        for (var i = 0; i < ids.length; i++) {
+          final id = ids[i];
+          Future.delayed(Duration(milliseconds: 60 * i), () {
+            if (mounted) setState(() => _clearingIds.add(id));
+          });
+        }
+      },
+      onRestore: () {
+        if (mounted) setState(() => _clearingIds.clear());
+      },
+      onCommit: (reason, otherText) async {
+        try {
+          final db = FirebaseDatabase.instance.ref();
+          final updates = <String, Object?>{};
+          if (isInstAdmin) {
+            for (final id in ids) {
+              updates['notifications/$id'] = null;
+            }
+          } else {
+            updates['notifications'] = null;
+          }
+          final logId = db.child('deletion_log').push().key;
+          updates['deletion_log/$logId'] = {
+            'type': 'notifications',
+            'scope': isInstAdmin ? code : 'campus',
+            'count': ids.length,
+            'reason': reason,
+            if (otherText != null && otherText.trim().isNotEmpty)
+              'otherText': otherText.trim(),
+            'deletedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+            'deletedByEmail': FirebaseAuth.instance.currentUser?.email ?? '',
+            'timestamp': ServerValue.timestamp,
+          };
+          await db.update(updates);
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(_lastSeenNotificationTsKey, 0);
+        } catch (e) {
+          if (mounted) setState(() => _clearingIds.removeAll(ids));
+          if (!mounted) return;
+          TopToast.error(context, 'Unable to clear notifications.');
+        }
+      },
+    );
   }
 
   int _notificationTimestamp(dynamic value) {
@@ -149,6 +276,47 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (value is num) return value.toInt();
     return int.tryParse(value?.toString() ?? '') ?? 0;
   }
+
+  bool _isUnread(Map<String, dynamic> notif) {
+    if (!_lastSeenCaptured) return false;
+    return _notificationTimestamp(notif['timestamp']) >
+        (_lastSeenAtOpen ?? 0);
+  }
+
+  _NotifFilter _categoryOf(Map<String, dynamic> notif) {
+    final type = notif['type'] as String? ?? '';
+    if (type == 'app_update') return _NotifFilter.updates;
+    if (type == 'rate_change' || type == 'rate_change_manual') {
+      return _NotifFilter.rate;
+    }
+    return _NotifFilter.alerts; // high_consumption, offline, unknown.
+  }
+
+  /// Rows an institute admin is allowed to see at all: their own
+  /// institute's building-scoped alerts, plus campus-wide entries (rate
+  /// changes, app updates) that have no `building` and affect everyone.
+  /// [source] defaults to the live [_notifications] list; the loading
+  /// skeleton passes in the placeholder list instead so the shimmer shows a
+  /// realistically-grouped/filtered shape rather than an empty state.
+  List<Map<String, dynamic>> _visibleForRole([
+    List<Map<String, dynamic>>? source,
+  ]) {
+    final base = source ?? _notifications;
+    if (!_isInstituteAdmin) return base;
+    final code = _instituteCode;
+    return base.where((n) {
+      final building = (n['building'] as String? ?? '').trim().toUpperCase();
+      return building.isEmpty || building == code;
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _filtered([List<Map<String, dynamic>>? source]) {
+    final visible = _visibleForRole(source);
+    if (_filter == _NotifFilter.all) return visible;
+    return visible.where((n) => _categoryOf(n) == _filter).toList();
+  }
+
+  int get _unreadCount => _visibleForRole().where(_isUnread).length;
 
   Future<void> _openUrlExternal(String rawUrl) async {
     if (rawUrl.trim().isEmpty) {
@@ -168,19 +336,76 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return;
     }
 
-    // Inform the user the download is starting.
     TopToast.threshold(context, 'Downloading update...');
     final opened = await DownloadOpenService.downloadAndOpenRemoteFile(
       rawUrl,
       suggestedFileName: assetName,
     );
     if (!opened && mounted) {
-      TopToast.error(context, 'Unable to download or open the update. Opening release page instead.');
-      // Try opening the release page in browser as a fallback
+      TopToast.error(context,
+          'Unable to download or open the update. Opening release page instead.');
       await DownloadOpenService.openRemoteUrl(rawUrl);
     } else if (opened && mounted) {
       TopToast.success(context, 'Update downloaded and opened.');
     }
+  }
+
+  /// Tap navigation (handoff §4.10: "Tap navigates to the relevant screen
+  /// (building/device/settings)"). The shared `notifications` list only
+  /// carries a building **code**/device **id** string, not the full
+  /// building-floor/device-detail record those screens require -- so each
+  /// case does one explicit, error-handled Firebase read first rather than
+  /// guessing at floors/utility/room, and surfaces a toast instead of
+  /// navigating into a broken screen if that read comes back empty.
+  Future<void> _openBuilding(String code) async {
+    if (code.trim().isEmpty) return;
+    try {
+      final snap = await FirebaseDatabase.instance.ref('buildings/$code').get();
+      if (!mounted) return;
+      if (!snap.exists) {
+        TopToast.error(context, 'That building no longer exists.');
+        return;
+      }
+      final data = Map<String, dynamic>.from(snap.value as Map);
+      Navigator.pushNamed(context, '/building', arguments: {
+        'buildingCode': code,
+        'buildingName': (data['name'] as String?) ?? code,
+        'floors': (data['floors'] as num?)?.toInt() ?? 1,
+        'role': _role,
+      });
+    } catch (_) {
+      if (!mounted) return;
+      TopToast.error(context, 'Unable to open that building right now.');
+    }
+  }
+
+  Future<void> _openDevice(String deviceId) async {
+    if (deviceId.trim().isEmpty) return;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('devices/$deviceId').get();
+      if (!mounted) return;
+      if (!snap.exists) {
+        TopToast.error(context, 'That device is no longer registered.');
+        return;
+      }
+      final data = Map<String, dynamic>.from(snap.value as Map);
+      Navigator.pushNamed(context, '/device', arguments: {
+        'deviceId': deviceId,
+        'utility': (data['utility'] as String?) ?? 'Electricity',
+        'building': (data['building'] as String?) ?? '',
+        'room': (data['room'] as String?) ?? 'unknown',
+        'floor': (data['floor'] as num?)?.toInt() ?? 1,
+        'role': _role,
+      });
+    } catch (_) {
+      if (!mounted) return;
+      TopToast.error(context, 'Unable to open that device right now.');
+    }
+  }
+
+  void _openSettings() {
+    Navigator.pushNamed(context, '/settings');
   }
 
   void _showUpdateDetails(Map<String, dynamic> notif) {
@@ -213,7 +438,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         final bottomPadding = MediaQuery.of(ctx).viewInsets.bottom;
         return Container(
           decoration: const BoxDecoration(
-            color: AppColors.cardBg,
+            color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
           padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + bottomPadding),
@@ -234,22 +459,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark,
-                  ),
-                ),
+                Text(title,
+                    style: AppTextStyles.title.copyWith(color: AppColors.ink)),
                 if (message.isNotEmpty) ...[
                   const SizedBox(height: 6),
-                  Text(
-                    message,
-                    style:
-                        const TextStyle(fontSize: 12, color: AppColors.textMid),
-                  ),
+                  Text(message,
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: AppColors.inkMid)),
                 ],
                 if (versionLine.isNotEmpty) ...[
                   const SizedBox(height: 10),
@@ -258,13 +474,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       Icon(Icons.system_update_alt_outlined,
                           size: 16, color: _palette.dark),
                       const SizedBox(width: 6),
-                      Text(
-                        'Version: $versionLine',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: _palette.dark),
-                      ),
+                      Text('Version: $versionLine',
+                          style: AppTextStyles.caption
+                              .copyWith(color: _palette.dark)),
                     ],
                   ),
                 ],
@@ -272,39 +484,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   const SizedBox(height: 6),
                   Text(
                     'Published: ${publishedAt.day}/${publishedAt.month}/${publishedAt.year}',
-                    style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted),
+                    style:
+                        AppTextStyles.caption.copyWith(color: AppColors.inkMuted),
                   ),
                 ],
                 const SizedBox(height: 14),
-                const Text(
-                  'What\'s New',
-                  style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textDark,
-                  ),
-                ),
+                Text('What\'s New',
+                    style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
                 const SizedBox(height: 8),
                 Container(
                   width: double.infinity,
                   constraints: const BoxConstraints(maxHeight: 280),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: _palette.pale,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _palette.mid.withAlpha(40)),
+                    border: Border.all(color: _palette.line),
                   ),
                   child: SingleChildScrollView(
                     child: Text(
                       notes.isEmpty
                           ? 'No detailed release notes were provided for this version.'
                           : notes,
-                      style: const TextStyle(
-                          fontSize: 12.5,
-                          height: 1.35,
-                          color: AppColors.textDark),
+                      style:
+                          AppTextStyles.bodySm.copyWith(color: AppColors.ink),
                     ),
                   ),
                 ),
@@ -344,7 +546,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _palette.dark,
                           disabledBackgroundColor:
-                              AppColors.textMuted.withAlpha(70),
+                              AppColors.disabledText.withAlpha(70),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -368,104 +570,70 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: Scaffold(
-        backgroundColor: AppColors.surface,
-        body: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(),
-              Expanded(
-                child: _errorText != null
-                    ? _buildError()
-                    : ScreenSkeleton(
-                        isLoading: _loading,
-                        child: Builder(builder: (context) {
-                          final displayNotifications =
-                              _notifications.isEmpty && _loading
-                                  ? placeholderNotificationList()
-                                  : _notifications;
-                          return displayNotifications.isEmpty
-                              ? _buildEmpty()
-                              : _buildList(displayNotifications);
-                        }),
-                      ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: BoxDecoration(
-        color: _palette.dark,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
-      ),
-      child: Row(children: [
-        GestureDetector(
-          onTap: () => Navigator.pop(context),
-          child: Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: Colors.white.withAlpha(38),
-              borderRadius: BorderRadius.circular(10),
+        backgroundColor: Colors.white,
+        appBar: AppTopBar(
+          title: 'Notifications',
+          subtitle: _isInstituteAdmin
+              ? '$_unreadCount unread · $_instituteCode only'
+              : '$_unreadCount unread',
+          variant: AppTopBarVariant.small,
+          showBackButton: true,
+          showInstituteLine: _isInstituteAdmin,
+          actions: [
+            AppTopBarAction(
+              icon: Icons.done_all,
+              tooltip: 'Mark all read',
+              onTap: _markAllRead,
             ),
-            child: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white, size: 16),
-          ),
+            AppTopBarAction(
+              icon: Icons.delete_sweep_outlined,
+              tooltip: 'Clear all',
+              onTap: _clearAll,
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Text('Notifications',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white)),
+        body: SafeArea(
+          top: false,
+          child: _errorText != null
+              ? _buildError()
+              : ScreenSkeleton(
+                  isLoading: _loading,
+                  child: Builder(builder: (context) {
+                    final usingPlaceholder =
+                        _notifications.isEmpty && _loading;
+                    final source = usingPlaceholder
+                        ? placeholderNotificationList()
+                        : null;
+                    final displayNotifications = _visibleForRole(source);
+                    return displayNotifications.isEmpty
+                        ? _buildEmpty()
+                        : _buildList(source);
+                  }),
+                ),
         ),
-        if (_notifications.isNotEmpty)
-          TextButton(
-            onPressed: _clearAll,
-            child: Text('Clear all',
-                style: TextStyle(fontSize: 12, color: _palette.light)),
-          ),
-      ]),
+      ),
     );
   }
 
   Widget _buildEmpty() {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: _palette.pale,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Icon(Icons.notifications_none, size: 36, color: _palette.mid),
-          ),
-          const SizedBox(height: 16),
-          const Text('No notifications',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-          const SizedBox(height: 6),
-          const Text(
-              'Alerts for high consumption\nand offline devices will appear here.',
-              style: TextStyle(fontSize: 13, color: AppColors.textMuted),
-              textAlign: TextAlign.center),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.notifications_none, size: 48, color: AppColors.inkMuted),
+            const SizedBox(height: 16),
+            Text('No notifications',
+                style:
+                    AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+            const SizedBox(height: 6),
+            Text(
+                'Alerts for high consumption\nand offline devices will appear here.',
+                style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted),
+                textAlign: TextAlign.center),
+          ],
+        ),
       ),
     );
   }
@@ -477,139 +645,242 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _palette.pale,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Icon(Icons.lock_outline, size: 34, color: _palette.mid),
-            ),
+            const Icon(Icons.lock_outline, size: 44, color: AppColors.inkMuted),
             const SizedBox(height: 16),
-            const Text('Cannot load notifications',
-                style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textDark)),
+            Text('Cannot load notifications',
+                style:
+                    AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
             const SizedBox(height: 8),
             Text(_errorText ?? 'Something went wrong.',
                 textAlign: TextAlign.center,
                 style:
-                    const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildList(List<Map<String, dynamic>> notifications) {
-    return ListView.separated(
-      padding: const EdgeInsets.all(20),
-      itemCount: notifications.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (_, i) => _buildNotifCard(notifications[i]),
+  Widget _buildList([List<Map<String, dynamic>>? source]) {
+    final filtered = _filtered(source);
+    final today = <Map<String, dynamic>>[];
+    final yesterday = <Map<String, dynamic>>[];
+    final earlier = <Map<String, dynamic>>[];
+    final now = DateTime.now();
+    final todayDate = DateTime(now.year, now.month, now.day);
+    final yesterdayDate = todayDate.subtract(const Duration(days: 1));
+
+    for (final n in filtered) {
+      final dt =
+          DateTime.fromMillisecondsSinceEpoch(_notificationTimestamp(n['timestamp']));
+      final d = DateTime(dt.year, dt.month, dt.day);
+      if (d == todayDate) {
+        today.add(n);
+      } else if (d == yesterdayDate) {
+        yesterday.add(n);
+      } else {
+        earlier.add(n);
+      }
+    }
+
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              AppFilterChip(
+                label: 'All',
+                selected: _filter == _NotifFilter.all,
+                onTap: () => setState(() => _filter = _NotifFilter.all),
+              ),
+              AppFilterChip(
+                label:
+                    'Alerts ${_visibleForRole(source).where((n) => _categoryOf(n) == _NotifFilter.alerts).length}',
+                selected: _filter == _NotifFilter.alerts,
+                onTap: () => setState(() => _filter = _NotifFilter.alerts),
+              ),
+              AppFilterChip(
+                label: 'Rate',
+                selected: _filter == _NotifFilter.rate,
+                onTap: () => setState(() => _filter = _NotifFilter.rate),
+              ),
+              AppFilterChip(
+                label: 'Updates',
+                selected: _filter == _NotifFilter.updates,
+                onTap: () => setState(() => _filter = _NotifFilter.updates),
+              ),
+            ],
+          ),
+        ),
+        if (filtered.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(32),
+            child: Center(
+              child: Text('Nothing in this filter.',
+                  style:
+                      AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            ),
+          ),
+        if (today.isNotEmpty) ..._buildGroup('Today', today),
+        if (yesterday.isNotEmpty) ..._buildGroup('Yesterday', yesterday),
+        if (earlier.isNotEmpty) ..._buildGroup('Earlier', earlier),
+      ],
     );
   }
 
-  Widget _buildNotifCard(Map<String, dynamic> notif) {
+  List<Widget> _buildGroup(String label, List<Map<String, dynamic>> items) {
+    return [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+        child: Text(label,
+            style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+      ),
+      for (final n in items)
+        DeleteRowTransition(
+          key: ValueKey(n['id']),
+          deleting: _clearingIds.contains(n['id']),
+          message: 'Notification cleared',
+          child: _buildNotifRow(n),
+        ),
+    ];
+  }
+
+  Widget _buildNotifRow(Map<String, dynamic> notif) {
     final type = notif['type'] as String? ?? '';
     final message = notif['message'] as String? ?? '';
     final building = notif['building'] as String? ?? '';
     final deviceId = notif['deviceId'] as String? ?? '';
-    final details = notif['details'] as String? ?? '';
     final latestVersion = notif['version'] as String? ?? '';
     final currentVersion = notif['currentVersion'] as String? ?? '';
-    final timestamp = notif['timestamp'] as int? ?? 0;
+    final timestamp = notif['timestamp'];
     final isHigh = type == 'high_consumption';
     final isUpdate = type == 'app_update';
-    final isRateChange = type == 'rate_change' || type == 'rate_change_manual' || type == 'rate_change_manual';
+    final isRateChange = type == 'rate_change' || type == 'rate_change_manual';
+    final unread = _isUnread(notif);
 
-    // Semantic: notification-type severity tier (rate-change/update = green
-    // "info", high-consumption = warning, offline-device = error) -- not
-    // brand chrome, so deliberately NOT retheme'd. Drives this card's icon,
-    // icon background, and border below.
-    final color = isRateChange
-      ? AppColors.greenMid
-      : isUpdate
-        ? AppColors.greenMid
-        : isHigh
-          ? AppColors.warning
-          : AppColors.error;
-    final icon = isRateChange
-      ? Icons.check_circle
-      : isUpdate
-        ? Icons.system_update_alt_outlined
-        : isHigh
-          ? Icons.warning_amber_outlined
-          : Icons.wifi_off;
-    final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    late final IconData icon;
+    late final Color iconColor;
+    late final Color iconBg;
+    late final Color iconBorder;
+    String title;
+    if (isRateChange) {
+      icon = Icons.receipt_long;
+      iconColor = AppColors.successText;
+      iconBg = Colors.white;
+      iconBorder = AppColors.success.withAlpha(60);
+      title = 'Rate updated';
+    } else if (isUpdate) {
+      icon = Icons.system_update_alt_outlined;
+      iconColor = AppColors.successText;
+      iconBg = Colors.white;
+      iconBorder = AppColors.success.withAlpha(60);
+      title = 'Update ready';
+    } else if (isHigh) {
+      icon = Icons.local_fire_department_outlined;
+      iconColor = AppColors.warningText;
+      iconBg = Colors.white;
+      iconBorder = AppColors.warning.withAlpha(120);
+      title = 'High usage';
+    } else {
+      icon = Icons.wifi_off;
+      iconColor = AppColors.errorText;
+      iconBg = Colors.white;
+      iconBorder = AppColors.error.withAlpha(120);
+      title = 'Device offline';
+    }
+
+    final dt = DateTime.fromMillisecondsSinceEpoch(_notificationTimestamp(timestamp));
     final timeStr =
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}  ${dt.day}/${dt.month}/${dt.year}';
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-    String sourceLine = '';
+    String fallbackMessage;
     if (isUpdate) {
       final from = currentVersion.isEmpty ? 'current' : currentVersion;
       final to = latestVersion.isEmpty ? 'latest' : latestVersion;
-      sourceLine = 'Version $from -> $to';
+      fallbackMessage = 'Version $from -> $to';
+    } else if (isRateChange) {
+      fallbackMessage = message;
     } else {
-      sourceLine = '$building · $deviceId';
+      fallbackMessage = '$building · $deviceId';
+    }
+    final displayMessage = message.isNotEmpty ? message : fallbackMessage;
+
+    VoidCallback? onTap;
+    if (isUpdate) {
+      onTap = () => _showUpdateDetails(notif);
+    } else if (isRateChange) {
+      onTap = _openSettings;
+    } else if (isHigh && building.isNotEmpty) {
+      onTap = () => _openBuilding(building);
+    } else if (!isHigh && !isUpdate && !isRateChange && deviceId.isNotEmpty) {
+      onTap = () => _openDevice(deviceId);
     }
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: isUpdate ? () => _showUpdateDetails(notif) : null,
+        onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           decoration: BoxDecoration(
-            color: AppColors.cardBg,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withAlpha(51)),
+            border: Border(bottom: BorderSide(color: _palette.line)),
           ),
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: color.withAlpha(26),
-                borderRadius: BorderRadius.circular(10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: iconBorder, width: 1),
+                ),
+                child: Icon(icon, size: 20, color: iconColor),
               ),
-              child: Icon(icon, size: 20, color: color),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(message,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textDark)),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(title,
+                              style: AppTextStyles.subtitle
+                                  .copyWith(color: AppColors.ink)),
+                        ),
+                        if (unread) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            width: 7,
+                            height: 7,
+                            decoration: BoxDecoration(
+                              color: _palette.dark,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(displayMessage,
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMid)),
                     const SizedBox(height: 4),
-                    Text(sourceLine,
-                        style: const TextStyle(
-                            fontSize: 11, color: AppColors.textMuted)),
-                    if (isUpdate && details.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        details,
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 11, color: AppColors.textMid),
-                      ),
-                    ],
-                    const SizedBox(height: 2),
                     Text(timeStr,
-                        style: const TextStyle(
-                            fontSize: 10, color: AppColors.textMuted)),
-                  ]),
-            ),
-          ]),
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.inkMuted)),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

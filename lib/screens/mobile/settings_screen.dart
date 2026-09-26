@@ -5,16 +5,31 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_fonts.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../services/download_open_service.dart';
 import '../../services/github_update_service.dart';
 import '../../services/davao_light_rate_monitor.dart';
 import '../../services/automation_scheduler_service.dart';
+import '../../widgets/app_button.dart';
 import '../../widgets/app_text_field.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/outline_icon_box.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../theme/app_fonts.dart';
 
+/// Settings (handoff §4.13, institute-admin variant §5/§10.4).
+///
+/// Institute admins get the electricity rate section **read-only** ("Set by
+/// the campus admin", no manual-entry field, no Save/Fetch buttons) -- this
+/// is a settled product decision (handoff §10.4: "institute-admin
+/// electricity rate is read-only, as in the preview"), enforced here at the
+/// client level. Note: `database.rules.json`'s `settings` node currently
+/// still grants `institute_admin` write access at the backend rule level --
+/// tightening that to match this UI decision is a `database.rules.json`
+/// change, out of this screen's scope (see the deletion-log-schema owner
+/// for that file).
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -24,7 +39,6 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   static const String _fixedGithubRepo = 'alburolowrencejoy/smartpowerswitch';
-  static const String _firstSectionKey = 'iot';
 
   final _rateController = TextEditingController();
   final _unassignedIotController = TextEditingController();
@@ -40,13 +54,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   GithubReleaseInfo? _githubRelease;
   bool _githubChecking = false;
   bool _fetchingLatestRate = false;
+  int? _registeredDeviceCount;
 
   List<Map<String, dynamic>> _rateHistory = [];
-  String _openSectionKey = _firstSectionKey;
 
   late DavaoLightRateMonitor _rateMonitor;
 
   StreamSubscription? _combinedSub;
+  StreamSubscription<DatabaseEvent>? _deviceCountSub;
 
   // True until the first combined emission of this screen's 3 Firebase
   // streams (electricityRate, lastRateUpdate, rate_changes) has been
@@ -78,6 +93,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   InstitutePalette get _palette =>
       InstituteTheme.resolve(_role, _institute).palette;
 
+  bool get _isInstituteAdmin =>
+      _role == 'institute_admin' && (_institute?.trim().isNotEmpty ?? false);
+
   Future<void> _hydrateSessionFromAuth() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -105,6 +123,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _hydrateSessionFromAuth();
     _rateMonitor = DavaoLightRateMonitor();
     _listenAll();
+    _listenDeviceCount();
     _loadAppVersion();
     _checkGithubRelease(silent: true);
   }
@@ -114,6 +133,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _rateController.dispose();
     _unassignedIotController.dispose();
     _combinedSub?.cancel();
+    _deviceCountSub?.cancel();
     _loadTimeoutTimer?.cancel();
     super.dispose();
   }
@@ -131,16 +151,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _listenAll();
   }
 
-  void _toggleSection(String key) {
-    setState(() {
-      _openSectionKey = _openSectionKey == key ? '' : key;
-    });
-  }
-
   Future<void> _loadAppVersion() async {
     final info = await PackageInfo.fromPlatform();
     if (!mounted) return;
     setState(() => _appVersion = info.version);
+  }
+
+  /// Independent, best-effort count of registered IoT devices (handoff
+  /// §4.13: "N registered" next to Register device). Deliberately kept as
+  /// its own tiny subscription rather than folded into the combined rate
+  /// listener below -- a failure here should never affect the rate
+  /// section's careful sticky-loading/error state, it should just leave the
+  /// count blank.
+  void _listenDeviceCount() {
+    _deviceCountSub = FirebaseDatabase.instance
+        .ref('master_devices')
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final value = event.snapshot.value;
+      setState(() {
+        _registeredDeviceCount = value is Map ? value.length : 0;
+      });
+    }, onError: (_) {
+      // Leave _registeredDeviceCount null (hidden) on failure.
+    });
   }
 
   // ── Listen to all 3 Firebase paths this screen needs (electricity rate,
@@ -234,6 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _saveRate() async {
+    if (_isInstituteAdmin) return; // Client-side guard; see class doc.
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
       setState(() {
@@ -371,6 +407,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _fetchLatestRate() async {
+    if (_isInstituteAdmin) return; // Client-side guard; see class doc.
     setState(() => _fetchingLatestRate = true);
     try {
       final result = await _rateMonitor.monitorAndUpdateRate();
@@ -477,6 +514,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  static const _rateValueStyle = TextStyle(
+    fontFamily: AppFonts.family,
+    fontSize: 28,
+    height: 34 / 28,
+    fontWeight: FontWeight.w700,
+  );
+
   // ── Build ────────────────────────────────────────────────────
 
   @override
@@ -486,176 +530,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
         extensions: [InstituteTheme.resolve(_role, _institute)],
       ),
       child: Scaffold(
-        backgroundColor: AppColors.surface,
+        backgroundColor: Colors.white,
+        appBar: AppTopBar(
+          title: 'Settings',
+          subtitle: _isInstituteAdmin
+              ? 'Devices, updates, account'
+              : 'Rate, devices, updates, account',
+          variant: AppTopBarVariant.small,
+          showBackButton: true,
+          showInstituteLine: _isInstituteAdmin,
+        ),
         body: SafeArea(
-          child: Column(children: [
-            _buildHeader(),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildIotInventorySection(),
-                      const SizedBox(height: 12),
-                      _errorText != null
-                          ? _buildRateSectionError()
-                          : ScreenSkeleton(
-                              isLoading: _isLoading,
-                              child: _buildRateSection()),
-                      const SizedBox(height: 12),
-                      _buildUpdaterSection(),
-                      const SizedBox(height: 12),
-                      _buildAccountSection(),
-                      const SizedBox(height: 12),
-                      _buildAppInfoSection(),
-                    ]),
-              ),
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.only(bottom: 32),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _errorText != null
+                    ? _buildRateSectionError()
+                    : ScreenSkeleton(
+                        isLoading: _isLoading, child: _buildRateSection()),
+                _buildRegisterDeviceSection(),
+                _buildUpdaterSection(),
+                _buildAccountSection(),
+              ],
             ),
-          ]),
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildIotInventorySection() {
-    return _section(
-      sectionKey: 'iot',
-      title: 'IoT Device Inventory',
-      icon: Icons.memory_outlined,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text(
-          'Register a real IoT device ID as unassigned so it can be added to a room/floor later.',
-          style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-        ),
-        const SizedBox(height: 12),
-        Row(children: [
-          Expanded(
-            child: AppTextField(
-              controller: _unassignedIotController,
-              shakeTrigger: _iotShake,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontSize: 14, color: AppColors.textDark),
-              onChanged: (_) {
-                if (_iotError != null) setState(() => _iotError = null);
-              },
-              decoration: InputDecoration(
-                hintText: 'e.g. ESP32-ROOM101-001',
-                errorText: _iotError,
-                errorMaxLines: 2,
-                hintStyle: const TextStyle(color: AppColors.textMuted),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          SizedBox(
-            height: 46,
-            child: ElevatedButton(
-              onPressed: _registeringIot ? null : _registerUnassignedIotDevice,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12))),
-              child: _registeringIot
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Register',
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600)),
-            ),
-          ),
-        ]),
-      ]),
-    );
-  }
+  Widget _sectionDivider() => Container(height: 1, color: _palette.line);
 
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: BoxDecoration(
-        color: _palette.dark,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
-      ),
-      child: Row(children: [
-        GestureDetector(
-          onTap: () => Navigator.pop(context),
-          child: Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: Colors.white.withAlpha(38),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white, size: 16),
-          ),
-        ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Text('Settings',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white)),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: _palette.light.withAlpha(51),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text('Admin',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.light)),
-        ),
-      ]),
-    );
-  }
+  Widget _sectionPadding(Widget child) =>
+      Padding(padding: const EdgeInsets.fromLTRB(20, 20, 20, 20), child: child);
 
   Widget _buildRateSectionError() {
-    return _section(
-      sectionKey: 'rate',
-      title: 'Electricity Rate',
-      icon: Icons.payments_outlined,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
-        Icon(Icons.wifi_off_rounded, size: 28, color: _palette.mid),
-        const SizedBox(height: 10),
-        Text(_errorText ?? 'Failed to load rate settings.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-        const SizedBox(height: 12),
-        ElevatedButton.icon(
-          onPressed: _retryLoad,
-          icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-          label: const Text('Retry', style: TextStyle(color: Colors.white)),
-          style: ElevatedButton.styleFrom(
-              backgroundColor: _palette.dark,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10))),
-        ),
-      ]),
+    return Column(
+      children: [
+        _sectionPadding(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Electricity rate',
+                style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+            const SizedBox(height: 12),
+            const Icon(Icons.wifi_off_rounded, size: 28, color: AppColors.inkMuted),
+            const SizedBox(height: 10),
+            Text(_errorText ?? 'Failed to load rate settings.',
+                style: AppTextStyles.bodySm
+                    .copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 12),
+            AppOutlineButton(label: 'Retry', onPressed: _retryLoad, icon: Icons.refresh),
+          ],
+        )),
+        _sectionDivider(),
+      ],
     );
   }
 
@@ -663,448 +594,368 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final lastUpdateText = _lastRateUpdateTime == null
         ? 'Never'
         : _formatDateTime(_lastRateUpdateTime!);
+    final dateLabel = _lastRateUpdateTime == null
+        ? ''
+        : 'Davao Light · ${_lastRateUpdateTime!.month}/${_lastRateUpdateTime!.day}';
 
-    return _section(
-      sectionKey: 'rate',
-      title: 'Electricity Rate',
-      icon: Icons.payments_outlined,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Current rate: ₱${_currentRate.toStringAsFixed(2)} / kWh',
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-        const SizedBox(height: 6),
-        Text('Last Updated: $lastUpdateText',
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-        const SizedBox(height: 12),
-
-        // Fetch Latest Rate Button
-        SizedBox(
-          width: double.infinity,
-          height: 44,
-          child: OutlinedButton.icon(
-            onPressed: _fetchingLatestRate ? null : _fetchLatestRate,
-            icon: _fetchingLatestRate
-                ? SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: _palette.dark,
-                    ),
-                  )
-                : const Icon(Icons.cloud_download_outlined, size: 18),
-            label: Text(
-              _fetchingLatestRate ? 'Fetching...' : 'Fetch Latest Rate',
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: _palette.dark,
-              side: BorderSide(color: _palette.dark.withAlpha(90)),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-        const Divider(height: 1),
-        const SizedBox(height: 12),
-
-        const Text(
-          'Manual Update',
-          style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textDark),
-        ),
-        const SizedBox(height: 10),
-
-        Row(children: [
-          Expanded(
-            child: AppTextField(
-              controller: _rateController,
-              shakeTrigger: _rateShake,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(fontSize: 14, color: AppColors.textDark),
-              onChanged: (_) {
-                if (_rateError != null) setState(() => _rateError = null);
-              },
-              decoration: InputDecoration(
-                prefixText: '₱ ',
-                errorText: _rateError,
-                hintText: '11.5',
-                hintStyle: const TextStyle(color: AppColors.textMuted),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: _palette.mid)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          SizedBox(
-            height: 46,
-            child: ElevatedButton(
-              onPressed: _saving ? null : _saveRate,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12))),
-              child: _saving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save',
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600)),
-            ),
-          ),
-        ]),
-
-        const SizedBox(height: 12),
-        const Divider(height: 1),
-        const SizedBox(height: 12),
-
-        // Rate Change History Section
-        if (_rateHistory.isNotEmpty) ...[
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Rate Change History',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark,
+    return Column(
+      children: [
+        _sectionPadding(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Electricity rate',
+                      style:
+                          AppTextStyles.title.copyWith(color: AppColors.ink)),
                 ),
-              ),
-              Text(
-                '${_rateHistory.length} changes',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textMuted,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ..._rateHistory.take(10).map((change) {
-            final timestamp = (change['timestamp'] as num?)?.toInt() ?? 0;
-            final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
-            final oldRate = (change['oldRate'] as num?)?.toDouble() ?? 0.0;
-            final newRate = (change['newRate'] as num?)?.toDouble() ?? 0.0;
-            final source = (change['source'] as String?) ?? 'unknown';
-            final isManual = source == 'manual_update';
-
-            return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _palette.mid.withAlpha(26)),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: isManual
-                          ? _palette.dark.withAlpha(20)
-                          : _palette.pale,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Center(
-                      child: Icon(
-                        isManual ? Icons.edit : Icons.cloud_download,
-                        size: 16,
-                        color: isManual ? _palette.dark : _palette.mid,
-                      ),
-                    ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: AppColors.success.withAlpha(90)),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '₱${oldRate.toStringAsFixed(2)} → ₱${newRate.toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textDark,
-                          ),
-                        ),
-                        Text(
-                          '${_formatDateTime(dateTime)} • ${isManual ? 'Manual' : 'Auto'}',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: Text('Auto',
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.successText)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text('Used for every cost in the app',
+                style:
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 10),
+            RichText(
+              text: TextSpan(
+                style: _rateValueStyle.copyWith(color: AppColors.ink),
+                children: [
+                  TextSpan(text: '₱${_currentRate.toStringAsFixed(2)}'),
+                  TextSpan(
+                    text: ' per kWh',
+                    style: AppTextStyles.body.copyWith(color: AppColors.inkMuted),
                   ),
                 ],
               ),
-            );
-          }),
-        ] else
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: Text(
-                'No rate changes yet',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
-              ),
             ),
-          ),
-      ]),
+            if (dateLabel.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(dateLabel,
+                  style: AppTextStyles.caption
+                      .copyWith(color: AppColors.inkMuted)),
+            ],
+            const SizedBox(height: 6),
+            Text('Last updated: $lastUpdateText',
+                style:
+                    AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 16),
+            if (_isInstituteAdmin)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _palette.line),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.lock_outline, size: 18, color: AppColors.inkMid),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text('Set by the campus admin.',
+                          style: AppTextStyles.bodySm
+                              .copyWith(color: AppColors.inkMid)),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              AppOutlineButton(
+                label: _fetchingLatestRate ? 'Fetching...' : 'Fetch latest rate',
+                icon: Icons.cloud_download_outlined,
+                onPressed: _fetchingLatestRate ? null : _fetchLatestRate,
+                expand: true,
+              ),
+              const SizedBox(height: 16),
+              Text('Set manually',
+                  style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: AppTextField(
+                      controller: _rateController,
+                      shakeTrigger: _rateShake,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) {
+                        if (_rateError != null) setState(() => _rateError = null);
+                      },
+                      decoration: InputDecoration(
+                        prefixText: '₱ ',
+                        errorText: _rateError,
+                        hintText: 'e.g. 11.75',
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: _palette.line),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: _palette.line),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: _palette.dark),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  AppPrimaryButton(
+                    label: 'Save rate',
+                    onPressed: _saving ? null : _saveRate,
+                  ),
+                ],
+              ),
+            ],
+          ],
+        )),
+        _sectionDivider(),
+        if (_rateHistory.isNotEmpty) ...[
+          _sectionPadding(Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Rate history',
+                  style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+              const SizedBox(height: 12),
+              ..._rateHistory.take(10).map((change) {
+                final timestamp = (change['timestamp'] as num?)?.toInt() ?? 0;
+                final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+                final oldRate = (change['oldRate'] as num?)?.toDouble() ?? 0.0;
+                final newRate = (change['newRate'] as num?)?.toDouble() ?? 0.0;
+                final source = (change['source'] as String?) ?? 'unknown';
+                final isManual = source == 'manual_update';
+                final delta = newRate - oldRate;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    children: [
+                      OutlineIconBox(
+                        icon: isManual ? Icons.edit_outlined : Icons.cloud_download_outlined,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '₱${oldRate.toStringAsFixed(2)} → ₱${newRate.toStringAsFixed(2)}',
+                              style: AppTextStyles.subtitle
+                                  .copyWith(color: AppColors.ink),
+                            ),
+                            Text(
+                              '${_formatDateTime(dateTime)} · ${isManual ? 'Manual' : 'Auto'}',
+                              style: AppTextStyles.caption
+                                  .copyWith(color: AppColors.inkMuted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        '${delta >= 0 ? '↑' : '↓'} ${delta.abs().toStringAsFixed(2)}',
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.inkMid),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          )),
+          _sectionDivider(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildRegisterDeviceSection() {
+    final countLabel = _registeredDeviceCount == null
+        ? ''
+        : '$_registeredDeviceCount registered';
+    return Column(
+      children: [
+        _sectionPadding(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Register device',
+                      style:
+                          AppTextStyles.title.copyWith(color: AppColors.ink)),
+                ),
+                if (countLabel.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: _palette.line),
+                    ),
+                    child: Text(countLabel,
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.inkMid)),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('ID printed on the ESP32 label',
+                style:
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: AppTextField(
+                    controller: _unassignedIotController,
+                    shakeTrigger: _iotShake,
+                    textCapitalization: TextCapitalization.characters,
+                    onChanged: (_) {
+                      if (_iotError != null) setState(() => _iotError = null);
+                    },
+                    decoration: InputDecoration(
+                      hintText: 'DEV-2024-XXXX',
+                      errorText: _iotError,
+                      errorMaxLines: 2,
+                      prefixIcon:
+                          const Icon(Icons.memory, size: 18),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 14),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _palette.line),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _palette.line),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _palette.dark),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                AppPrimaryButton(
+                  label: 'Register',
+                  onPressed: _registeringIot ? null : _registerUnassignedIotDevice,
+                ),
+              ],
+            ),
+          ],
+        )),
+        _sectionDivider(),
+      ],
     );
   }
 
   Widget _buildAccountSection() {
     final user = FirebaseAuth.instance.currentUser;
-    return _section(
-      sectionKey: 'account',
-      title: 'Account',
-      icon: Icons.person_outline,
-      child: Column(children: [
-        _settingRow(Icons.email_outlined, 'Email', user?.email ?? ''),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          height: 46,
-          child: OutlinedButton.icon(
-            onPressed: _logout,
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Sign Out'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.error,
-              side: BorderSide(color: AppColors.error.withAlpha(102)),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+    return Column(
+      children: [
+        _sectionPadding(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Account',
+                style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+            const SizedBox(height: 12),
+            _row(Icons.email_outlined, 'Email', user?.email ?? ''),
+            const SizedBox(height: 16),
+            AppOutlineButton(
+              label: 'Sign out',
+              icon: Icons.logout,
+              onPressed: _logout,
+              expand: true,
             ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildAppInfoSection() {
-    final version = _appVersion.isEmpty ? 'Loading...' : _appVersion;
-    return _section(
-      sectionKey: 'appInfo',
-      title: 'App Info',
-      icon: Icons.info_outline,
-      child: Column(children: [
-        _settingRow(
-            Icons.business, 'Institution', 'Davao del Norte State College'),
-        _settingRow(
-            Icons.location_on_outlined, 'Location', 'Davao del Norte, PH'),
-        _settingRow(Icons.tag, 'Version', version),
-      ]),
+          ],
+        )),
+      ],
     );
   }
 
   Widget _buildUpdaterSection() {
     final release = _githubRelease;
-    final latestLabel = release == null
-        ? 'Not checked yet'
-        : release.releaseName.isNotEmpty
-            ? release.releaseName
-            : release.latestVersion;
     final statusLabel = release == null
         ? 'Ready to check latest release.'
         : release.updateAvailable
-            ? 'Update available: ${release.latestVersion}'
+            ? '${release.latestVersion} available'
             : 'Already on the latest version.';
 
-    return _section(
-      sectionKey: 'updater',
-      title: 'App Updater',
-      icon: Icons.system_update_alt_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Updates are sourced from the fixed project GitHub Releases.',
-            style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            height: 44,
-            child: OutlinedButton.icon(
+    return Column(
+      children: [
+        _sectionPadding(Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('App update',
+                      style:
+                          AppTextStyles.title.copyWith(color: AppColors.ink)),
+                ),
+                if (release?.assetUrl != null)
+                  AppOutlineButton(
+                    label: release!.updateAvailable ? 'Install' : 'Open',
+                    onPressed: _openGithubDownload,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(statusLabel,
+                style:
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 12),
+            _row(Icons.phone_android_outlined, 'Current version',
+                _appVersion.isEmpty ? 'Loading...' : _appVersion),
+            _row(Icons.system_update_alt, 'Latest release',
+                release == null
+                    ? 'Not checked yet'
+                    : (release.releaseName.isNotEmpty
+                        ? release.releaseName
+                        : release.latestVersion)),
+            const SizedBox(height: 12),
+            AppOutlineButton(
+              label: _githubChecking ? 'Checking...' : 'Check latest',
+              icon: Icons.search_outlined,
               onPressed: _githubChecking ? null : _checkGithubRelease,
-              icon: _githubChecking
-                  ? SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _palette.dark,
-                      ),
-                    )
-                  : const Icon(Icons.search_outlined, size: 18),
-              label: Text(
-                _githubChecking ? 'Checking...' : 'Check Latest',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: _palette.dark,
-                side: BorderSide(color: _palette.dark.withAlpha(90)),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _settingRow(Icons.phone_android_outlined, 'Current version',
-              _appVersion.isEmpty ? 'Loading...' : _appVersion),
-          _settingRow(Icons.source_outlined, 'GitHub repo', _fixedGithubRepo),
-          _settingRow(Icons.system_update_alt, 'Latest release', latestLabel),
-          _settingRow(Icons.info_outline, 'Status', statusLabel),
-          if (release?.assetUrl != null) ...[
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: ElevatedButton.icon(
-                onPressed: _openGithubDownload,
-                icon: Icon(
-                  release!.updateAvailable
-                      ? Icons.download_rounded
-                      : Icons.open_in_new,
-                  size: 18,
-                  color: Colors.white,
-                ),
-                label: Text(
-                  release.updateAvailable ? 'Download Update' : 'Open APK',
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w600),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      release.updateAvailable ? _palette.dark : _palette.mid,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              release.assetName ?? release.releaseUrl,
-              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
-              overflow: TextOverflow.ellipsis,
+              expand: true,
             ),
           ],
-        ],
-      ),
+        )),
+        _sectionDivider(),
+      ],
     );
   }
 
-  Widget _section(
-      {required String sectionKey,
-      required String title,
-      required IconData icon,
-      required Widget child}) {
-    final isOpen = _openSectionKey == sectionKey;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color:
-              isOpen ? _palette.dark.withAlpha(70) : _palette.mid.withAlpha(18),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(isOpen ? 10 : 4),
-            blurRadius: isOpen ? 16 : 10,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        InkWell(
-          onTap: () => _toggleSection(sectionKey),
-          borderRadius: BorderRadius.circular(18),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: isOpen ? _palette.dark.withAlpha(20) : _palette.pale,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon,
-                    size: 18, color: isOpen ? _palette.dark : _palette.mid),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: isOpen ? AppColors.textDark : AppColors.textMid,
-                  ),
-                ),
-              ),
-            ]),
-          ),
-        ),
-        AnimatedCrossFade(
-          firstChild: const SizedBox.shrink(),
-          secondChild: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: child,
-          ),
-          crossFadeState:
-              isOpen ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-          duration: const Duration(milliseconds: 180),
-          sizeCurve: Curves.easeOut,
-        ),
-      ]),
-    );
-  }
-
-  Widget _settingRow(IconData icon, String label, String value) {
+  Widget _row(IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(children: [
-        Icon(icon, size: 16, color: AppColors.textMuted),
+        Icon(icon, size: 16, color: AppColors.inkMuted),
         const SizedBox(width: 10),
-        Text(label,
-            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+        Text(label, style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
         const Spacer(),
         Flexible(
           child: Text(value,
-              style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.textDark),
+              style: AppTextStyles.bodySm.copyWith(
+                  color: AppColors.ink, fontWeight: FontWeight.w600),
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right),
         ),

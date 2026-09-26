@@ -21,8 +21,8 @@ class ScreenSkeleton extends StatelessWidget {
     return Skeletonizer(
       enabled: isLoading,
       effect: ShimmerEffect(
-        baseColor: AppColors.greenPale,
-        highlightColor: Color.lerp(AppColors.greenPale, Colors.white, 0.6)!,
+        baseColor: AppColors.skeleton,
+        highlightColor: Color.lerp(AppColors.skeleton, Colors.white, 0.6)!,
       ),
       child: child,
     );

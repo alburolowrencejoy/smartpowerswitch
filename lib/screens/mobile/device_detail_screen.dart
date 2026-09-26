@@ -1,16 +1,25 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/outline_icon_box.dart';
+import '../../widgets/app_switch.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../services/readings_service.dart';
+import '../../utils/last_seen.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
+import 'automation_screen.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -47,6 +56,27 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   DateTime?
       _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
+  // Today's accumulated energy for this device, read live from
+  // `history/daily/{today}/devices/{deviceId}/kwh` (written by
+  // HistoryService whenever a meaningful PZEM delta is recorded) --
+  // deliberately NOT the same number as `_lastValidEnergy` above, which is
+  // the PZEM's lifetime cumulative meter reading. The redesign's "Energy
+  // today" / "Cost today" readings need the daily figure, not lifetime.
+  double _energyTodayKwh = 0.0;
+  late String _todayKey = _dailyKey(DateTime.now());
+
+  // The single automations entry (if any) whose scope is 'device' and whose
+  // target is this deviceId -- drives the Schedule row. Null means "no
+  // schedule targets this device" once loading has completed at least once.
+  Map<String, dynamic>? _deviceSchedule;
+
+  // One-shot (not live -- a 7-day trend doesn't need 5s-fresh updates) fetch
+  // of this device's last 7 daily kWh figures, oldest first. Null while
+  // loading; empty-with-error text set on failure instead of silently
+  // showing a misleading empty/zero chart.
+  List<double>? _weeklyKwh;
+  String? _weeklyError;
+
   // True until the first combined emission (device + rate) has been
   // received; never reverts to true afterwards. Note this does NOT change
   // how the device snapshot itself is handled -- a null device snapshot was
@@ -72,6 +102,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return text.contains('permission-denied') ||
         text.contains('permission_denied');
   }
+
+  bool get _canControl =>
+      widget.role == 'admin' ||
+      widget.role == 'main_admin' ||
+      widget.role == 'super_admin' ||
+      widget.role == 'institute_admin';
 
   // ── Institute theming ──────────────────────────────────────────────────
   // `widget.role` is already passed in by the caller (see main.dart's
@@ -113,6 +149,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     );
     _loadPersistedReading();
     _listenAll();
+    _loadWeeklyHistory();
   }
 
   @override
@@ -134,12 +171,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _postLoadErrorNotified = false;
     });
     _listenAll();
+    _loadWeeklyHistory();
   }
 
   // ── Listen directly to Firebase for real-time relay state, combined with
-  // the electricity rate into a single stream (see class doc for
-  // _isLoading). Background service continues collecting readings
-  // independently.
+  // the electricity rate, today's energy total and this device's schedule
+  // (if any) into a single stream (see class doc for _isLoading).
+  // Background service continues collecting readings independently.
   void _listenAll() {
     _loadTimeoutTimer?.cancel();
     _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
@@ -151,15 +189,23 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       });
     });
 
+    _todayKey = _dailyKey(DateTime.now());
+
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices/${widget.deviceId}').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
+      FirebaseDatabase.instance
+          .ref('history/daily/$_todayKey/devices/${widget.deviceId}/kwh')
+          .onValue,
+      FirebaseDatabase.instance.ref('automations').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
 
       final raw = events[0].snapshot.value;
       final rateRaw = events[1].snapshot.value;
+      final todayKwhRaw = events[2].snapshot.value;
+      final automationsRaw = events[3].snapshot.value;
 
       // Precompute the device-side updates exactly as the original
       // single-path listener did -- a null/duplicate snapshot is ignored
@@ -226,6 +272,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         }
       }
 
+      // ── this device's schedule (if any) ─────────────────────────────
+      Map<String, dynamic>? parsedSchedule;
+      if (automationsRaw is Map) {
+        parsedSchedule = _findDeviceSchedule(automationsRaw);
+      }
+
       setState(() {
         if (parsedDevice != null) {
           _deviceData = parsedDevice;
@@ -240,6 +292,18 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           _ratePhp = rateRaw.toDouble();
         } else if (_isLoading) {
           _ratePhp = 11.5;
+        }
+
+        if (todayKwhRaw is num) {
+          _energyTodayKwh = todayKwhRaw.toDouble();
+        } else if (_isLoading) {
+          _energyTodayKwh = 0.0;
+        }
+
+        if (automationsRaw is Map) {
+          _deviceSchedule = parsedSchedule;
+        } else if (_isLoading) {
+          _deviceSchedule = null;
         }
 
         _isLoading = false;
@@ -282,6 +346,21 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     });
   }
 
+  Map<String, dynamic>? _findDeviceSchedule(Map automationsRaw) {
+    for (final entry in automationsRaw.entries) {
+      final val = entry.value;
+      if (val is! Map) continue;
+      final scope = (val['scope'] ?? '').toString();
+      final target = (val['target'] ?? '').toString();
+      if (scope == 'device' && target == widget.deviceId) {
+        final data = Map<String, dynamic>.from(val);
+        data['id'] = entry.key.toString();
+        return data;
+      }
+    }
+    return null;
+  }
+
   Future<void> _loadPersistedReading() async {
     try {
       final snap = await FirebaseDatabase.instance
@@ -304,14 +383,39 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
+  // ── Last 7 days (one-shot; see field doc) ────────────────────────────
+  Future<void> _loadWeeklyHistory() async {
+    setState(() {
+      _weeklyKwh = null;
+      _weeklyError = null;
+    });
+    try {
+      final now = DateTime.now();
+      final keys = List.generate(
+          7, (i) => _dailyKey(now.subtract(Duration(days: 6 - i))));
+      final snaps = await Future.wait(keys.map((key) => FirebaseDatabase
+          .instance
+          .ref('history/daily/$key/devices/${widget.deviceId}/kwh')
+          .get()));
+      if (!mounted) return;
+      setState(() {
+        _weeklyKwh = snaps
+            .map((s) => (s.value as num?)?.toDouble() ?? 0.0)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      debugPrint('[DeviceDetail] Failed to load 7-day history: $e');
+      if (!mounted) return;
+      setState(() => _weeklyError = 'History unavailable right now.');
+    }
+  }
+
+  String _dailyKey(DateTime d) => '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
+  String _pad(int n) => n.toString().padLeft(2, '0');
 
   // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
-  bool _checkOnline(Map<String, dynamic> data) {
-    final lastSeen = data['last_seen'];
-    if (lastSeen == null || lastSeen == 0) return false;
-    final lastSeenTime = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-    return DateTime.now().difference(lastSeenTime).inMinutes < 2;
-  }
+  bool _checkOnline(Map<String, dynamic> data) =>
+      isRecentlySeen(data['last_seen']);
 
   bool _checkHasPzemReadings(Map<String, dynamic> data) {
     final voltage = data['voltage'];
@@ -337,6 +441,16 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       default:
         return null;
     }
+  }
+
+  String _lastSeenText() {
+    final millis = lastSeenMillis(_deviceData['last_seen']);
+    if (millis == null) return 'never';
+    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    return '${diff.inHours}h ago';
   }
 
   // ── Toggle relay in BOTH locations ───────────────────────────────────────────
@@ -391,6 +505,115 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
     if (!success) {
       debugPrint('Relay update failed: $lastError');
+      TopToast.error(context, 'Could not reach the device. Try again.');
+    }
+  }
+
+  Future<void> _toggleScheduleEnabled(bool newValue) async {
+    final schedule = _deviceSchedule;
+    if (schedule == null) return;
+    final id = schedule['id'] as String;
+    try {
+      await FirebaseDatabase.instance
+          .ref('automations/$id/enabled')
+          .set(newValue);
+    } catch (e) {
+      if (!mounted) return;
+      TopToast.error(context, 'Unable to update schedule.');
+    }
+  }
+
+  /// Pushes today's automation editor for this device. There is no
+  /// dedicated per-device "schedule editor" route yet (per the redesign
+  /// handoff, that's a later phase) -- this wires the Schedule row to the
+  /// same `AutomationScreen` the Automation tab already uses, wrapped in a
+  /// minimal app bar so it's reachable as a pushed screen. Deliberately not
+  /// restyled or otherwise modified.
+  void _openScheduleEditor() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: _palette.dark,
+          foregroundColor: Colors.white,
+          title: const Text('Automation',
+              style: TextStyle(fontFamily: AppFonts.family)),
+        ),
+        body: AutomationScreen(role: widget.role),
+      ),
+    ));
+  }
+
+  Future<void> _confirmUnlink() async {
+    // Captured before any pop below -- this Navigator's own context stays
+    // mounted for the lifetime of the app (it belongs to the containing
+    // route stack, not this screen), so it's safe to use for a toast after
+    // this screen has already been popped by `onOptimisticRemove`.
+    final messengerContext = Navigator.of(context, rootNavigator: true).context;
+    final hasSchedule = _deviceSchedule != null;
+
+    final committed = await showDeleteFlow(
+      context,
+      type: DeleteType.device,
+      itemName: '${_utilityLabel(widget.utility)} · ${widget.deviceId}',
+      impact: [
+        'The device will be unassigned from ${widget.building} · Floor ${widget.floor} · ${widget.room}',
+        hasSchedule
+            ? '1 schedule will stop'
+            : 'No schedules are linked to this device',
+        'It can be registered again later',
+      ],
+      onOptimisticRemove: () {
+        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+        markPendingRowDelete('device:${widget.deviceId}');
+      },
+      onRestore: () => clearPendingRowDelete('device:${widget.deviceId}'),
+      onCommit: (reason, otherText) =>
+          _commitUnlink(messengerContext, reason, otherText),
+    );
+
+    if (committed && messengerContext.mounted) {
+      TopToast.success(messengerContext, 'Device removed');
+    }
+  }
+
+  Future<void> _commitUnlink(
+      BuildContext messengerContext, String reason, String? otherText) async {
+    final db = FirebaseDatabase.instance.ref();
+    final user = FirebaseAuth.instance.currentUser;
+    final logRef = db.child('deletion_log').push();
+
+    final updates = <String, Object?>{
+      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}':
+          null,
+      'master_devices/${widget.deviceId}/assignedTo': '',
+      'devices/${widget.deviceId}/building': '',
+      'devices/${widget.deviceId}/floor': '',
+      'devices/${widget.deviceId}/room': '',
+      'devices/${widget.deviceId}/status': 'offline',
+      'deletion_log/${logRef.key}': {
+        'type': 'device',
+        'deviceId': widget.deviceId,
+        'utility': widget.utility,
+        'buildingCode': widget.building,
+        'floor': widget.floor,
+        'room': widget.room,
+        'reason': reason,
+        'otherText': otherText,
+        'deletedBy': user?.uid,
+        'deletedByEmail': user?.email,
+        'timestamp': ServerValue.timestamp,
+      },
+    };
+
+    try {
+      await db.update(updates);
+    } catch (e) {
+      if (messengerContext.mounted) {
+        TopToast.error(messengerContext, 'Failed to remove device: $e');
+      }
+      rethrow;
+    } finally {
+      clearPendingRowDelete('device:${widget.deviceId}');
     }
   }
 
@@ -398,20 +621,33 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Use last valid energy, cost stays persistent when NaN arrives
-    final energy = _lastValidEnergy;
-    final cost = energy * _ratePhp;
-
     return Theme(
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(widget.role, _institute)],
       ),
       child: Scaffold(
-        backgroundColor: AppColors.surface,
+        backgroundColor: Colors.white,
         body: SafeArea(
           child: Column(
             children: [
-              _buildHeader(),
+              AppTopBar(
+                title: _utilityLabel(widget.utility),
+                subtitle:
+                    '${widget.building} · Floor ${widget.floor} · ${widget.room}',
+                variant: AppTopBarVariant.small,
+                showBackButton: true,
+                showInstituteLine: true,
+                palette: _palette,
+                actions: _canControl
+                    ? [
+                        AppTopBarAction(
+                          icon: Icons.link_off,
+                          tooltip: 'Remove device',
+                          onTap: _confirmUnlink,
+                        ),
+                      ]
+                    : const [],
+              ),
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(20),
@@ -423,15 +659,15 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                             isLoading: _isLoading,
                             child: Column(
                               children: [
-                                _buildStatusCard(),
+                                _buildPowerSection(),
+                                const SizedBox(height: 24),
+                                _buildReadingsSection(),
+                                const SizedBox(height: 20),
+                                _buildWeeklyBarsSection(),
+                                const SizedBox(height: 20),
+                                _buildScheduleRow(),
                                 const SizedBox(height: 16),
-                                _buildRelayCard(),
-                                const SizedBox(height: 16),
-                                _buildReadingsGrid(),
-                                const SizedBox(height: 16),
-                                _buildCostCard(energy, cost),
-                                const SizedBox(height: 16),
-                                _buildDeviceInfoCard(),
+                                _buildDeviceIdRow(),
                               ],
                             ),
                           ),
@@ -454,26 +690,23 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white,
+                  border: Border.all(color: AppColors.hairline),
                   borderRadius: BorderRadius.circular(20)),
-              child: Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid)),
+              child:
+                  Icon(Icons.wifi_off_rounded, size: 34, color: _palette.mid)),
           const SizedBox(height: 16),
-          const Text('Cannot load device',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
+          Text('Cannot load device',
+              style: AppTextStyles.title.copyWith(color: AppColors.ink)),
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: _retryLoad,
             icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-            label:
-                const Text('Retry', style: TextStyle(color: Colors.white)),
+            label: const Text('Retry', style: TextStyle(color: Colors.white)),
             style: ElevatedButton.styleFrom(
                 backgroundColor: _palette.dark,
                 shape: RoundedRectangleBorder(
@@ -484,474 +717,354 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     );
   }
 
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      decoration: BoxDecoration(
-        color: _palette.dark,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(28),
-          bottomRight: Radius.circular(28),
-        ),
-      ),
-      child: Row(children: [
-        GestureDetector(
-          onTap: () => Navigator.pop(context),
+  // ── Big round power button + status (handoff §4.5) ───────────────────
+  Widget _buildPowerSection() {
+    final on = _relay;
+    final watts = _safeFormatPzem(_deviceData['power'], 0);
+
+    return Column(children: [
+      GestureDetector(
+        onTap: (_canControl && !_toggling) ? _toggleRelay : null,
+        child: Container(
+          width: 132,
+          height: 132,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white,
+            border: Border.all(color: _palette.line, width: 1.5),
+          ),
           child: Container(
-            width: 36,
-            height: 36,
+            width: 112,
+            height: 112,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: Colors.white.withAlpha(38),
-              borderRadius: BorderRadius.circular(10),
+              shape: BoxShape.circle,
+              color: on ? _palette.dark : const Color(0xFFE3EBE6),
             ),
-            child: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white, size: 16),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('${widget.building} · Floor ${widget.floor}',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: _palette.light,
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 0.5)),
-            Text(_utilityLabel(widget.utility),
-                style: const TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white)),
-          ]),
-        ),
-        // Semantic: this whole badge (background/dot/text) is a live
-        // online/offline device-status indicator paired against
-        // AppColors.offline for the offline state -- deliberately NOT
-        // retheme'd (see also _buildStatusCard's "Last seen" text and
-        // _buildRelayCard's relay-state coloring below, which follow the
-        // same reasoning).
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: _isOnline
-                ? AppColors.greenLight.withAlpha(51)
-                : Colors.white.withAlpha(26),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _isOnline ? AppColors.greenLight : AppColors.offline,
-              ),
-            ),
-            const SizedBox(width: 5),
-            Text(_isOnline ? 'Online' : 'Offline',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: _isOnline ? AppColors.greenLight : AppColors.offline,
-                )),
-          ]),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildStatusCard() {
-    final lastSeen = _deviceData['last_seen'];
-    String lastSeenText = 'Never';
-    if (lastSeen != null && lastSeen != 0) {
-      final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-      final diff = DateTime.now().difference(dt);
-      if (diff.inSeconds < 60) {
-        lastSeenText = '${diff.inSeconds}s ago';
-      } else if (diff.inMinutes < 60) {
-        lastSeenText = '${diff.inMinutes}m ago';
-      } else {
-        lastSeenText = '${diff.inHours}h ago';
-      }
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Row(children: [
-        Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            color: _utilityColor(widget.utility).withAlpha(31),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(_utilityIcon(widget.utility),
-              size: 28, color: _utilityColor(widget.utility)),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(widget.deviceId,
-              style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
-          const SizedBox(height: 2),
-          Text(
-              '${widget.building} · Floor ${widget.floor} · ${_utilityLabel(widget.utility)}',
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-          const SizedBox(height: 4),
-          // Semantic: same online/offline pairing as the header badge --
-          // deliberately NOT retheme'd.
-          Text('Last seen: $lastSeenText',
-              style: TextStyle(
-                fontSize: 11,
-                color: _isOnline ? AppColors.greenMid : AppColors.offline,
-              )),
-        ])),
-      ]),
-    );
-  }
-
-  Widget _buildRelayCard() {
-    final isAc = widget.utility == 'ac';
-    // Show relay state even when there are no PZEM readings (meter may be
-    // placed after the relay). Allow toggling regardless of PZEM presence.
-    final relayVisible = _relay;
-    final warningMessage = _voltageWarningMessage(_deviceData);
-    // Semantic: this entire card's coloring (background, border, text, the
-    // toggle track/knob further down) is driven by `relayVisible`
-    // (live relay ON/OFF hardware state) and `_isOnline` -- this is the
-    // canonical case the institute-theming rollout heuristic calls out
-    // (enabled/disabled state), so none of it is retheme'd below.
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: relayVisible ? AppColors.greenDark : AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: relayVisible
-              ? AppColors.greenMid
-              : AppColors.greenMid.withAlpha(26),
-        ),
-      ),
-      child: Row(children: [
-        Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(isAc ? 'Contactor' : 'Relay',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: relayVisible
-                      ? AppColors.greenPale
-                      : AppColors.textMuted)),
-          const SizedBox(height: 4),
-          Text(relayVisible ? 'Turned ON' : 'Turned OFF',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: relayVisible ? Colors.white : AppColors.textDark)),
-          const SizedBox(height: 2),
-          Text(
-            !_hasPzemReadings
-                ? 'No PZEM reading'
-                : (!_isOnline
-                    ? 'Device is offline'
-                    : (relayVisible ? 'Tap to turn off' : 'Tap to turn on')),
-            style: TextStyle(
-                fontSize: 12,
-                color: relayVisible
-                    ? AppColors.greenPale.withAlpha(179)
-                    : AppColors.textMuted),
-          ),
-          if (warningMessage != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              warningMessage,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFFFFC107),
-              ),
-            ),
-          ],
-        ])),
-        // Only show toggle if role is admin
-        if (widget.role == 'admin' ||
-            widget.role == 'main_admin' ||
-            widget.role == 'super_admin' ||
-            widget.role == 'institute_admin')
-          GestureDetector(
-            onTap: (!_toggling) ? _toggleRelay : null,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
-              width: 64,
-              height: 34,
-              decoration: BoxDecoration(
-                color: !_isOnline
-                    ? Colors.grey.withAlpha(80)
-                    : (relayVisible
-                        ? AppColors.greenLight
-                        : const Color(0xFFE0E0E0)),
-                borderRadius: BorderRadius.circular(17),
-              ),
-              child: Stack(children: [
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 250),
-                  left: relayVisible ? 32 : 2,
-                  top: 2,
-                  bottom: 2,
-                  child: Container(
-                    width: 30,
-                    decoration: const BoxDecoration(
-                        color: Colors.white, shape: BoxShape.circle),
-                    child: Center(
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 180),
-                        switchInCurve: Curves.easeOutBack,
-                        switchOutCurve: Curves.easeIn,
-                        transitionBuilder: (child, animation) {
-                          return ScaleTransition(
-                            scale: Tween<double>(begin: 0.5, end: 1.0)
-                                .animate(animation),
-                            child: RotationTransition(
-                              turns: Tween<double>(begin: 0.85, end: 1.0)
-                                  .animate(animation),
-                              child: child,
-                            ),
-                          );
-                        },
-                        child: _toggling
-                            ? const SizedBox(
-                                key: ValueKey('loading'),
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.greenMid,
-                                ),
-                              )
-                            : Icon(
-                                relayVisible
-                                    ? Icons.power_rounded
-                                    : Icons.power_off_rounded,
-                                key: ValueKey<bool>(relayVisible),
-                                size: 15,
-                                color: relayVisible
-                                    ? AppColors.greenMid
-                                    : AppColors.textMuted,
-                              ),
-                      ),
+            child: _toggling
+                ? SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: on ? Colors.white : AppColors.inkMid,
                     ),
+                  )
+                : Icon(
+                    Icons.power_settings_new,
+                    size: 48,
+                    color: on ? Colors.white : AppColors.inkMid,
                   ),
-                ),
-              ]),
-            ),
           ),
-        // Faculty sees a lock icon instead
-        if (widget.role != 'admin')
-          Container(
-            width: 64,
-            height: 34,
-            decoration: BoxDecoration(
-              color: Colors.grey.withAlpha(40),
-              borderRadius: BorderRadius.circular(17),
-            ),
-            child: const Icon(Icons.lock_outline,
-                size: 16, color: AppColors.textMuted),
+        ),
+      ),
+      const SizedBox(height: 14),
+      Text(on ? 'On' : 'Off',
+          style: AppTextStyles.titleLg.copyWith(color: AppColors.ink)),
+      const SizedBox(height: 6),
+      Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 8,
+        children: [
+          _statusPill(),
+          if (_hasPzemReadings)
+            Text('$watts W',
+                style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+          Text('· seen ${_lastSeenText()}',
+              style: AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
+        ],
+      ),
+      if (!_canControl) ...[
+        const SizedBox(height: 6),
+        Text('Only admins can control this device',
+            style: AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
+      ],
+      if (_voltageWarningMessage(_deviceData) != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          _voltageWarningMessage(_deviceData)!,
+          style: AppTextStyles.caption.copyWith(
+            color: AppColors.warningText,
+            fontWeight: FontWeight.w700,
           ),
+        ),
+      ],
+    ]);
+  }
+
+  // Semantic: fixed online/offline pairing, deliberately NOT retheme'd (same
+  // reasoning the original file already documented for this badge).
+  Widget _statusPill() {
+    final color = _isOnline ? AppColors.successText : AppColors.offline;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration:
+          BoxDecoration(
+              color: Colors.white,
+              border: Border.all(color: color.withAlpha(140)),
+              borderRadius: BorderRadius.circular(999)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        ),
+        const SizedBox(width: 5),
+        Text(_isOnline ? 'Online' : 'Offline',
+            style: AppTextStyles.caption
+                .copyWith(color: color, fontWeight: FontWeight.w700)),
       ]),
     );
   }
 
-  Widget _buildReadingsGrid() {
+  // ── Live readings (handoff §4.5: "PZEM-004T · every 5 s") ────────────
+  Widget _buildReadingsSection() {
     final voltage = _safeFormatPzem(_deviceData['voltage'], 1);
     final current = _safeFormatPzem(_deviceData['current'], 2);
     final power = _safeFormatPzem(_deviceData['power'], 1);
     final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
-    final frequency = _safeFormatPzem(_deviceData['frequency'], 1);
-    // Display kWh as accumulated energy (kW × hours). _lastValidEnergy is
-    // accumulated from instantaneous `power` (Watts) readings using the
-    // formula: kWh = (power_watts / 1000) × time_hours.
-    final energyValue = _lastValidEnergy > 0
-        ? _lastValidEnergy
-        : ((_deviceData['kwh'] is num)
-            ? (_deviceData['kwh'] as num).toDouble()
-            : 0.0);
-    final energy = energyValue.toStringAsFixed(2);
+    final energyToday = _energyTodayKwh.toStringAsFixed(2);
+    final costToday = (_energyTodayKwh * _ratePhp).toStringAsFixed(2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('PZEM-004T Readings',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
+        Text('Live readings',
+            style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+        const SizedBox(height: 2),
+        Text('PZEM-004T · every 5 s',
+            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
         const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final crossAxisCount = responsiveColumnCount(
-              constraints.maxWidth,
-              mobileColumns: 3,
-              idealTileWidth: 150,
-              maxColumns: 6,
-            );
-            return GridView.count(
-              crossAxisCount: crossAxisCount,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 1.05,
-              // Semantic: fixed per-metric color key (voltage/current/power/
-              // energy/frequency/power factor each get their own hue so the
-              // 6 tiles stay visually distinguishable), mixing AppColors.green*
-              // with literal hex colors (blue/purple) -- not institute brand
-              // chrome, so deliberately NOT retheme'd.
-              children: [
-                _readingTile('Voltage', voltage, 'V', Icons.electrical_services,
-                    AppColors.greenMid),
-                _readingTile(
-                    'Current', current, 'A', Icons.bolt, AppColors.warning),
-                _readingTile(
-                    'Power', power, 'W', Icons.power, AppColors.greenDark),
-                _readingTile('Energy', energy, 'kWh',
-                    Icons.battery_charging_full, const Color(0xFF2196F3)),
-                _readingTile('Freq.', frequency, 'Hz', Icons.waves,
-                    AppColors.greenLight),
-                _readingTile('P.Factor', powerFactor, '', Icons.speed,
-                    const Color(0xFF9C27B0)),
-              ],
-            );
-          },
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 2.0,
+          children: [
+            _readingBox('Power', power, 'W'),
+            _readingBox('Energy today', energyToday, 'kWh'),
+            _readingBox('Voltage', voltage, 'V'),
+            _readingBox('Current', current, 'A'),
+            _readingBox('Power factor', powerFactor, null),
+            _readingBox('Cost today', '₱$costToday', null),
+          ],
         ),
       ],
     );
   }
 
-  Widget _readingTile(
-      String label, String value, String unit, IconData icon, Color color) {
+  // White + 1px institute-line border, no tinted fill -- handoff §3.2's
+  // "outline system" applied to the reading boxes (preview `.dev .reading`).
+  Widget _readingBox(String label, String value, String? unit) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withAlpha(38)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _palette.line),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 18, color: color),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(label,
+              style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+          const SizedBox(height: 2),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
               Text(value,
-                  style: const TextStyle(
-                      fontFamily: AppFonts.family,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textDark)),
-              if (unit.isNotEmpty) ...[
-                const SizedBox(width: 2),
+                  style: AppTextStyles.subtitle.copyWith(
+                      color: AppColors.ink,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700)),
+              if (unit != null) ...[
+                const SizedBox(width: 3),
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 1),
+                  padding: const EdgeInsets.only(bottom: 2),
                   child: Text(unit,
-                      style: const TextStyle(
-                          fontSize: 9, color: AppColors.textMuted)),
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.inkMuted)),
                 ),
               ],
-            ]),
-            Text(label,
-                style:
-                    const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-          ]),
+            ],
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildCostCard(double energy, double cost) {
+  // ── Last 7 days bar chart (handoff §4.5) ─────────────────────────────
+  Widget _buildWeeklyBarsSection() {
+    final weekly = _weeklyKwh;
+    final avgLabel = (weekly == null || weekly.isEmpty)
+        ? null
+        : (weekly.reduce((a, b) => a + b) / weekly.length).toStringAsFixed(1);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Last 7 days',
+            style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+        const SizedBox(height: 2),
+        Text(
+          avgLabel == null ? 'kWh per day' : 'Average $avgLabel kWh',
+          style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _palette.line),
+          ),
+          child: _weeklyError != null
+              ? SizedBox(
+                  height: 96,
+                  child: Center(
+                    child: Text(_weeklyError!,
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMuted)),
+                  ),
+                )
+              : weekly == null
+                  ? const SizedBox(
+                      height: 96,
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  : _WeeklyBars(values: weekly, palette: _palette),
+        ),
+      ],
+    );
+  }
+
+  // ── Schedule row (handoff §4.5: "tap → editor") ──────────────────────
+  Widget _buildScheduleRow() {
+    final schedule = _deviceSchedule;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Schedule',
+            style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+        const SizedBox(height: 8),
+        Material(
+          color: Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          borderRadius: BorderRadius.circular(14),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: _openScheduleEditor,
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: _palette.line),
+              ),
+              child: Row(children: [
+                OutlineIconBox(icon: Icons.schedule, palette: _palette),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        schedule == null
+                            ? 'No schedule set'
+                            : (schedule['name'] ?? 'Schedule').toString(),
+                        style: AppTextStyles.subtitle
+                            .copyWith(color: AppColors.ink),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        schedule == null
+                            ? 'Tap to add one'
+                            : _scheduleSummary(schedule),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMuted),
+                      ),
+                    ],
+                  ),
+                ),
+                if (schedule != null && _canControl)
+                  AppSwitch(
+                    value: schedule['enabled'] == true,
+                    onChanged: _toggleScheduleEnabled,
+                    palette: _palette,
+                  ),
+              ]),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _scheduleSummary(Map<String, dynamic> schedule) {
+    final onTime = _formatTime12h(schedule['onTime']?.toString());
+    final offTime = _formatTime12h(schedule['offTime']?.toString());
+    final daysRaw = schedule['days'];
+    final days = daysRaw is List
+        ? daysRaw.map((d) => d.toString()).toList()
+        : <String>[];
+    final dayLabel = days.isEmpty
+        ? 'Every day'
+        : (days.length == 7 ? 'Every day' : days.join(', '));
+    return 'On $onTime · Off $offTime · $dayLabel';
+  }
+
+  String _formatTime12h(String? hhmm) {
+    if (hhmm == null) return '--';
+    final parts = hhmm.split(':');
+    if (parts.length != 2) return hhmm;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null) return hhmm;
+    final period = h >= 12 ? 'PM' : 'AM';
+    final h12 = h % 12 == 0 ? 12 : h % 12;
+    return '$h12:${m.toString().padLeft(2, '0')} $period';
+  }
+
+  // ── Device ID row with copy (handoff §4.5) ───────────────────────────
+  Widget _buildDeviceIdRow() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: _palette.pale,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(51)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _palette.line),
       ),
       child: Row(children: [
+        OutlineIconBox(icon: Icons.memory, palette: _palette),
+        const SizedBox(width: 14),
         Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Estimated Cost',
-              style: TextStyle(fontSize: 12, color: AppColors.textMid)),
-          const SizedBox(height: 4),
-          Text('₱ ${cost.toStringAsFixed(2)}',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: _palette.dark)),
-          Text('at ₱${_ratePhp.toStringAsFixed(2)} / kWh',
-              style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-        ])),
-        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          const Text('Total Energy',
-              style: TextStyle(fontSize: 11, color: AppColors.textMid)),
-          Text('${energy.toStringAsFixed(2)} kWh',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.dark)),
-        ]),
-      ]),
-    );
-  }
-
-  Widget _buildDeviceInfoCard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
-      ),
-      child: Column(children: [
-        _infoRow('Device ID', widget.deviceId),
-        _infoRow('Building', widget.building),
-        _infoRow('Floor', 'Floor ${widget.floor}'),
-        _infoRow('Utility', _utilityLabel(widget.utility)),
-        _infoRow('Control',
-            widget.utility == 'ac' ? 'Contactor 220V' : 'Relay 220V'),
-        _infoRow('Sensor', 'PZEM-004T + CT Clamp'),
-      ]),
-    );
-  }
-
-  Widget _infoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(children: [
-        Text(label,
-            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-        const Spacer(),
-        Text(value,
-            style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.deviceId,
+                  style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+              const SizedBox(height: 2),
+              Text('Device ID',
+                  style:
+                      AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: 'Copy device ID',
+          icon: Icon(Icons.content_copy, size: 20, color: _palette.dark),
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: widget.deviceId));
+            if (!mounted) return;
+            TopToast.success(context, 'Copied');
+          },
+        ),
       ]),
     );
   }
@@ -972,41 +1085,64 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         return 'Device';
     }
   }
+}
 
-  IconData _utilityIcon(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return Icons.lightbulb_outline;
-      case 'outlet':
-      case 'outlets':
-        return Icons.electrical_services;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return Icons.ac_unit;
-      default:
-        return Icons.device_unknown_outlined;
-    }
-  }
+/// Simple 7-bar chart (today emphasized), scoped to this screen only --
+/// deliberately not a shared widget since no other screen needs it yet.
+class _WeeklyBars extends StatelessWidget {
+  const _WeeklyBars({required this.values, required this.palette});
 
-  // Semantic: fixed per-utility-type color key (lights=amber, outlets=green,
-  // AC=blue), same reasoning as the PZEM reading tiles above -- not
-  // institute brand chrome, so deliberately NOT retheme'd.
-  Color _utilityColor(String u) {
-    switch (u.toLowerCase()) {
-      case 'light':
-      case 'lights':
-        return const Color(0xFFE8922A);
-      case 'outlet':
-      case 'outlets':
-        return AppColors.greenMid;
-      case 'aircon':
-      case 'ac':
-      case 'air conditioner':
-        return const Color(0xFF2196F3);
-      default:
-        return AppColors.textMuted;
-    }
+  final List<double> values;
+  final InstitutePalette palette;
+
+  static const _dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+  @override
+  Widget build(BuildContext context) {
+    final max = values.fold<double>(0, (m, v) => v > m ? v : m);
+    final safeMax = max <= 0 ? 1.0 : max;
+    final today = DateTime.now();
+
+    return SizedBox(
+      height: 120,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: List.generate(values.length, (i) {
+          final isToday = i == values.length - 1;
+          final date = today.subtract(Duration(days: values.length - 1 - i));
+          final heightFactor = (values[i] / safeMax).clamp(0.04, 1.0);
+          return Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: FractionallySizedBox(
+                        heightFactor: heightFactor,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isToday ? palette.dark : palette.mid,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    isToday ? 'Today' : _dayLabels[date.weekday % 7],
+                    style: AppTextStyles.captionSmall
+                        .copyWith(color: AppColors.inkMuted),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ),
+    );
   }
 }

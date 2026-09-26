@@ -23,6 +23,17 @@ class HistoryService {
       'weekly': _weeklyKey(now),
       'monthly': _monthlyKey(now),
       'yearly': _yearlyKey(now),
+      // Additive 5th range (mobile redesign, see
+      // `lib/screens/mobile/dashboard_screen.dart`'s Home hourly sparkline):
+      // same `_writePeriod` shape as the 4 ranges above, just keyed by hour
+      // ("2026-09-25-14") instead of day/week/month/year. Nothing else reads
+      // `history/hourly` yet other than that sparkline, and nothing here
+      // changes how the existing 4 ranges are written -- this is a pure
+      // addition, not a schema change to the existing paths. Note for
+      // whoever tunes storage later: this grows `history/hourly` by up to 24
+      // keys/day forever (no pruning), unlike the other ranges which stay
+      // bounded by their own key cardinality (days/weeks/months/years).
+      'hourly': _hourlyKey(now),
     };
 
     // The 4 ranges are independent of each other, and within a range the
@@ -115,6 +126,12 @@ class HistoryService {
   /// e.g. "2024-06-01"
   static String _dailyKey(DateTime d) =>
       '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
+
+  /// e.g. "2024-06-01-14" (2 PM hour bucket). Sorts correctly with
+  /// `orderByKey()` alongside its siblings for the same day since the date
+  /// prefix is identical width to [_dailyKey].
+  static String _hourlyKey(DateTime d) =>
+      '${_dailyKey(d)}-${_pad(d.hour)}';
 
   /// e.g. "2024-W22"
   static String _weeklyKey(DateTime d) => '${d.year}-W${_pad(_isoWeek(d))}';

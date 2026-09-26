@@ -7,6 +7,9 @@ import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
+import '../../widgets/top_toast.dart';
 import '../../services/readings_service.dart';
 import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
@@ -414,6 +417,134 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         'institute_admin'
       }.contains(widget.role);
 
+  // Edit / remove live here on the device page, not on the building's
+  // device rows. [_utility] starts from the caller's value and follows edits.
+  late String _utility = widget.utility;
+  static const _utilityOptions = ['Lights', 'Outlets', 'AC'];
+
+  String get _deviceRefPath =>
+      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}';
+
+  /// Changes the device's utility type (Lights / Outlets / AC).
+  Future<void> _editDevice() async {
+    final current = _utilityOptions.firstWhere(
+        (o) => o.toLowerCase() == _utility.toLowerCase(),
+        orElse: () => _utilityOptions.first);
+    String? saved;
+    final ok = await showWebFormDialog(
+      context: context,
+      title: 'Edit device',
+      subtitle: widget.deviceId,
+      fields: [
+        WebField(
+            id: 'utility',
+            label: 'Utility type',
+            options: _utilityOptions,
+            initial: current),
+      ],
+      onSubmit: (v) async {
+        final next = v['utility']!;
+        if (next == current) return null;
+        await FirebaseDatabase.instance.ref().update({
+          '$_deviceRefPath/utility': next,
+          'devices/${widget.deviceId}/utility': next,
+        });
+        saved = next;
+        return null;
+      },
+    );
+    if (!ok || !mounted) return;
+    if (saved != null) setState(() => _utility = saved!);
+    TopToast.success(context, '${widget.deviceId} updated.');
+  }
+
+  /// Unassigns the device from its room (it stays registered and can be
+  /// reused), then returns to the building.
+  ///
+  /// Same two-step confirm -> reason flow, deferred commit and 5s Undo as
+  /// mobile (`showDeleteFlow`); the page returns to the building as soon as
+  /// the reason is confirmed, and the write happens once Undo expires.
+  Future<void> _removeDevice() async {
+    // The shell's context outlives this page, which is gone by commit time.
+    final messengerContext =
+        Navigator.of(context, rootNavigator: true).context;
+    final rowKey = 'device:${widget.deviceId}';
+    final committed = await showDeleteFlow(
+      context,
+      type: DeleteType.device,
+      itemName: '${_utilityLabel(_utility)} · ${widget.deviceId}',
+      impact: [
+        'The device will be unassigned from ${widget.building} · '
+            'Floor ${widget.floor} · ${widget.room}',
+        'Schedules for this device will stop',
+        'It can be registered again later',
+      ],
+      onOptimisticRemove: () {
+        (widget.onBack ?? () => Navigator.pop(context))();
+        markPendingRowDelete(rowKey);
+      },
+      onRestore: () => clearPendingRowDelete(rowKey),
+      onCommit: (reason, otherText) async {
+        final user = FirebaseAuth.instance.currentUser;
+        final db = FirebaseDatabase.instance.ref();
+        final logRef = db.child('deletion_log').push();
+        try {
+          await db.update({
+            _deviceRefPath: null,
+            'master_devices/${widget.deviceId}/assignedTo': '',
+            'devices/${widget.deviceId}/building': '',
+            'devices/${widget.deviceId}/floor': '',
+            'devices/${widget.deviceId}/room': '',
+            'devices/${widget.deviceId}/status': 'offline',
+            'deletion_log/${logRef.key}': {
+              'type': 'device',
+              'deviceId': widget.deviceId,
+              'utility': _utility,
+              'buildingCode': widget.building,
+              'floor': widget.floor,
+              'room': widget.room,
+              'reason': reason,
+              'otherText': otherText,
+              'deletedBy': user?.uid,
+              'deletedByEmail': user?.email,
+              'timestamp': ServerValue.timestamp,
+            },
+          });
+        } catch (e) {
+          if (messengerContext.mounted) {
+            TopToast.error(messengerContext, 'Failed to remove device: $e');
+          }
+          rethrow;
+        } finally {
+          clearPendingRowDelete(rowKey);
+        }
+      },
+    );
+    if (committed && messengerContext.mounted) {
+      TopToast.success(messengerContext, 'Device removed');
+    }
+  }
+
+  Widget _headerAction(IconData icon, String tooltip, VoidCallback onTap,
+      {bool danger = false}) {
+    final fg = danger ? const Color(0xFFA83434) : _palette.dark;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(9),
+        hoverColor: danger
+            ? const Color(0xFFD64A4A).withAlpha(31)
+            : _palette.pale.withAlpha(153),
+        child: SizedBox(
+          width: 34,
+          height: 34,
+          child: Icon(icon, size: 19, color: fg),
+        ),
+      ),
+    );
+  }
+
   double get _todayKwh {
     final k = _deviceData['kwh'];
     return k is num ? k.toDouble() : 0.0;
@@ -498,7 +629,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   }
 
   Widget _buildHeader() {
-    final isAc = widget.utility.toLowerCase() == 'ac';
+    final isAc = _utility.toLowerCase() == 'ac';
     return Padding(
       // Clear of the shell's floating role badge and bell.
       padding: const EdgeInsets.only(right: 180),
@@ -508,13 +639,20 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           spacing: 12,
           runSpacing: 6,
           children: [
-            Text('${_utilityLabel(widget.utility)} · ${widget.room}',
+            Text('${_utilityLabel(_utility)} · ${widget.room}',
                 style: const TextStyle(
                     fontFamily: AppFonts.family,
                     fontSize: 26,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
             WebStatusPill(text: _isOnline ? 'Online' : 'Offline', on: _isOnline),
+            if (_canToggle)
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                _headerAction(Icons.edit_outlined, 'Edit device', _editDevice),
+                _headerAction(Icons.delete_outline_rounded, 'Remove device',
+                    _removeDevice,
+                    danger: true),
+              ]),
           ],
         ),
         const SizedBox(height: 4),

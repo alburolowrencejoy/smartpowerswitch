@@ -5,7 +5,7 @@
 //   * isLoading: false  -> zero visual/behavioral side effects vs rendering
 //     `child` directly (same finders, taps still reach the child).
 //   * isLoading: true   -> the skeletonizer shimmer is actually enabled, and
-//     it uses AppColors.greenPale (+ a lighter tint) as configured.
+//     it uses AppColors.skeleton (+ a lighter tint) as configured.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:skeletonizer/skeletonizer.dart';
@@ -104,7 +104,7 @@ void main() {
       expect(find.text('content'), findsOneWidget);
     });
 
-    testWidgets('uses AppColors.greenPale (and a lighter tint) as the shimmer colors',
+    testWidgets('uses AppColors.skeleton (and a lighter tint) as the shimmer colors',
         (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
@@ -120,14 +120,14 @@ void main() {
       expect(effect, isA<ShimmerEffect>());
       final shimmer = effect as ShimmerEffect;
       final expectedHighlight =
-          Color.lerp(AppColors.greenPale, Colors.white, 0.6);
+          Color.lerp(AppColors.skeleton, Colors.white, 0.6);
       // `baseColor`/`highlightColor` are only exposed on the private
       // `_ShimmerEffect` impl, so assert via the public `colors` gradient
       // stops instead: [base, highlight, base].
       expect(shimmer.colors, [
-        AppColors.greenPale,
+        AppColors.skeleton,
         expectedHighlight,
-        AppColors.greenPale,
+        AppColors.skeleton,
       ]);
     });
 

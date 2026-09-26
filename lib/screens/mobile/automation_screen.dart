@@ -3,12 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/schedule_windows.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_fonts.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/app_button.dart';
+import '../../widgets/app_chip.dart';
+import '../../widgets/app_segmented_control.dart';
+import '../../widgets/app_switch.dart';
 import '../../widgets/app_text_field.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/outline_icon_box.dart';
+import '../../widgets/range_calendar.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
-import '../../theme/app_fonts.dart';
 
 void _safeDialogPop<T>(BuildContext context, [T? result]) {
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -19,7 +29,116 @@ void _safeDialogPop<T>(BuildContext context, [T? result]) {
   });
 }
 
-// ─── Model ────────────────────────────────────────────────────────────────────
+// ─── Small shared formatting/date helpers ──────────────────────────────────
+//
+// Kept as private top-level functions (rather than instance methods) since
+// both the list screen (`_AutomationScreenState`) and the pushed schedule
+// editor (`_ScheduleEditorPageState`) need them and neither owns the other.
+
+/// Canonical day order used everywhere in this file -- matches the web
+/// model's `days` values exactly (`WebAutomationSchedule`/`_allDays` in
+/// `automation_screen_web.dart`).
+const List<String> _kAllDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+DateTime? _parseIsoDate(String? iso) {
+  if (iso == null) return null;
+  final parts = iso.split('-');
+  if (parts.length != 3) return null;
+  final y = int.tryParse(parts[0]);
+  final m = int.tryParse(parts[1]);
+  final d = int.tryParse(parts[2]);
+  if (y == null || m == null || d == null) return null;
+  return DateTime(y, m, d);
+}
+
+String _isoDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+const List<String> _kMonths3 = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+String _formatMonthDay(DateTime d) => '${_kMonths3[d.month - 1]} ${d.day}';
+
+String _formatIsoDate(String iso) {
+  final parts = iso.split('-');
+  if (parts.length != 3) return iso;
+  final month = int.tryParse(parts[1]);
+  final day = int.tryParse(parts[2]);
+  if (month == null || day == null || month < 1 || month > 12) return iso;
+  return '${_kMonths3[month - 1]} $day, ${parts[0]}';
+}
+
+/// 24h minutes-after-midnight -> "h:mm AM/PM".
+String _formatMinutesLabel(int minutesOfDay) {
+  final m = ((minutesOfDay % (24 * 60)) + 24 * 60) % (24 * 60);
+  final h24 = m ~/ 60;
+  final mm = m % 60;
+  final period = h24 >= 12 ? 'PM' : 'AM';
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  return '$h12:${mm.toString().padLeft(2, '0')} $period';
+}
+
+/// "in 2h 19m" / "in 45m" -- [minutesOfDay] must be after [nowMinutes] on the
+/// same day (the "Coming up today" section only ever calls this with future
+/// times today).
+String _inWordsLabel(int minutesOfDay, int nowMinutes) {
+  final d = minutesOfDay - nowMinutes;
+  final h = d ~/ 60;
+  final mm = d % 60;
+  if (h > 0 && mm > 0) return 'in ${h}h ${mm}m';
+  if (h > 0) return 'in ${h}h';
+  return 'in ${mm}m';
+}
+
+/// "Every day" / "Weekdays" / "Weekends" / "Mon, Wed, Fri" -- mirrors the
+/// preview's `daysText()`.
+String _daysText(List<String> days) {
+  if (days.isEmpty) return 'No days set';
+  if (days.length == 7) return 'Every day';
+  final set = days.toSet();
+  const weekdays = {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'};
+  const weekends = {'Sat', 'Sun'};
+  if (set.length == 5 && set.containsAll(weekdays)) return 'Weekdays';
+  if (set.length == 2 && set.containsAll(weekends)) return 'Weekends';
+  return _kAllDays.where(days.contains).join(', ');
+}
+
+String _scopeLabelForTarget(String scope, String target) {
+  switch (scope) {
+    case 'global':
+      return 'All buildings · all utilities';
+    case 'building':
+      return 'Building: $target';
+    case 'utility':
+      return 'Utility: $target';
+    case 'device':
+      return 'Device: $target';
+    default:
+      return scope;
+  }
+}
+
+IconData _utilityIcon(String utility) {
+  switch (utility.trim().toLowerCase()) {
+    case 'ac':
+    case 'aircon':
+      return Icons.ac_unit;
+    case 'lights':
+    case 'light':
+      return Icons.lightbulb_outline;
+    case 'outlets':
+    case 'outlet':
+      return Icons.power_outlined;
+    default:
+      return Icons.schedule;
+  }
+}
+
+bool _isSameDate(DateTime a, DateTime b) =>
+    a.year == b.year && a.month == b.month && a.day == b.day;
+
+// ─── Model ────────────────────────────────────────────────────────────────
 
 class AutomationSchedule {
   final String id;
@@ -32,15 +151,31 @@ class AutomationSchedule {
   final List<String> days;
   final bool enabled;
 
-  /// 'weekly' (default) or 'calendar' -- calendar-mode schedules can only
-  /// be created on the desktop web Automation screen today; this app reads
-  /// and displays them (a date label instead of day chips) but doesn't
-  /// offer a way to create or convert one.
+  /// 'weekly' (default) or 'calendar' -- calendar-mode schedules can be both
+  /// created and edited from this screen (see `_ScheduleEditorPage`), same
+  /// as the desktop web Automation screen.
   final String scheduleMode;
   final String? startDate;
   final String? endDate;
 
+  /// Several ON windows (see `services/schedule_windows.dart`), same shape
+  /// web writes under `automations/{id}/windows`. Empty for schedules saved
+  /// before windows existed, which use [onTime]/[offTime] -- see
+  /// [effectiveWindows].
+  final List<ScheduleWindow> windows;
+
   bool get isCalendarMode => scheduleMode == 'calendar';
+
+  /// [windows], or the single [onTime]/[offTime] pair as one window --
+  /// mirrors `WebAutomationSchedule.effectiveWindows` exactly so both
+  /// platforms read the same schedule identically.
+  List<ScheduleWindow> get effectiveWindows {
+    if (windows.isNotEmpty) return windows;
+    final on = parseHm(onTime);
+    final off = parseHm(offTime);
+    if (on == null || off == null) return const [];
+    return [ScheduleWindow(on, (off - 1 + 24 * 60) % (24 * 60))];
+  }
 
   AutomationSchedule({
     required this.id,
@@ -55,6 +190,7 @@ class AutomationSchedule {
     this.scheduleMode = 'weekly',
     this.startDate,
     this.endDate,
+    this.windows = const [],
   });
 
   factory AutomationSchedule.fromMap(String id, Map<String, dynamic> data) {
@@ -102,15 +238,29 @@ class AutomationSchedule {
       scheduleMode: scheduleMode,
       startDate: (startDate != null && startDate.isNotEmpty) ? startDate : null,
       endDate: (endDate != null && endDate.isNotEmpty) ? endDate : null,
+      windows: ScheduleWindow.listFrom(data['windows']),
     );
   }
 
+  /// Matches `WebAutomationSchedule.toMap()` field-for-field (name/scope/
+  /// target/utility/onTime/offTime/legacy action+time/days/enabled/
+  /// scheduleMode/startDate/endDate/windows) so a schedule written from
+  /// either platform looks identical in the database.
   Map<String, dynamic> toMap() => {
-        'name': name, 'scope': scope, 'target': target,
-        // Keep legacy keys for older readers that still expect action/time.
-        'utility': utility, 'onTime': onTime, 'offTime': offTime,
-        'action': 'on', 'time': onTime,
-        'days': days, 'enabled': enabled,
+        'name': name,
+        'scope': scope,
+        'target': target,
+        'utility': utility,
+        'onTime': onTime,
+        'offTime': offTime,
+        'action': 'on',
+        'time': onTime,
+        'days': days,
+        'enabled': enabled,
+        'scheduleMode': scheduleMode,
+        if (startDate != null) 'startDate': startDate,
+        if (endDate != null) 'endDate': endDate,
+        if (windows.isNotEmpty) 'windows': [for (final w in windows) w.toMap()],
       };
 
   /// A single realistic-looking fake schedule, used only while the
@@ -133,6 +283,51 @@ class AutomationSchedule {
           count, (i) => AutomationSchedule.placeholder(id: 'schedule-$i'));
 }
 
+/// Where a device-scoped schedule's device currently lives, resolved from
+/// the already-fetched `buildings` subtree (see
+/// `_AutomationScreenState._listenAll`) so the list/editor can show
+/// "<utility> · <room>" without extra Firebase reads.
+class _DeviceInfo {
+  final String building;
+  final String room;
+  final String utility;
+  const _DeviceInfo({
+    required this.building,
+    required this.room,
+    required this.utility,
+  });
+}
+
+/// One turn-on or turn-off instant, unrolled from a schedule's
+/// [AutomationSchedule.effectiveWindows] for display (the schedule card's
+/// mini timeline, "Coming up today", and next-run text all work off this
+/// flat, chronological event list -- matching the preview's `s.win` sample
+/// data shape, which is itself a flat action list rather than paired
+/// windows).
+class _TimelineEvent {
+  final bool isOn;
+  final int minutes;
+  const _TimelineEvent(this.isOn, this.minutes);
+}
+
+List<_TimelineEvent> _timelineEventsFor(AutomationSchedule s) {
+  final events = <_TimelineEvent>[];
+  for (final w in s.effectiveWindows) {
+    events.add(_TimelineEvent(true, w.on));
+    events.add(_TimelineEvent(false, w.offMinute));
+  }
+  events.sort((a, b) => a.minutes.compareTo(b.minutes));
+  return events;
+}
+
+class _UpcomingItem {
+  final AutomationSchedule schedule;
+  final _TimelineEvent event;
+  const _UpcomingItem(this.schedule, this.event);
+}
+
+enum _ScheduleFilter { all, active, paused }
+
 // ─── Device Picker Dialog ─────────────────────────────────────────────────────
 
 class _DevicePickerDialog extends StatefulWidget {
@@ -153,9 +348,9 @@ class _DevicePickerDialog extends StatefulWidget {
 // Institute theming: this dialog is opened via `showDialog(context: ctx,
 // ...)` with the default `useRootNavigator: true`, so its route (and this
 // State's own BuildContext) is inserted at the root Overlay -- it is not a
-// descendant of _AutomationScreenState's local `Theme(...)` override in
-// build(), and `context.institutePalette` can't resolve correctly here.
-// Instead of re-deriving the theme inside this State, the caller passes its
+// descendant of any screen's local `Theme(...)` override in build(), and
+// `context.institutePalette` can't resolve correctly here. Instead of
+// re-deriving the theme inside this State, the caller passes its
 // already-resolved `palette` straight through the constructor.
 class _DevicePickerDialogState extends State<_DevicePickerDialog> {
   String? _selectedBuilding;
@@ -293,7 +488,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   decoration: BoxDecoration(
-                    color: widget.palette.pale,
+                    color: Colors.white,
+                    border: Border.all(color: AppColors.hairline),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Text(
@@ -350,7 +546,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 12),
                       decoration: BoxDecoration(
-                        color: widget.palette.pale,
+                        color: Colors.white,
+                        border: Border.all(color: AppColors.hairline),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
@@ -421,9 +618,15 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                   borderRadius: BorderRadius.circular(10))),
           onPressed: _selectedDeviceId == null || _selectedDeviceLabel == null
               ? null
+              // Building/room are included alongside id/label so the caller
+              // (the schedule editor) can show "<building> · <room>" right
+              // away, without a schedule needing to store them itself --
+              // schedules only ever store the deviceId as `target`.
               : () => _safeDialogPop(context, <String, String>{
                     'id': _selectedDeviceId!,
                     'label': _selectedDeviceLabel!,
+                    'building': _selectedBuilding ?? '',
+                    'room': _selectedRoom ?? '',
                   }),
           child: const Text('Confirm', style: TextStyle(color: Colors.white)),
         ),
@@ -488,11 +691,27 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
   }
 }
 
-// ─── Automation Screen ────────────────────────────────────────────────────────
+// ─── Automation Screen (list) ──────────────────────────────────────────────
+//
+// Body-only: this widget is embedded inside `dashboard_screen.dart`'s
+// IndexedStack, which owns the shared top bar and bottom nav for all 4 tabs
+// (see `AutomationScreen(role: _role, onSubtitleChanged: ...)` there -- the
+// only caller). So this screen does NOT render its own `AppTopBar` -- the
+// handoff's top-bar subtitle ("N of M schedules active") is instead reported
+// up to the shell via [onSubtitleChanged] (see `_notifySubtitle`), which the
+// shell shows in its shared top bar, matching how Devices/Analytics already
+// get their subtitles computed centrally in `dashboard_screen.dart`.
 
 class AutomationScreen extends StatefulWidget {
   final String role;
-  const AutomationScreen({super.key, this.role = 'faculty'});
+  /// Called whenever this screen's "N of M schedules active" figure
+  /// changes (schedules loaded, institute hydrated, or a schedule
+  /// toggled) so the shared shell top bar in `dashboard_screen.dart` can
+  /// show it as this tab's subtitle. Null while there is nothing to show
+  /// yet (before the first load) or if there are no schedules at all.
+  final ValueChanged<String?>? onSubtitleChanged;
+  const AutomationScreen(
+      {super.key, this.role = 'faculty', this.onSubtitleChanged});
 
   @override
   State<AutomationScreen> createState() => _AutomationScreenState();
@@ -504,11 +723,13 @@ class _AutomationScreenState extends State<AutomationScreen> {
   // True until each stream's first snapshot has arrived; never reverts to
   // true afterwards, so a transient null on either path can't blank data
   // this screen already loaded this session. `_loadingBuildings` is also
-  // read directly by the Add Schedule dialog's building dropdown.
+  // read directly by the schedule editor's device-picker dialog.
   bool _loading = true;
   bool _loadingBuildings = true;
   bool get _isLoading => _loading || _loadingBuildings;
   String? _errorText;
+
+  _ScheduleFilter _filter = _ScheduleFilter.all;
 
   bool get isAdmin =>
       widget.role == 'admin' ||
@@ -516,19 +737,16 @@ class _AutomationScreenState extends State<AutomationScreen> {
       widget.role == 'super_admin' ||
       widget.role == 'institute_admin';
 
-  static const List<String> _allDays = [
-    'Mon',
-    'Tue',
-    'Wed',
-    'Thu',
-    'Fri',
-    'Sat',
-    'Sun'
-  ];
-  static const List<String> _utilities = ['All', 'Lights', 'Outlets', 'AC'];
+  /// Institute admins see only their institute's schedules, grouped by room
+  /// (handoff §5) rather than by building (handoff §4.8).
+  bool get _isInstituteAdmin => widget.role.trim().toLowerCase() == 'institute_admin';
 
   List<String> _buildings = [];
   Map<String, int> _buildingFloors = {};
+
+  /// deviceId -> where it currently lives, resolved from the `buildings`
+  /// subtree already fetched below (no extra Firebase reads).
+  final Map<String, _DeviceInfo> _deviceIndex = {};
 
   // ── Institute theming ──────────────────────────────────────────────────
   // `widget.role` is already passed in by dashboard_screen.dart (the only
@@ -553,9 +771,37 @@ class _AutomationScreenState extends State<AutomationScreen> {
       final institute = (map['institute'] as String?)?.trim();
       if (!mounted) return;
       setState(() => _institute = institute);
+      _notifySubtitle();
     } catch (_) {
       // Keep the green default if institute hydration fails.
     }
+  }
+
+  /// Same institute-scoping rule `_buildList` uses for its `scoped` list,
+  /// factored out so `_notifySubtitle` can compute the identical figure the
+  /// body would render, without duplicating a second Firebase read.
+  List<AutomationSchedule> _scopedSchedules(List<AutomationSchedule> all) {
+    return (_isInstituteAdmin && (_institute ?? '').isNotEmpty)
+        ? all.where((s) => _belongsToInstitute(s, _institute!)).toList()
+        : all;
+  }
+
+  /// Reports the current "N of M schedules active" figure up to
+  /// [AutomationScreen.onSubtitleChanged] for the shared shell top bar.
+  /// Null until the first real load completes (or once loaded, if there
+  /// are no schedules at all) so the shell shows no subtitle rather than a
+  /// misleading "0 of 0" while `_schedules` is still empty pre-load.
+  void _notifySubtitle() {
+    final cb = widget.onSubtitleChanged;
+    if (cb == null) return;
+    if (_isLoading) return;
+    final scoped = _scopedSchedules(_schedules);
+    if (scoped.isEmpty) {
+      cb(null);
+      return;
+    }
+    final activeCount = scoped.where((s) => s.enabled).length;
+    cb('$activeCount of ${scoped.length} schedules active');
   }
 
   @override
@@ -582,11 +828,12 @@ class _AutomationScreenState extends State<AutomationScreen> {
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
-        // ── buildings ──────────────────────────────────────────────
+        // ── buildings (+ nested device index) ─────────────────────────
         final buildingsRaw = events[0].snapshot.value;
         if (buildingsRaw is Map) {
           final list = <String>[];
           final floors = <String, int>{};
+          final deviceIndex = <String, _DeviceInfo>{};
           final map = Map<String, dynamic>.from(buildingsRaw);
           for (final entry in map.entries) {
             final buildingCode = entry.key.toString();
@@ -595,14 +842,41 @@ class _AutomationScreenState extends State<AutomationScreen> {
               final floorCount = (data['floors'] as num?)?.toInt() ?? 1;
               list.add(buildingCode);
               floors[buildingCode] = floorCount < 1 ? 1 : floorCount;
+
+              // `ref('buildings').onValue` already downloads the whole
+              // subtree (Realtime DB has no partial-fetch by default), so
+              // floorData/devices are already here -- no extra reads.
+              final floorData = data['floorData'];
+              if (floorData is Map) {
+                for (final floorEntry in floorData.entries) {
+                  final floorVal = floorEntry.value;
+                  if (floorVal is! Map) continue;
+                  final devices = floorVal['devices'];
+                  if (devices is! Map) continue;
+                  for (final deviceEntry in devices.entries) {
+                    final deviceVal = deviceEntry.value;
+                    if (deviceVal is! Map) continue;
+                    final d = Map<String, dynamic>.from(deviceVal);
+                    deviceIndex[deviceEntry.key.toString()] = _DeviceInfo(
+                      building: buildingCode,
+                      room: (d['room'] ?? '').toString(),
+                      utility: (d['utility'] ?? 'Unknown').toString(),
+                    );
+                  }
+                }
+              }
             }
           }
           list.sort();
           _buildings = list;
           _buildingFloors = floors;
+          _deviceIndex
+            ..clear()
+            ..addAll(deviceIndex);
         } else if (_loadingBuildings) {
           _buildings = [];
           _buildingFloors = {};
+          _deviceIndex.clear();
         }
         _loadingBuildings = false;
 
@@ -616,7 +890,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   id.toString(), Map<String, dynamic>.from(val)));
             }
           });
-          list.sort((a, b) => a.onTime.compareTo(b.onTime));
+          list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
           _schedules = list;
           _errorText = null;
         } else if (_loading) {
@@ -624,6 +898,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
         }
         _loading = false;
       });
+      _notifySubtitle();
     }, onError: (Object error) {
       if (!mounted) return;
       final denied = error.toString().toLowerCase().contains('permission');
@@ -636,6 +911,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
               : 'Failed to load automations.';
         }
       });
+      _notifySubtitle();
     });
   }
 
@@ -646,533 +922,135 @@ class _AutomationScreenState extends State<AutomationScreen> {
           .set(!s.enabled);
     } catch (_) {
       if (!mounted) return;
-      TopToast.show(context, 'Unable to update schedule.', isError: true);
+      // The device itself may simply be offline/unreachable right now --
+      // the write to Firebase (and therefore this schedule's enabled state)
+      // failed either way, so tell the admin rather than silently no-op'ing.
+      TopToast.error(context, 'Unable to update schedule. Check your connection and try again.');
     }
   }
 
-  Future<void> _deleteSchedule(AutomationSchedule s) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Schedule',
-            style: TextStyle(
-                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-        content: Text('Delete "${s.name}"?'),
-        actions: [
-          TextButton(
-              onPressed: () => _safeDialogPop(dialogCtx, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => _safeDialogPop(dialogCtx, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await FirebaseDatabase.instance.ref('automations/${s.id}').remove();
-    } catch (_) {
-      if (!mounted) return;
-      TopToast.show(context, 'Unable to delete schedule.', isError: true);
-    }
-  }
-
-  Future<void> _addSchedule() async {
-    final nameCtrl = TextEditingController();
-    String scope = 'global';
-    String target = 'all';
-    String deviceLabel = '';
-    String utility = 'All';
-    TimeOfDay onTime = const TimeOfDay(hour: 8, minute: 0);
-    TimeOfDay offTime = const TimeOfDay(hour: 18, minute: 0);
-    List<String> days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    String? error;
-    String? nameError;
-    int shake = 0;
-    bool loading = false;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Add Schedule',
-              style: TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // Name
-              AppTextField(
-                controller: nameCtrl,
-                shakeTrigger: shake,
-                decoration: _inputDeco('Schedule name', Icons.label_outline)
-                    .copyWith(errorText: nameError),
-                autofocus: true,
-                onChanged: (_) {
-                  if (nameError != null) setS(() => nameError = null);
-                },
-              ),
-              const SizedBox(height: 14),
-
-              // Scope
-              _dropdownField(
-                  'Scope',
-                  scope,
-                  ['global', 'building', 'utility', 'device'],
-                  (v) => setS(() {
-                        scope = v!;
-                        target = 'all';
-                        deviceLabel = '';
-                      })),
-              const SizedBox(height: 12),
-
-              // Target — conditional on scope
-              if (scope == 'building') ...[
-                _loadingBuildings
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: LinearProgressIndicator(color: _palette.mid),
-                      )
-                    : _dropdownField(
-                        'Building',
-                        _buildings.isEmpty
-                            ? target
-                            : (_buildings.contains(target)
-                                ? target
-                                : _buildings.first),
-                        _buildings,
-                        (v) => setS(() => target = v!),
-                      ),
-                const SizedBox(height: 12),
-              ],
-
-              if (scope == 'utility') ...[
-                _dropdownField(
-                    'Utility',
-                    target == 'all' ? 'Lights' : target,
-                    ['Lights', 'Outlets', 'AC'],
-                    (v) => setS(() => target = v!)),
-                const SizedBox(height: 12),
-              ],
-
-              // ── Device picker ────────────────────────────────
-              if (scope == 'device') ...[
-                GestureDetector(
-                  onTap: () async {
-                    final result = await showDialog<Map<String, String>>(
-                      context: ctx,
-                      builder: (_) => _DevicePickerDialog(
-                        buildingList: _buildings,
-                        buildingFloors: _buildingFloors,
-                        palette: _palette,
-                      ),
-                    );
-                    if (result != null) {
-                      setS(() {
-                        target = result['id']!;
-                        deviceLabel = result['label']!;
-                      });
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 14),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: _palette.mid.withAlpha(80)),
-                      borderRadius: BorderRadius.circular(12),
-                      color: Colors.white,
-                    ),
-                    child: Row(children: [
-                      const Icon(Icons.device_hub,
-                          size: 18, color: AppColors.textMuted),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          deviceLabel.isEmpty
-                              ? 'Tap to pick a device'
-                              : deviceLabel,
-                          style: TextStyle(
-                              fontSize: 13,
-                              color: deviceLabel.isEmpty
-                                  ? AppColors.textMuted
-                                  : AppColors.textDark),
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right,
-                          color: AppColors.textMuted, size: 18),
-                    ]),
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-
-              // Utility to control (hidden if scope=utility since target IS the utility)
-              if (scope != 'utility') ...[
-                _dropdownField('Utility to control', utility, _utilities,
-                    (v) => setS(() => utility = v!)),
-                const SizedBox(height: 12),
-              ],
-
-              _timePickerTile(
-                context: ctx,
-                label: 'ON time',
-                value: onTime,
-                icon: Icons.power_settings_new,
-                // Semantic: paired against AppColors.warning for the "OFF
-                // time" tile directly below -- communicates ON vs OFF, not
-                // brand chrome. Deliberately NOT retheme'd.
-                iconColor: AppColors.greenMid,
-                onPicked: (v) => setS(() => onTime = v),
-              ),
-              const SizedBox(height: 10),
-              _timePickerTile(
-                context: ctx,
-                label: 'OFF time',
-                value: offTime,
-                icon: Icons.power_off_outlined,
-                iconColor: AppColors.warning,
-                onPicked: (v) => setS(() => offTime = v),
-              ),
-              const SizedBox(height: 12),
-
-              // Days
-              const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Repeat on',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textMuted,
-                          fontWeight: FontWeight.w500))),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: _allDays.map((d) {
-                  final selected = days.contains(d);
-                  return GestureDetector(
-                    onTap: () => setS(() {
-                      if (selected) {
-                        days.remove(d);
-                      } else {
-                        days.add(d);
-                      }
-                    }),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: selected ? _palette.dark : _palette.pale,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(d,
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color:
-                                  selected ? Colors.white : AppColors.textMid)),
-                    ),
-                  );
-                }).toList(),
-              ),
-
-              if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!,
-                    style:
-                        const TextStyle(fontSize: 12, color: AppColors.error)),
-              ],
-            ]),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => _safeDialogPop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: loading
-                  ? null
-                  : () async {
-                      final name = nameCtrl.text.trim();
-                      if (name.isEmpty) {
-                        setS(() {
-                          nameError = 'Name is required';
-                          error = null;
-                          shake++;
-                        });
-                        return;
-                      }
-                      if (days.isEmpty) {
-                        setS(() => error = 'Select at least one day');
-                        return;
-                      }
-                      if (scope == 'device' && target == 'all') {
-                        setS(() => error = 'Please select a device');
-                        return;
-                      }
-                      if (scope == 'building' && !_buildings.contains(target)) {
-                        setS(() => error = 'Please select a building');
-                        return;
-                      }
-
-                      final finalTarget = scope == 'global'
-                          ? 'all'
-                          : scope == 'utility'
-                              ? target
-                              : target;
-                      final finalUtility =
-                          scope == 'utility' ? target : utility;
-                      final onTimeStr =
-                          '${onTime.hour.toString().padLeft(2, '0')}:${onTime.minute.toString().padLeft(2, '0')}';
-                      final offTimeStr =
-                          '${offTime.hour.toString().padLeft(2, '0')}:${offTime.minute.toString().padLeft(2, '0')}';
-                      if (onTimeStr == offTimeStr) {
-                        setS(() => error = 'ON and OFF time must be different');
-                        return;
-                      }
-
-                      setS(() {
-                        loading = true;
-                        error = null;
-                      });
-
-                      final newRef =
-                          FirebaseDatabase.instance.ref('automations').push();
-                      try {
-                        await newRef.set(AutomationSchedule(
-                          id: newRef.key!,
-                          name: name,
-                          scope: scope,
-                          target: finalTarget,
-                          utility: finalUtility,
-                          onTime: onTimeStr,
-                          offTime: offTimeStr,
-                          days: days,
-                          enabled: true,
-                        ).toMap());
-                      } catch (_) {
-                        setS(() {
-                          loading = false;
-                          error = 'No permission to add schedules.';
-                        });
-                        return;
-                      }
-
-                      if (!mounted || !ctx.mounted) return;
-                      _safeDialogPop(ctx);
-                      TopToast.show(context, 'Schedule added.');
-                    },
-              child: loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
+  Future<void> _openEditor(AutomationSchedule? existing) async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => _ScheduleEditorPage(
+          existing: existing,
+          palette: _palette,
+          buildings: _buildings,
+          buildingFloors: _buildingFloors,
+          deviceIndex: _deviceIndex,
+          readOnly: !isAdmin,
         ),
       ),
     );
+    if (!mounted || result == null) return;
+    if (result == 'added') TopToast.show(context, 'Schedule added.');
+    if (result == 'updated') TopToast.show(context, 'Schedule updated.');
   }
 
-  TimeOfDay _parseTime(String value, {required TimeOfDay fallback}) {
-    final parts = value.split(':');
-    if (parts.length != 2) return fallback;
-    final h = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) {
-      return fallback;
+  // ── Grouping / filtering helpers ────────────────────────────────────────
+
+  bool _belongsToInstitute(AutomationSchedule s, String institute) {
+    final code = institute.trim().toUpperCase();
+    if (s.scope == 'device') {
+      return (_deviceIndex[s.target]?.building ?? '').toUpperCase() == code;
     }
-    return TimeOfDay(hour: h, minute: m);
+    if (s.scope == 'building') return s.target.trim().toUpperCase() == code;
+    // Global/utility-wide schedules aren't attributable to one institute.
+    return false;
   }
 
-  Future<void> _editScheduleTiming(AutomationSchedule s) async {
-    TimeOfDay onTime =
-        _parseTime(s.onTime, fallback: const TimeOfDay(hour: 8, minute: 0));
-    TimeOfDay offTime =
-        _parseTime(s.offTime, fallback: const TimeOfDay(hour: 18, minute: 0));
-    List<String> days = [...s.days];
-    if (days.isEmpty) {
-      days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  String _buildingGroupKey(AutomationSchedule s) {
+    if (s.scope == 'device') return _deviceIndex[s.target]?.building ?? 'Other';
+    if (s.scope == 'building') return s.target;
+    return 'All buildings';
+  }
+
+  String _roomGroupKey(AutomationSchedule s) {
+    if (s.scope == 'device') return _deviceIndex[s.target]?.room ?? 'Unassigned';
+    return 'Building-wide';
+  }
+
+  bool _isDateInRange(DateTime day, String? start, String? end) {
+    final s = _parseIsoDate(start);
+    if (s == null) return false;
+    final e = _parseIsoDate(end) ?? s;
+    return !day.isBefore(s) && !day.isAfter(e);
+  }
+
+  List<_UpcomingItem> _computeUpcoming(List<AutomationSchedule> schedules) {
+    final now = DateTime.now();
+    final nowMinutes = now.hour * 60 + now.minute;
+    final today = DateTime(now.year, now.month, now.day);
+    final todayCode = _kAllDays[now.weekday - 1];
+    final out = <_UpcomingItem>[];
+    for (final s in schedules) {
+      if (!s.enabled) continue;
+      final runsToday = s.isCalendarMode
+          ? _isDateInRange(today, s.startDate, s.endDate)
+          : s.days.contains(todayCode);
+      if (!runsToday) continue;
+      for (final e in _timelineEventsFor(s)) {
+        if (e.minutes > nowMinutes) out.add(_UpcomingItem(s, e));
+      }
     }
-    String? error;
-    bool loading = false;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Edit Schedule Time & Days',
-              style: TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(s.name,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textDark)),
-                const SizedBox(height: 4),
-                Text('Settings are locked: ${_scopeLabel(s)} · ${s.utility}',
-                    style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted)),
-                const SizedBox(height: 12),
-                _timePickerTile(
-                  context: ctx,
-                  label: 'ON time',
-                  value: onTime,
-                  icon: Icons.power_settings_new,
-                  // Semantic: paired against AppColors.warning for the "OFF
-                  // time" tile directly below -- deliberately NOT retheme'd.
-                  iconColor: AppColors.greenMid,
-                  onPicked: (v) => setS(() => onTime = v),
-                ),
-                const SizedBox(height: 10),
-                _timePickerTile(
-                  context: ctx,
-                  label: 'OFF time',
-                  value: offTime,
-                  icon: Icons.power_off_outlined,
-                  iconColor: AppColors.warning,
-                  onPicked: (v) => setS(() => offTime = v),
-                ),
-                const SizedBox(height: 12),
-                const Text('Repeat on',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textMuted,
-                        fontWeight: FontWeight.w500)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: _allDays.map((d) {
-                    final selected = days.contains(d);
-                    return GestureDetector(
-                      onTap: () => setS(() {
-                        if (selected) {
-                          days.remove(d);
-                        } else {
-                          days.add(d);
-                        }
-                      }),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: selected ? _palette.dark : _palette.pale,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(d,
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: selected
-                                    ? Colors.white
-                                    : AppColors.textMid)),
-                      ),
-                    );
-                  }).toList(),
-                ),
-                if (error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(error!,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.error)),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => _safeDialogPop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: loading
-                  ? null
-                  : () async {
-                      if (days.isEmpty) {
-                        setS(() => error = 'Select at least one day');
-                        return;
-                      }
-
-                      final onTimeStr =
-                          '${onTime.hour.toString().padLeft(2, '0')}:${onTime.minute.toString().padLeft(2, '0')}';
-                      final offTimeStr =
-                          '${offTime.hour.toString().padLeft(2, '0')}:${offTime.minute.toString().padLeft(2, '0')}';
-                      if (onTimeStr == offTimeStr) {
-                        setS(() => error = 'ON and OFF time must be different');
-                        return;
-                      }
-
-                      setS(() {
-                        loading = true;
-                        error = null;
-                      });
-
-                      try {
-                        await FirebaseDatabase.instance
-                            .ref('automations/${s.id}')
-                            .update({
-                          'onTime': onTimeStr,
-                          'offTime': offTimeStr,
-                          // Legacy compatibility keys.
-                          'action': 'on',
-                          'time': onTimeStr,
-                          'days': days,
-                          // Replaces any multi-window timing set on web,
-                          // which would otherwise override these times.
-                          'windows': null,
-                        });
-                      } catch (_) {
-                        setS(() {
-                          loading = false;
-                          error = 'Unable to update schedule timing.';
-                        });
-                        return;
-                      }
-
-                      if (!mounted || !ctx.mounted) return;
-                      _safeDialogPop(ctx);
-                      TopToast.show(context, 'Schedule updated.');
-                    },
-              child: loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
+    out.sort((a, b) => a.event.minutes.compareTo(b.event.minutes));
+    return out.take(3).toList();
   }
+
+  String _nextRunLabel(AutomationSchedule s) {
+    final events = _timelineEventsFor(s);
+    if (events.isEmpty) return '';
+    final now = DateTime.now();
+    final nowMinutes = now.hour * 60 + now.minute;
+
+    if (s.isCalendarMode) {
+      final start = _parseIsoDate(s.startDate);
+      if (start == null) return '';
+      final end = _parseIsoDate(s.endDate) ?? start;
+      final today = DateTime(now.year, now.month, now.day);
+      if (today.isBefore(start)) {
+        final first = events.first;
+        return 'Next: ${_formatMonthDay(start)}, ${_formatMinutesLabel(first.minutes)} · turns ${first.isOn ? 'on' : 'off'}';
+      }
+      if (!today.isAfter(end)) {
+        for (final e in events) {
+          if (e.minutes > nowMinutes) {
+            return 'Next: Today, ${_formatMinutesLabel(e.minutes)} · turns ${e.isOn ? 'on' : 'off'}';
+          }
+        }
+        final tomorrow = today.add(const Duration(days: 1));
+        if (!tomorrow.isAfter(end)) {
+          final first = events.first;
+          return 'Next: Tomorrow, ${_formatMinutesLabel(first.minutes)} · turns ${first.isOn ? 'on' : 'off'}';
+        }
+      }
+      return '';
+    }
+
+    if (s.days.isEmpty) return '';
+    for (var k = 0; k < 8; k++) {
+      final day = now.add(Duration(days: k));
+      final dayCode = _kAllDays[(day.weekday - 1) % 7];
+      if (!s.days.contains(dayCode)) continue;
+      for (final e in events) {
+        if (k > 0 || e.minutes > nowMinutes) {
+          final when = k == 0 ? 'Today' : (k == 1 ? 'Tomorrow' : dayCode);
+          return 'Next: $when, ${_formatMinutesLabel(e.minutes)} · turns ${e.isOn ? 'on' : 'off'}';
+        }
+      }
+    }
+    return '';
+  }
+
+  String _calendarDateLabel(AutomationSchedule s) {
+    final start = s.startDate;
+    final end = s.endDate;
+    if (start == null) return 'No date set';
+    if (end == null || end == start) return _formatIsoDate(start);
+    return '${_formatIsoDate(start)} – ${_formatIsoDate(end)}';
+  }
+
+  String _scopeLabel(AutomationSchedule s) => _scopeLabelForTarget(s.scope, s.target);
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
@@ -1183,19 +1061,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
         extensions: [InstituteTheme.resolve(widget.role, _institute)],
       ),
       child: Scaffold(
-        backgroundColor: AppColors.surface,
-        floatingActionButton: isAdmin
-            ? FloatingActionButton.extended(
-                onPressed: _addSchedule,
-                backgroundColor: _palette.dark,
-                icon: const Icon(Icons.add, color: Colors.white),
-                label: const Text('Add Schedule',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontFamily: AppFonts.family,
-                        fontWeight: FontWeight.w600)),
-              )
-            : null,
+        backgroundColor: Colors.white,
         body: _errorText != null
             ? _buildError()
             : ScreenSkeleton(
@@ -1204,9 +1070,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
                   final displaySchedules = _schedules.isEmpty && _isLoading
                       ? AutomationSchedule.placeholderList()
                       : _schedules;
-                  return displaySchedules.isEmpty
-                      ? _buildEmpty()
-                      : _buildList(displaySchedules);
+                  return _buildList(displaySchedules);
                 }),
               ),
       ),
@@ -1222,448 +1086,1141 @@ class _AutomationScreenState extends State<AutomationScreen> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white,
+                  border: Border.all(color: AppColors.hairline),
                   borderRadius: BorderRadius.circular(20)),
               child: Icon(Icons.lock_outline, size: 34, color: _palette.mid)),
           const SizedBox(height: 16),
-          const Text('Cannot load automations',
-              style: TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textDark)),
+          Text('Cannot load automations',
+              style: AppTextStyles.title.copyWith(color: AppColors.ink)),
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
         ]),
       ),
     );
   }
 
-  Widget _buildEmpty() {
+  Widget _buildEmptyState({required String title, required String message}) {
     return Center(
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-                color: _palette.pale, borderRadius: BorderRadius.circular(20)),
-            child: Icon(Icons.schedule, size: 36, color: _palette.dark)),
-        const SizedBox(height: 16),
-        const Text('No schedules yet',
-            style: TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
-        const SizedBox(height: 6),
-        Text(
-            isAdmin
-                ? 'Tap + Add Schedule to create one'
-                : 'No automation schedules set',
-            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
-      ]),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                  color: Colors.white, border: Border.all(color: AppColors.hairline), borderRadius: BorderRadius.circular(20)),
+              child: Icon(Icons.schedule, size: 36, color: _palette.dark)),
+          const SizedBox(height: 16),
+          Text(title, style: AppTextStyles.titleLg.copyWith(color: AppColors.ink)),
+          const SizedBox(height: 6),
+          Text(message,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+        ]),
+      ),
     );
   }
 
-  Widget _buildList(List<AutomationSchedule> schedules) {
-    final global = schedules.where((s) => s.scope == 'global').toList();
-    final building = schedules.where((s) => s.scope == 'building').toList();
-    final utility = schedules.where((s) => s.scope == 'utility').toList();
-    final device = schedules.where((s) => s.scope == 'device').toList();
+  Widget _buildList(List<AutomationSchedule> allSchedules) {
+    final scoped = _scopedSchedules(allSchedules);
+
+    if (scoped.isEmpty) {
+      return _buildEmptyState(
+        title: 'No schedules yet',
+        message: isAdmin
+            ? 'Tap + next to "All schedules" to create one.'
+            : 'No automation schedules set.',
+      );
+    }
+
+    final activeCount = scoped.where((s) => s.enabled).length;
+    final pausedCount = scoped.length - activeCount;
+
+    final shown = scoped.where((s) {
+      switch (_filter) {
+        case _ScheduleFilter.active:
+          return s.enabled;
+        case _ScheduleFilter.paused:
+          return !s.enabled;
+        case _ScheduleFilter.all:
+          return true;
+      }
+    }).toList();
+
+    final upcoming = _computeUpcoming(scoped);
+
+    final groups = <String, List<AutomationSchedule>>{};
+    final order = <String>[];
+    for (final s in shown) {
+      final key = _isInstituteAdmin ? _roomGroupKey(s) : _buildingGroupKey(s);
+      (groups[key] ??= []).add(s);
+      if (!order.contains(key)) order.add(key);
+    }
+    order.sort();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (global.isNotEmpty) ...[
-          _sectionHeader('🌐 Global', global.length),
-          const SizedBox(height: 10),
-          ...global.map(_buildCard),
-          const SizedBox(height: 20)
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // "N of M schedules active" now lives in the shared shell top
+          // bar's subtitle (see `_notifySubtitle` / `dashboard_screen.dart`
+          // `_topBarSubtitle`), not here.
+          _comingUpSection(upcoming),
+          const SizedBox(height: 28),
+          Row(children: [
+            Text('All schedules', style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+            const Spacer(),
+            if (isAdmin)
+              IconAddButton(
+                onPressed: () => _openEditor(null),
+                palette: _palette,
+                semanticLabel: 'Add schedule',
+              ),
+          ]),
+          const SizedBox(height: 12),
+          AppSegmentedControl(
+            palette: _palette,
+            segments: [
+              AppSegment(label: 'All ${scoped.length}'),
+              AppSegment(label: 'Active $activeCount'),
+              AppSegment(label: 'Paused $pausedCount'),
+            ],
+            selectedIndex: _filter.index,
+            onChanged: (i) => setState(() => _filter = _ScheduleFilter.values[i]),
+          ),
+          if (order.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: Text('No ${_filter.name} schedules.',
+                  style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+            )
+          else
+            for (final key in order) _groupSection(key, groups[key]!),
         ],
-        if (building.isNotEmpty) ...[
-          _sectionHeader('🏫 Building', building.length),
-          const SizedBox(height: 10),
-          ...building.map(_buildCard),
-          const SizedBox(height: 20)
-        ],
-        if (utility.isNotEmpty) ...[
-          _sectionHeader('⚡ Utility', utility.length),
-          const SizedBox(height: 10),
-          ...utility.map(_buildCard),
-          const SizedBox(height: 20)
-        ],
-        if (device.isNotEmpty) ...[
-          _sectionHeader('📟 Device', device.length),
-          const SizedBox(height: 10),
-          ...device.map(_buildCard),
-          const SizedBox(height: 20)
-        ],
-      ]),
+      ),
     );
   }
 
-  Widget _sectionHeader(String title, int count) {
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 8,
-      runSpacing: 6,
+  Widget _comingUpSection(List<_UpcomingItem> upcoming) {
+    final today = DateTime.now();
+    final label = '${_kAllDays[today.weekday - 1]}, ${_formatMonthDay(today)}';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title,
-            style: const TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textDark)),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-              color: _palette.pale, borderRadius: BorderRadius.circular(20)),
-          child: Text('$count',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: _palette.dark)),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text('Coming up today', style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+            const Spacer(),
+            Text(label, style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+          ],
         ),
+        const SizedBox(height: 12),
+        if (upcoming.isEmpty)
+          Row(children: [
+            const Icon(Icons.check_circle, size: 18, color: AppColors.inkMid),
+            const SizedBox(width: 8),
+            Text('Nothing else runs today.',
+                style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+          ])
+        else
+          Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: _palette.line),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              children: [
+                for (var i = 0; i < upcoming.length; i++)
+                  Container(
+                    decoration: BoxDecoration(
+                      border: i == 0 ? null : Border(top: BorderSide(color: _palette.line)),
+                    ),
+                    child: _upcomingRow(upcoming[i], today),
+                  ),
+              ],
+            ),
+          ),
       ],
     );
   }
 
-  Widget _buildCard(AutomationSchedule s) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(16),
-        // Semantic: emphasis tied to s.enabled (this schedule is currently
-        // active vs. disabled), same enabled/disabled state this card's
-        // Switch below communicates -- deliberately NOT retheme'd.
-        border: Border.all(
-            color: s.enabled
-                ? AppColors.greenMid.withAlpha(60)
-                : AppColors.greenMid.withAlpha(20)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final isNarrow = constraints.maxWidth < 260;
-            return isNarrow
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                        Row(children: [
-                          Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                  color: _palette.mid.withAlpha(20),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: Icon(Icons.schedule,
-                                  color: _palette.mid, size: 20)),
-                          const SizedBox(width: 12),
-                          Expanded(
-                              child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                Text(s.name,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontFamily: AppFonts.family,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: AppColors.textDark)),
-                                const SizedBox(height: 2),
-                                Text(_scopeLabel(s),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontSize: 11,
-                                        color: AppColors.textMuted)),
-                              ])),
-                        ]),
-                        if (isAdmin)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            // Semantic: communicates "this automation rule
-                            // is currently active" -- deliberately NOT
-                            // retheme'd (see also the equivalent non-narrow
-                            // Switch below).
-                            child: Switch(
-                                value: s.enabled,
-                                activeThumbColor: AppColors.greenMid,
-                                onChanged: (_) => _toggleEnabled(s)),
-                          ),
-                      ])
-                : Row(children: [
-                    Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                            color: _palette.mid.withAlpha(20),
-                            borderRadius: BorderRadius.circular(12)),
-                        child: Icon(Icons.schedule,
-                            color: _palette.mid, size: 20)),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          Text(s.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontFamily: AppFonts.family,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textDark)),
-                          const SizedBox(height: 2),
-                          Text(_scopeLabel(s),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 11, color: AppColors.textMuted)),
-                        ])),
-                    if (isAdmin)
-                      // Semantic: same enabled/disabled schedule state as
-                      // the narrow-layout Switch above -- NOT retheme'd.
-                      Switch(
-                          value: s.enabled,
-                          activeThumbColor: AppColors.greenMid,
-                          onChanged: (_) => _toggleEnabled(s)),
-                  ]);
-          },
+  Widget _upcomingRow(_UpcomingItem u, DateTime now) {
+    final nowMinutes = now.hour * 60 + now.minute;
+    final info = u.schedule.scope == 'device' ? _deviceIndex[u.schedule.target] : null;
+    final deviceLabel = info?.utility ?? u.schedule.utility;
+    final placeParts = <String>[
+      if (!_isInstituteAdmin && info != null) info.building,
+      if (info != null) info.room,
+    ];
+    final place = placeParts.isEmpty ? _scopeLabel(u.schedule) : placeParts.join(' · ');
+
+    return InkWell(
+      onTap: () => _openEditor(u.schedule),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 92,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_formatMinutesLabel(u.event.minutes),
+                      style: TextStyle(
+                          fontFamily: AppFonts.family,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: _palette.dark)),
+                  Text(_inWordsLabel(u.event.minutes, nowMinutes),
+                      style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Turn ${u.event.isOn ? 'on' : 'off'} · $deviceLabel',
+                      style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+                  Text('$place — ${u.schedule.name}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+                ],
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 12),
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          // Semantic: ON chip paired against the OFF chip's AppColors.warning
-          // immediately below -- deliberately NOT retheme'd.
-          _chip(Icons.power_settings_new, 'ON ${s.onTime}', AppColors.greenMid),
-          _chip(
-              Icons.power_off_outlined, 'OFF ${s.offTime}', AppColors.warning),
-          _chip(Icons.electrical_services, s.utility, _palette.mid),
-        ]),
-        const SizedBox(height: 8),
-        if (s.isCalendarMode)
-          _chip(Icons.calendar_month, _calendarDateLabel(s), _palette.dark)
-        else
-          Wrap(
-            spacing: 4,
-            runSpacing: 4,
-            children: _allDays.map((d) {
-              final active = s.days.contains(d);
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                decoration: BoxDecoration(
-                  color: active ? _palette.dark : _palette.pale,
-                  borderRadius: BorderRadius.circular(6),
+      ),
+    );
+  }
+
+  Widget _groupSection(String header, List<AutomationSchedule> items) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.only(bottom: 8),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppColors.ink, width: 1.5)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Text(header.toUpperCase(),
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontFamily: AppFonts.family,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.4,
+                          color: AppColors.ink)),
                 ),
-                child: Text(d,
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: active ? Colors.white : AppColors.textMuted)),
-              );
-            }).toList(),
+                const SizedBox(width: 8),
+                Text('${items.length} schedule${items.length > 1 ? 's' : ''}',
+                    style: AppTextStyles.caption.copyWith(color: AppColors.inkMid)),
+              ],
+            ),
           ),
-        if (isAdmin) ...[
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              GestureDetector(
-                onTap: () => _editScheduleTiming(s),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: _palette.pale,
-                      borderRadius: BorderRadius.circular(8)),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.edit_outlined, size: 14, color: _palette.dark),
-                    const SizedBox(width: 4),
-                    Text('Edit time/days',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: _palette.dark,
-                            fontWeight: FontWeight.w600)),
-                  ]),
+          for (final s in items) _scheduleCard(s),
+        ],
+      ),
+    );
+  }
+
+  Widget _scheduleCard(AutomationSchedule s) {
+    final info = s.scope == 'device' ? _deviceIndex[s.target] : null;
+    final utilityLabel = info?.utility ?? s.utility;
+    final subtitle = info != null ? '$utilityLabel · ${info.room}' : '$utilityLabel · ${_scopeLabel(s)}';
+    final events = _timelineEventsFor(s);
+    final nextLabel = s.enabled ? _nextRunLabel(s) : 'Paused';
+
+    return InkWell(
+      onTap: () => _openEditor(s),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: _palette.line)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              OutlineIconBox(icon: _utilityIcon(utilityLabel), palette: _palette),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(s.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.subtitle
+                            .copyWith(color: s.enabled ? AppColors.ink : AppColors.inkMid)),
+                    Text(subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () => _deleteSchedule(s),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                      color: AppColors.error.withAlpha(15),
-                      borderRadius: BorderRadius.circular(8)),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.delete_outline,
-                        size: 14, color: AppColors.error),
-                    SizedBox(width: 4),
-                    Text('Delete',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.error,
-                            fontWeight: FontWeight.w600)),
-                  ]),
-                ),
+              AppSwitch(
+                value: s.enabled,
+                onChanged: isAdmin ? (_) => _toggleEnabled(s) : null,
+                palette: _palette,
               ),
             ]),
-          ),
-        ],
-      ]),
-    );
-  }
-
-  Widget _chip(IconData icon, String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withAlpha(15),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withAlpha(40)),
+            if (events.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.only(left: 52),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [for (final e in events) _timelineRow(e, s.enabled)],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.only(left: 52),
+              child: Row(children: [
+                Icon(s.isCalendarMode ? Icons.calendar_month : Icons.event_repeat,
+                    size: 16, color: AppColors.inkMid),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    s.isCalendarMode ? _calendarDateLabel(s) : _daysText(s.days),
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption.copyWith(color: AppColors.inkMid),
+                  ),
+                ),
+                if (nextLabel.isNotEmpty)
+                  Text(nextLabel,
+                      style: AppTextStyles.caption.copyWith(
+                          color: s.enabled ? _palette.dark : AppColors.inkMid,
+                          fontWeight: s.enabled ? FontWeight.w600 : FontWeight.w500)),
+              ]),
+            ),
+          ],
+        ),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 12, color: color),
-        const SizedBox(width: 4),
-        Text(label,
-            style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w600, color: color)),
-      ]),
     );
   }
 
-  String _calendarDateLabel(AutomationSchedule s) {
-    final start = s.startDate;
-    final end = s.endDate;
-    if (start == null) return 'No date set';
-    if (end == null || end == start) return _formatIsoDate(start);
-    return '${_formatIsoDate(start)} – ${_formatIsoDate(end)}';
+  Widget _timelineRow(_TimelineEvent e, bool enabled) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: e.isOn ? AppColors.success : Colors.white,
+            border: e.isOn ? null : Border.all(color: AppColors.inkMid, width: 2),
+          ),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 78,
+          child: Text(_formatMinutesLabel(e.minutes),
+              style: TextStyle(
+                  fontFamily: AppFonts.family,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: enabled ? AppColors.ink : AppColors.inkMid)),
+        ),
+        Text(e.isOn ? 'Turn on' : 'Turn off',
+            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+      ]),
+    );
   }
+}
 
-  String _formatIsoDate(String iso) {
-    final parts = iso.split('-');
-    if (parts.length != 3) return iso;
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-    final month = int.tryParse(parts[1]);
-    final day = int.tryParse(parts[2]);
-    if (month == null || day == null || month < 1 || month > 12) return iso;
-    return '${months[month - 1]} $day, ${parts[0]}';
-  }
+// ─── Schedule editor (pushed screen: "New schedule" / "Edit schedule") ─────
 
-  String _scopeLabel(AutomationSchedule s) {
-    switch (s.scope) {
-      case 'global':
-        return 'All buildings · all utilities';
-      case 'building':
-        return 'Building: ${s.target}';
-      case 'utility':
-        return 'Utility: ${s.target}';
-      case 'device':
-        return 'Device: ${s.target}';
-      default:
-        return s.scope;
+class _ActionDraft {
+  bool isOn;
+  TimeOfDay time;
+  _ActionDraft(this.isOn, this.time);
+
+  int get minutes => time.hour * 60 + time.minute;
+}
+
+class _ScheduleEditorPage extends StatefulWidget {
+  final AutomationSchedule? existing;
+  final InstitutePalette palette;
+  final List<String> buildings;
+  final Map<String, int> buildingFloors;
+  final Map<String, _DeviceInfo> deviceIndex;
+  final bool readOnly;
+
+  const _ScheduleEditorPage({
+    required this.existing,
+    required this.palette,
+    required this.buildings,
+    required this.buildingFloors,
+    required this.deviceIndex,
+    required this.readOnly,
+  });
+
+  @override
+  State<_ScheduleEditorPage> createState() => _ScheduleEditorPageState();
+}
+
+class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
+  final _nameCtrl = TextEditingController();
+  String? _nameError;
+  String? _error;
+  int _shake = 0;
+  bool _saving = false;
+
+  // New schedules created from this screen are always device-scoped (the
+  // handoff's "New schedule" flow is purely "Building, floor, room, then
+  // device" -- there's no scope-type selector in the mobile redesign).
+  // Existing global/building/utility-scoped schedules (creatable only on
+  // web) remain viewable/editable here for their name/times/repeat, with
+  // the Device row shown read-only (mobile has no UI to reassign those
+  // scope types -- see `_deviceRow`).
+  late String _scope;
+  late String _target;
+  late String _utility;
+  String _deviceLabel = '';
+  String? _deviceBuilding;
+  String? _deviceRoom;
+
+  late List<_ActionDraft> _actions;
+  late String _mode; // 'weekly' | 'calendar'
+  late List<String> _days;
+  bool _customDayMode = false;
+  DateTime? _calStart;
+  DateTime? _calEnd;
+
+  bool get _isEdit => widget.existing != null;
+  InstitutePalette get _p => widget.palette;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.existing;
+    if (s == null) {
+      _scope = 'device';
+      _target = 'all';
+      _utility = 'All';
+      _actions = [
+        _ActionDraft(true, const TimeOfDay(hour: 8, minute: 0)),
+        _ActionDraft(false, const TimeOfDay(hour: 18, minute: 0)),
+      ];
+      _mode = 'weekly';
+      _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+      return;
+    }
+    _nameCtrl.text = s.name;
+    _scope = s.scope;
+    _target = s.target;
+    _utility = s.utility;
+    if (_scope == 'device') {
+      final info = widget.deviceIndex[_target];
+      if (info != null) {
+        _deviceBuilding = info.building;
+        _deviceRoom = info.room;
+        _deviceLabel = '$_target · ${info.utility}';
+      } else {
+        _deviceLabel = _target;
+      }
+    }
+    _actions = _actionsFromWindows(s.effectiveWindows);
+    _mode = s.scheduleMode;
+    _days = s.days.isNotEmpty ? [...s.days] : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    if (_mode == 'calendar') {
+      _calStart = _parseIsoDate(s.startDate);
+      _calEnd = _parseIsoDate(s.endDate) ?? _calStart;
     }
   }
 
-  Widget _timePickerTile({
-    required BuildContext context,
-    required String label,
-    required TimeOfDay value,
-    required IconData icon,
-    required Color iconColor,
-    required void Function(TimeOfDay value) onPicked,
-  }) {
-    return GestureDetector(
-      onTap: () async {
-        final picked =
-            await showTimePicker(context: context, initialTime: value);
-        if (picked != null) onPicked(picked);
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  List<_ActionDraft> _actionsFromWindows(List<ScheduleWindow> windows) {
+    if (windows.isEmpty) {
+      return [
+        _ActionDraft(true, const TimeOfDay(hour: 8, minute: 0)),
+        _ActionDraft(false, const TimeOfDay(hour: 18, minute: 0)),
+      ];
+    }
+    final drafts = <_ActionDraft>[];
+    for (final w in windows) {
+      drafts.add(_ActionDraft(true, TimeOfDay(hour: w.on ~/ 60, minute: w.on % 60)));
+      drafts.add(_ActionDraft(
+          false, TimeOfDay(hour: w.offMinute ~/ 60, minute: w.offMinute % 60)));
+    }
+    drafts.sort((a, b) => a.minutes.compareTo(b.minutes));
+    return drafts;
+  }
+
+  // ── Actions section ─────────────────────────────────────────────────────
+
+  Future<void> _pickTime(int index) async {
+    final picked = await showTimePicker(context: context, initialTime: _actions[index].time);
+    if (picked != null) setState(() => _actions[index].time = picked);
+  }
+
+  void _addAction() {
+    setState(() {
+      final lastOn = _actions.isEmpty ? true : !_actions.last.isOn;
+      final base = _actions.isEmpty ? const TimeOfDay(hour: 8, minute: 0) : _actions.last.time;
+      final nextMinutes = (base.hour * 60 + base.minute + 60) % (24 * 60);
+      _actions.add(_ActionDraft(lastOn, TimeOfDay(hour: nextMinutes ~/ 60, minute: nextMinutes % 60)));
+    });
+  }
+
+  void _removeAction(int index) {
+    setState(() => _actions.removeAt(index));
+    TopToast.show(context, 'Removed');
+  }
+
+  // ── Device section ──────────────────────────────────────────────────────
+
+  Future<void> _pickDevice() async {
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => _DevicePickerDialog(
+        buildingList: widget.buildings,
+        buildingFloors: widget.buildingFloors,
+        palette: _p,
+      ),
+    );
+    if (result == null) return;
+    setState(() {
+      _target = result['id']!;
+      _deviceLabel = result['label']!;
+      _deviceBuilding = (result['building'] ?? '').isEmpty ? null : result['building'];
+      _deviceRoom = (result['room'] ?? '').isEmpty ? null : result['room'];
+      final parts = result['label']!.split(' · ');
+      if (parts.length > 1) _utility = parts.last;
+    });
+  }
+
+  // ── When (weekly / calendar) section ────────────────────────────────────
+
+  void _selectPreset(String preset) {
+    setState(() {
+      switch (preset) {
+        case 'Every day':
+          _customDayMode = false;
+          _days = [..._kAllDays];
+          break;
+        case 'Weekdays':
+          _customDayMode = false;
+          _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+          break;
+        case 'Weekends':
+          _customDayMode = false;
+          _days = ['Sat', 'Sun'];
+          break;
+        case 'Custom':
+          _customDayMode = true;
+          break;
+      }
+    });
+  }
+
+  void _toggleDay(String day) {
+    setState(() {
+      if (_days.contains(day)) {
+        // At least one day must stay selected (handoff §4.9).
+        if (_days.length > 1) _days.remove(day);
+      } else {
+        _days.add(day);
+      }
+    });
+  }
+
+  // `RangeCalendar` fires BOTH callbacks on every selection change, one with
+  // a real value and the other with null as its "the other kind of
+  // selection is now inactive" companion call (see range_calendar.dart's
+  // `_emitChange`) -- so only non-null calls are ever acted on here, except
+  // for the one genuine "cleared" case, which is detected by the still-a-
+  // single-day guard below.
+  void _onDaySelected(DateTime? d) {
+    if (d != null) {
+      setState(() {
+        _calStart = d;
+        _calEnd = d;
+      });
+    } else if (_calStart != null && _calEnd != null && _isSameDate(_calStart!, _calEnd!)) {
+      setState(() {
+        _calStart = null;
+        _calEnd = null;
+      });
+    }
+  }
+
+  void _onRangeChanged(DateTimeRange? r) {
+    if (r == null) return;
+    setState(() {
+      _calStart = r.start;
+      _calEnd = r.end;
+    });
+  }
+
+  String _calendarFooterText() {
+    if (_calStart == null) return 'Tap one day, or two days for a range';
+    final end = _calEnd ?? _calStart!;
+    if (_isSameDate(_calStart!, end)) return '${_formatMonthDay(_calStart!)} · one day';
+    final days = end.difference(_calStart!).inDays + 1;
+    return '${_formatMonthDay(_calStart!)} – ${_formatMonthDay(end)} · $days days';
+  }
+
+  // ── Delete (only entry point for schedule deletion -- handoff §7.3) ────
+
+  Future<void> _confirmDelete() async {
+    final s = widget.existing;
+    if (s == null) return;
+    await showDeleteFlow(
+      context,
+      type: DeleteType.schedule,
+      itemName: s.name,
+      // Per handoff §7.4 point 6: navigate back to the list first, then the
+      // floating Undo bar/animation plays over it (showDeleteFlow's Undo bar
+      // uses a root-level Overlay entry, so it keeps working after this pop
+      // -- see delete_flow.dart).
+      onOptimisticRemove: () {
+        if (mounted) Navigator.of(context).pop();
       },
+      onCommit: (reason, otherText) async {
+        // Runs ~5s after the pop above, once this page is long gone -- there
+        // is no surface left here to show a failure to the user. On error
+        // the write below simply doesn't happen, so the schedule stays in
+        // Firebase and the list keeps showing it (a safe, non-destructive
+        // failure mode) rather than silently losing data.
+        try {
+          final db = FirebaseDatabase.instance.ref();
+          final updates = <String, Object?>{};
+          updates['automations/${s.id}'] = null;
+          final logId = db.child('deletion_log').push().key;
+          updates['deletion_log/$logId'] = {
+            'type': 'schedule',
+            'scheduleId': s.id,
+            'name': s.name,
+            'reason': reason,
+            if (otherText != null && otherText.trim().isNotEmpty) 'otherText': otherText.trim(),
+            'deletedBy': FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+            'deletedByEmail': FirebaseAuth.instance.currentUser?.email ?? '',
+            'timestamp': ServerValue.timestamp,
+          };
+          await db.update(updates);
+        } catch (_) {
+          // See doc comment above.
+        }
+      },
+    );
+  }
+
+  // ── Save ─────────────────────────────────────────────────────────────────
+
+  Future<void> _save() async {
+    setState(() {
+      _nameError = null;
+      _error = null;
+    });
+
+    final name = _nameCtrl.text.trim();
+    var hasError = false;
+    String? nameError;
+    String? generalError;
+
+    if (name.isEmpty) {
+      nameError = 'Schedule name is required.';
+      hasError = true;
+    }
+    if (_scope == 'device' && (_target == 'all' || _target.trim().isEmpty)) {
+      generalError = 'Please choose a device.';
+      hasError = true;
+    }
+
+    final sorted = [..._actions]..sort((a, b) => a.minutes.compareTo(b.minutes));
+    final windows = <ScheduleWindow>[];
+    String? actionsError;
+    if (sorted.isEmpty) {
+      actionsError = 'Add at least one time window.';
+    } else if (sorted.length.isOdd) {
+      actionsError = 'Each On needs a matching Off time.';
+    } else {
+      for (var i = 0; i < sorted.length; i++) {
+        final expectedOn = i.isEven;
+        if (sorted[i].isOn != expectedOn) {
+          actionsError = 'Actions must alternate On, Off, On, Off…';
+          break;
+        }
+      }
+      if (actionsError == null) {
+        for (var i = 0; i < sorted.length; i += 2) {
+          final onMin = sorted[i].minutes;
+          final offMin = sorted[i + 1].minutes;
+          final untilMin = (offMin - 1 + 24 * 60) % (24 * 60);
+          final w = ScheduleWindow(onMin, untilMin);
+          if (w.duration >= 24 * 60) {
+            actionsError = 'On and Off times must differ.';
+            break;
+          }
+          windows.add(w);
+        }
+      }
+      if (actionsError == null) {
+        final overlapErrors = validateWindows(windows);
+        if (overlapErrors.isNotEmpty) actionsError = overlapErrors.values.first;
+      }
+    }
+    if (actionsError != null) {
+      generalError = actionsError;
+      hasError = true;
+    }
+
+    if (_mode == 'weekly' && _days.isEmpty) {
+      generalError = 'Select at least one day.';
+      hasError = true;
+    }
+    if (_mode == 'calendar' && _calStart == null) {
+      generalError = 'Pick a date on the calendar.';
+      hasError = true;
+    }
+
+    if (hasError) {
+      setState(() {
+        _nameError = nameError;
+        _error = generalError;
+        _shake++;
+      });
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    final first = windows.first;
+    final timing = <String, Object?>{
+      'windows': [for (final w in windows) w.toMap()],
+      'onTime': first.onLabel,
+      'offTime': first.offLabel,
+      'action': 'on',
+      'time': first.onLabel,
+      'scheduleMode': _mode,
+      'days': _mode == 'weekly' ? _days : <String>[],
+      'startDate': _mode == 'calendar' ? _isoDate(_calStart!) : null,
+      'endDate': _mode == 'calendar' ? _isoDate(_calEnd ?? _calStart!) : null,
+      'name': name,
+    };
+    // Renaming and (for device-scoped schedules) reassigning the device are
+    // both editable from this screen even when editing -- a deliberate,
+    // mobile-only relaxation of the web dialog, which hides name/target
+    // entirely once a schedule exists. Scope/utility for non-device scopes
+    // (global/building/utility) are left untouched since this screen has no
+    // UI to reassign those.
+    if (_scope == 'device') {
+      timing['target'] = _target;
+      timing['utility'] = _utility;
+    }
+
+    try {
+      if (_isEdit) {
+        await FirebaseDatabase.instance
+            .ref('automations/${widget.existing!.id}')
+            .update(timing..removeWhere((_, v) => v == null));
+      } else {
+        final ref = FirebaseDatabase.instance.ref('automations').push();
+        await ref.set({
+          'scope': _scope,
+          'target': _scope == 'global' ? 'all' : _target,
+          'utility': _scope == 'utility' ? _target : _utility,
+          'enabled': true,
+          ...timing,
+        }..removeWhere((_, v) => v == null));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = e.toString().toLowerCase().contains('permission')
+            ? 'You do not have permission to change schedules.'
+            : 'Could not save the schedule. Check your connection and try again.';
+        _shake++;
+      });
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop(_isEdit ? 'updated' : 'added');
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(extensions: [InstituteTheme(palette: _p)]),
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppTopBar(
+          title: _isEdit ? 'Edit schedule' : 'New schedule',
+          variant: AppTopBarVariant.small,
+          showBackButton: true,
+          palette: _p,
+          actions: [
+            if (_isEdit && !widget.readOnly)
+              AppTopBarAction(
+                icon: Icons.delete_outline,
+                tooltip: 'Delete schedule',
+                onTap: _confirmDelete,
+              ),
+          ],
+        ),
+        body: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _sectionLabel('Name'),
+                AppTextField(
+                  controller: _nameCtrl,
+                  enabled: !widget.readOnly,
+                  shakeTrigger: _shake,
+                  decoration: InputDecoration(
+                    hintText: 'e.g. AC shutdown',
+                    hintStyle: const TextStyle(color: AppColors.inkMuted, fontSize: 13),
+                    errorText: _nameError,
+                    filled: true,
+                    fillColor: Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _p.line)),
+                    enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _p.line)),
+                    focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: _p.dark)),
+                  ),
+                  onChanged: (_) {
+                    if (_nameError != null) setState(() => _nameError = null);
+                  },
+                ),
+                const SizedBox(height: 22),
+                _sectionLabel('Device'),
+                _deviceRow(),
+                const SizedBox(height: 22),
+                Row(children: [
+                  Expanded(child: _sectionLabel('Actions', bottomPad: 0)),
+                  if (!widget.readOnly)
+                    IconAddButton(onPressed: _addAction, palette: _p, semanticLabel: 'Add a time'),
+                ]),
+                const SizedBox(height: 8),
+                for (var i = 0; i < _actions.length; i++) _actionRow(i),
+                const SizedBox(height: 22),
+                _sectionLabel('When'),
+                AppSegmentedControl(
+                  palette: _p,
+                  enabled: !widget.readOnly,
+                  segments: const [
+                    AppSegment(label: 'Repeat weekly'),
+                    AppSegment(label: 'Specific date(s)'),
+                  ],
+                  selectedIndex: _mode == 'calendar' ? 1 : 0,
+                  onChanged: (i) => setState(() => _mode = i == 0 ? 'weekly' : 'calendar'),
+                ),
+                const SizedBox(height: 14),
+                _mode == 'weekly' ? _weeklyPicker() : _calendarPicker(),
+                const SizedBox(height: 22),
+                _summaryCard(),
+                if (_error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(_error!, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+                ],
+                const SizedBox(height: 24),
+                if (!widget.readOnly)
+                  Row(children: [
+                    Expanded(
+                        child: AppOutlineButton(
+                            label: 'Cancel',
+                            onPressed: () => Navigator.of(context).pop(),
+                            palette: _p,
+                            expand: true)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                        child: AppPrimaryButton(
+                            label: _saving ? 'Saving…' : 'Save',
+                            onPressed: _saving ? null : _save,
+                            palette: _p,
+                            expand: true)),
+                  ]),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text, {double bottomPad = 8}) => Padding(
+        padding: EdgeInsets.only(bottom: bottomPad),
+        child: Text(text,
+            style: const TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: AppColors.ink)),
+      );
+
+  Widget _deviceRow() {
+    final canPick = _scope == 'device' && !widget.readOnly;
+    final title = _scope != 'device'
+        ? _scopeLabelForTarget(_scope, _target)
+        : (_deviceLabel.isEmpty
+            ? 'Choose a device'
+            : (widget.deviceIndex[_target]?.utility ?? _deviceLabel));
+    final subtitle = _scope != 'device'
+        ? 'Set on the web dashboard'
+        : (_deviceBuilding != null && _deviceRoom != null
+            ? '$_deviceBuilding · $_deviceRoom'
+            : 'Building, floor, room, then device');
+    final icon = _scope == 'device'
+        ? _utilityIcon(widget.deviceIndex[_target]?.utility ?? _utility)
+        : Icons.device_hub;
+
+    return InkWell(
+      onTap: canPick ? _pickDevice : null,
+      borderRadius: BorderRadius.circular(12),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
-          border: Border.all(color: _palette.mid.withAlpha(80)),
-          borderRadius: BorderRadius.circular(12),
           color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _p.line),
         ),
         child: Row(children: [
-          Icon(icon, size: 18, color: iconColor),
-          const SizedBox(width: 10),
-          Text(label,
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-          const Spacer(),
-          Text(value.format(context),
-              style: const TextStyle(fontSize: 14, color: AppColors.textDark)),
-          const SizedBox(width: 8),
-          const Icon(Icons.chevron_right, color: AppColors.textMuted, size: 18),
+          OutlineIconBox(icon: icon, palette: _p),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+                Text(subtitle, style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+              ],
+            ),
+          ),
+          if (canPick) const Icon(Icons.chevron_right, color: AppColors.inkMid),
         ]),
       ),
     );
   }
 
-  Widget _dropdownField(String label, String value, List<String> items,
-      void Function(String?) onChanged) {
-    return DropdownButtonFormField<String>(
-      initialValue: items.contains(value) ? value : items.first,
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(
+  Widget _actionRow(int index) {
+    final a = _actions[index];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(children: [
+        SizedBox(
+          width: 120,
+          child: AppSegmentedControl(
+            palette: _p,
+            enabled: !widget.readOnly,
+            segments: const [AppSegment(label: 'On'), AppSegment(label: 'Off')],
+            selectedIndex: a.isOn ? 0 : 1,
+            onChanged: (i) => setState(() => a.isOn = i == 0),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: InkWell(
+            onTap: widget.readOnly ? null : () => _pickTime(index),
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-        focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: _palette.mid)),
-      ),
-      items:
-          items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(),
-      onChanged: onChanged,
+            child: Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              alignment: Alignment.centerLeft,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _p.line),
+              ),
+              child: Row(children: [
+                const Icon(Icons.schedule, size: 18, color: AppColors.inkMid),
+                const SizedBox(width: 8),
+                Text(_formatMinutesLabel(a.minutes),
+                    style: const TextStyle(
+                        fontFamily: AppFonts.family,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.ink)),
+              ]),
+            ),
+          ),
+        ),
+        if (!widget.readOnly)
+          IconButton(
+            onPressed: () => _removeAction(index),
+            icon: const Icon(Icons.close, color: AppColors.inkMid),
+            tooltip: 'Remove',
+          ),
+      ]),
     );
   }
 
-  InputDecoration _inputDeco(String hint, IconData icon) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
-      prefixIcon: Icon(icon, size: 18, color: AppColors.textMuted),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid)),
+  Widget _weeklyPicker() {
+    final preset = _daysText(_days);
+    const namedPresets = {'Every day', 'Weekdays', 'Weekends'};
+    final showCircles = _customDayMode || !namedPresets.contains(preset);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final p in ['Every day', 'Weekdays', 'Weekends', 'Custom'])
+            AppFilterChip(
+              label: p,
+              palette: _p,
+              selected: p == 'Custom' ? showCircles : (!showCircles && p == preset),
+              onTap: widget.readOnly ? () {} : () => _selectPreset(p),
+            ),
+        ]),
+        if (showCircles) ...[
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [for (final d in _kAllDays) _dayCircle(d)],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _dayCircle(String day) {
+    final selected = _days.contains(day);
+    return InkWell(
+      onTap: widget.readOnly ? null : () => _toggleDay(day),
+      borderRadius: BorderRadius.circular(19),
+      child: Container(
+        width: 38,
+        height: 38,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: selected ? _p.dark : Colors.white,
+          border: Border.all(color: selected ? _p.dark : _p.line),
+        ),
+        child: Text(day[0],
+            style: TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: selected ? Colors.white : AppColors.inkMid)),
+      ),
+    );
+  }
+
+  Widget _calendarPicker() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _p.line),
+      ),
+      child: Column(children: [
+        IgnorePointer(
+          ignoring: widget.readOnly,
+          child: RangeCalendar(
+            initialStart: _calStart,
+            initialEnd: _calEnd,
+            disablePast: true,
+            showInfoText: false,
+            onDaySelected: _onDaySelected,
+            onRangeChanged: _onRangeChanged,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(_calendarFooterText(),
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _summaryCard() {
+    final deviceLabel = _scope == 'device'
+        ? (widget.deviceIndex[_target]?.utility ?? (_deviceLabel.isEmpty ? null : _deviceLabel))
+        : null;
+    final roomLabel = _deviceRoom;
+    final sorted = [..._actions]..sort((a, b) => a.minutes.compareTo(b.minutes));
+    final actionsText = sorted.isEmpty
+        ? 'has no times set yet'
+        : sorted
+            .map((a) => 'turns ${a.isOn ? 'on' : 'off'} at ${_formatMinutesLabel(a.minutes)}')
+            .join(', ');
+
+    String whenText;
+    if (_mode == 'calendar') {
+      if (_calStart == null) {
+        whenText = 'on the date you pick';
+      } else if (_calEnd != null && !_isSameDate(_calStart!, _calEnd!)) {
+        whenText = 'every day from ${_formatMonthDay(_calStart!)} to ${_formatMonthDay(_calEnd!)}';
+      } else {
+        whenText = 'on ${_formatMonthDay(_calStart!)} only';
+      }
+    } else {
+      final preset = _daysText(_days);
+      whenText = {'Every day', 'Weekdays', 'Weekends'}.contains(preset)
+          ? preset.toLowerCase()
+          : 'on $preset';
+    }
+
+    final subject = deviceLabel != null
+        ? '$deviceLabel${roomLabel != null ? ' in $roomLabel' : ''}'
+        : 'The device';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _p.line),
+      ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.info_outline, size: 18, color: AppColors.inkMid),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid),
+              children: [
+                TextSpan(
+                    text: subject,
+                    style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
+                TextSpan(text: ' $actionsText, $whenText. Philippine time.'),
+              ],
+            ),
+          ),
+        ),
+      ]),
     );
   }
 }

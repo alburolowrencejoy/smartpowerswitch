@@ -591,10 +591,10 @@ class WebCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF2E9E52).withAlpha(33)),
+        border: Border.all(color: AppColors.hairline),
         boxShadow: const [
           BoxShadow(
-              color: Color(0x0A000000), blurRadius: 20, offset: Offset(0, 6)),
+              color: Color(0x0F000000), blurRadius: 16, offset: Offset(0, 4)),
         ],
       ),
       child: child,

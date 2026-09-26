@@ -3,13 +3,14 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
-import 'package:rxdart/rxdart.dart';
 
 import '../../services/automation_scheduler_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
+import '../../widgets/delete_flow.dart';
+import '../../widgets/delete_row_transition.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
@@ -26,7 +27,6 @@ import 'web_overview_tab.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
-import '../../services/history_clock.dart';
 
 /// The desktop/wide-window dashboard shell: a floating side nav plus a
 /// content area, chosen over [DashboardScreen] by `DashboardPage` once the
@@ -180,91 +180,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   Map<String, dynamic>? _viewingBuilding;
   Map<String, dynamic>? _viewingDevice;
 
-  // ── Institute-scoped summary (institute_admin Devices tab only) ───────
-  // Populated by _listenInstituteScoped(), filtered strictly to `_institute`
-  // -- never derived from `vm`'s system-wide totals.
-  double _instituteKwh = 0.0;
-  double _instituteMonthlyKwh = 0.0;
-  int _instituteAssignedDevices = 0;
-  int _instituteOnlineDevices = 0;
-  StreamSubscription? _instituteSub;
-
-  String _monthKey(DateTime date) =>
-      '${date.year}-${date.month.toString().padLeft(2, '0')}';
-
-  /// Institute-scoped combined listener (institute_admin only), mirroring
-  /// mobile dashboard_screen.dart's `_listenInstituteScoped()`. Every number
-  /// here is scoped to `_institute` only -- never system-wide.
-  void _listenInstituteScoped() {
-    final code = _institute;
-    if (code == null || code.isEmpty) return;
-
-    _instituteSub?.cancel();
-    final monthKey = _monthKey(HistoryClock.instance.now());
-    _instituteSub = Rx.combineLatestList<DatabaseEvent>([
-      FirebaseDatabase.instance.ref('devices').onValue,
-      FirebaseDatabase.instance.ref('master_devices').onValue,
-      FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings/$code/kwh')
-          .onValue,
-    ]).listen((events) {
-      if (!mounted) return;
-      setState(() {
-        // ── devices: today's institute kWh + online count ──────────
-        final devicesRaw = events[0].snapshot.value;
-        if (devicesRaw is Map) {
-          final data = Map<String, dynamic>.from(devicesRaw);
-          double kwh = 0;
-          int online = 0;
-          data.forEach((id, val) {
-            if (val is! Map) return;
-            final device = Map<String, dynamic>.from(val);
-            final building = (device['building'] ?? '').toString();
-            if (building != code) return;
-            kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
-
-            final lastSeen = device['last_seen'];
-            if (lastSeen != null && lastSeen != 0) {
-              final dt =
-                  DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-              if (DateTime.now().difference(dt).inMinutes < 2) online++;
-            }
-          });
-          _instituteKwh = kwh;
-          _instituteOnlineDevices = online;
-        } else {
-          _instituteKwh = 0;
-          _instituteOnlineDevices = 0;
-        }
-
-        // ── master_devices: assigned count for this institute only ─
-        final masterRaw = events[1].snapshot.value;
-        if (masterRaw is Map) {
-          final data = Map<String, dynamic>.from(masterRaw);
-          int assigned = 0;
-          data.forEach((id, val) {
-            if (val is! Map) return;
-            final assignedTo = (val['assignedTo'] ?? '').toString();
-            if (assignedTo.startsWith('$code/')) assigned++;
-          });
-          _instituteAssignedDevices = assigned;
-        } else {
-          _instituteAssignedDevices = 0;
-        }
-
-        // ── this month's institute energy from history ──────────────
-        final historyRaw = events[2].snapshot.value;
-        if (historyRaw is num) {
-          _instituteMonthlyKwh = historyRaw.toDouble();
-        } else {
-          _instituteMonthlyKwh = 0;
-        }
-      });
-    }, onError: (Object error) {
-      debugPrint('[DashboardWeb] Institute-scoped listen error: $error');
-    });
-  }
-
   void _openBuilding(String code, String name, int floors) {
     setState(() {
       _viewingBuilding = {
@@ -384,36 +299,60 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     }
     if (!ctx.mounted) return;
     final n = assigned.length;
-    final ok = await showWebConfirmDialog(
-      context: ctx,
-      title: 'Delete building?',
-      message: n > 0
-          ? '$name and its $n assigned device${n == 1 ? '' : 's'} will be '
-              "unassigned, and its map zone removed. This can't be undone."
-          : "$name and its map zone will be removed. This can't be undone.",
-      onConfirm: () async {
+    await showDeleteFlow(
+      ctx,
+      type: DeleteType.building,
+      itemName: '$name · $code',
+      impact: [
+        n > 0
+            ? '$n assigned device${n == 1 ? '' : 's'} will be unassigned'
+            : 'No devices are assigned to this building',
+        'Its rooms and map zone are removed',
+        'Usage history stays in Analytics',
+      ],
+      onOptimisticRemove: () => setState(() => _deletingBuilding = code),
+      onRestore: () {
+        if (mounted) setState(() => _deletingBuilding = null);
+      },
+      onCommit: (reason, otherText) async {
+        final user = FirebaseAuth.instance.currentUser;
+        final logRef = db.ref('deletion_log').push();
         final updates = <String, dynamic>{
           'buildings/$code': null,
           'hotspots/$code': null,
+          for (final id in assigned) ...{
+            'master_devices/$id/assignedTo': '',
+            'devices/$id/building': '',
+            'devices/$id/floor': '',
+            'devices/$id/room': '',
+            'devices/$id/status': 'offline',
+          },
+          'deletion_log/${logRef.key}': {
+            'type': 'building',
+            'buildingCode': code,
+            'buildingName': name,
+            'deviceIds': assigned.toList(),
+            'reason': reason,
+            'otherText': otherText,
+            'deletedBy': user?.uid,
+            'deletedByEmail': user?.email,
+            'timestamp': ServerValue.timestamp,
+          },
         };
-        for (final id in assigned) {
-          updates['master_devices/$id/assignedTo'] = '';
-          updates['devices/$id/building'] = '';
-          updates['devices/$id/floor'] = '';
-          updates['devices/$id/room'] = '';
-          updates['devices/$id/status'] = 'offline';
+        try {
+          await db.ref().update(updates);
+        } catch (e) {
+          if (mounted) TopToast.error(context, 'Failed to delete building: $e');
+          rethrow;
+        } finally {
+          if (mounted) setState(() => _deletingBuilding = null);
         }
-        await db.ref().update(updates);
       },
     );
-    if (ok && ctx.mounted) {
-      TopToast.show(
-          ctx,
-          n > 0
-              ? '$code removed. $n device${n == 1 ? '' : 's'} unassigned.'
-              : '$code removed.');
-    }
   }
+
+  /// Building whose delete animation is playing / commit is pending.
+  String? _deletingBuilding;
 
   void _openDevice(String deviceId, String utility, String building,
       String room, int floor) {
@@ -482,9 +421,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         _role = (data['role'] as String? ?? _role).toLowerCase();
         _institute = (data['institute'] as String?)?.trim();
       });
-      if (_isInstituteAdmin) {
-        _listenInstituteScoped();
-      }
     } catch (e) {
       debugPrint('[DashboardWeb] Failed to load role for ${user.uid}: $e');
     }
@@ -501,7 +437,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
   @override
   void dispose() {
     vm.disposeViewModel();
-    _instituteSub?.cancel();
     _analyticsFocus.dispose();
     super.dispose();
   }
@@ -526,12 +461,9 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         ? _tabDashboard
         : _selectedIndex;
 
-    // A soft neutral page wash tinted by the palette -- lets the white
-    // cards (and the gradient hero card on the Devices tab) read clearly.
-    final pageBg = Color.alphaBlend(
-      palette.pale.withAlpha(60),
-      const Color(0xFFF6F8F7),
-    );
+    // Plain white page, like mobile: cards separate from it by their
+    // hairline outline and soft shadow rather than a tinted page wash.
+    const pageBg = Colors.white;
 
     // Web typography (app font, readable muted text)
     // plus the resolved InstituteTheme extension for descendants.
@@ -953,8 +885,9 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         height: 520,
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.hairline),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withAlpha(40),
@@ -1038,14 +971,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                     style: TextStyle(fontSize: 13, color: WebColors.muted),
                   ),
                   const SizedBox(height: 24),
-                  _EnergyOverviewCard(
-                    palette: _palette,
-                    totalKwh: vm.totalKwh,
-                    monthlyCostPhp: vm.monthlyCostPhp,
-                    assignedDevices: vm.assignedDevices,
-                    unassignedDevices: vm.unassignedDevices,
-                  ),
-                  const SizedBox(height: 28),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1102,7 +1027,11 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                             final kwh = vm.buildingEnergy[code] ?? 0.0;
                             final level = _energyLevelForValue(kwh);
                             final color = _energyColorForLevel(level);
-                            return _WebBuildingCard(
+                            return DeleteRowTransition(
+                              key: ValueKey('building-$code'),
+                              deleting: _deletingBuilding == code,
+                              message: '$code deleted',
+                              child: _WebBuildingCard(
                               palette: _palette,
                               code: code,
                               name: name,
@@ -1121,6 +1050,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                               onDelete: canManage
                                   ? (ctx) => _deleteBuilding(ctx, code, name)
                                   : null,
+                            ),
                             );
                           },
                         );
@@ -1231,13 +1161,6 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           onDeviceTap: _openDevice,
           showDashboardSummary: false,
           showRoleBadge: false,
-          embeddedSummaryCard: _InstituteSummaryCard(
-            palette: _palette,
-            kwh: _instituteKwh,
-            monthlyCostPhp: _instituteMonthlyKwh * vm.electricityRate,
-            assignedDevices: _instituteAssignedDevices,
-            onlineDevices: _instituteOnlineDevices,
-          ),
         );
       },
     );
@@ -1261,291 +1184,7 @@ Color _energyColorForLevel(String level) {
   }
 }
 
-/// The institute admin Devices tab's summary card: headline kWh + 3
-/// mini-stats on a palette gradient. Every value passed in must already be
-/// filtered to the viewer's institute.
-class _InstituteSummaryCard extends StatelessWidget {
-  final InstitutePalette palette;
-  final double kwh;
-  final double monthlyCostPhp;
-  final int assignedDevices;
-  final int onlineDevices;
 
-  const _InstituteSummaryCard({
-    required this.palette,
-    required this.kwh,
-    required this.monthlyCostPhp,
-    required this.assignedDevices,
-    required this.onlineDevices,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [palette.dark, palette.mid],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: palette.dark.withAlpha(77),
-            blurRadius: 24,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Energy consumed today',
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                kwh.toStringAsFixed(2),
-                style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 38,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  height: 1,
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 6, left: 6),
-                child: Text(
-                  'kWh',
-                  style: TextStyle(
-                    fontSize: 15,
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 22),
-          Container(height: 1, color: Colors.white.withAlpha(51)),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: _miniStat(Icons.payments_outlined, 'Month Cost',
-                    '₱ ${monthlyCostPhp.toStringAsFixed(0)}'),
-              ),
-              _divider(),
-              Expanded(
-                child: _miniStat(Icons.check_circle_outline, 'Assigned',
-                    '$assignedDevices devices'),
-              ),
-              _divider(),
-              Expanded(
-                child: _miniStat(Icons.wifi_tethering, 'Online',
-                    '$onlineDevices devices'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _divider() => Container(
-        width: 1,
-        height: 34,
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        color: Colors.white.withAlpha(60),
-      );
-
-  Widget _miniStat(IconData icon, String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 13, color: Colors.white70),
-            const SizedBox(width: 6),
-            Text(label,
-                style: const TextStyle(fontSize: 12, color: Colors.white70)),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          value,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-            color: Colors.white,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// The Devices tab's energy summary for main/super admins: today's kWh as
-/// the headline, with month cost and device counts underneath.
-class _EnergyOverviewCard extends StatelessWidget {
-  final InstitutePalette palette;
-  final double totalKwh;
-  final double monthlyCostPhp;
-  final int assignedDevices;
-  final int unassignedDevices;
-
-  const _EnergyOverviewCard({
-    required this.palette,
-    required this.totalKwh,
-    required this.monthlyCostPhp,
-    required this.assignedDevices,
-    required this.unassignedDevices,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [palette.dark, palette.mid],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: palette.dark.withAlpha(77),
-            blurRadius: 24,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(46),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.bolt, size: 18, color: Colors.white),
-              ),
-              const SizedBox(width: 12),
-              const Text(
-                'Energy consumed today',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                totalKwh.toStringAsFixed(2),
-                style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 38,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  height: 1,
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 6, left: 6),
-                child: Text(
-                  'kWh',
-                  style: TextStyle(
-                    fontSize: 15,
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 22),
-          Container(height: 1, color: Colors.white.withAlpha(51)),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: _miniStat(Icons.payments_outlined, 'Month Cost',
-                    '₱ ${monthlyCostPhp.toStringAsFixed(0)}'),
-              ),
-              _divider(),
-              Expanded(
-                child: _miniStat(Icons.check_circle_outline, 'Assigned',
-                    '$assignedDevices devices'),
-              ),
-              _divider(),
-              Expanded(
-                child: _miniStat(Icons.device_unknown_outlined, 'Unassigned',
-                    '$unassignedDevices devices'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _divider() => Container(
-        width: 1,
-        height: 34,
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        color: Colors.white.withAlpha(60),
-      );
-
-  Widget _miniStat(IconData icon, String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 13, color: Colors.white70),
-            const SizedBox(width: 6),
-            Text(label,
-                style: const TextStyle(fontSize: 12, color: Colors.white70)),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          value,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-            color: Colors.white,
-          ),
-        ),
-      ],
-    );
-  }
-}
 
 class _WebBuildingCard extends StatelessWidget {
   final InstitutePalette palette;

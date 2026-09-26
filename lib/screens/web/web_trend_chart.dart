@@ -259,25 +259,49 @@ class _TrendPainter extends CustomPainter {
       canvas.drawCircle(Offset(hx, g.y(points[hover!].value)), 5, Paint()..color = color);
     }
 
-    // About 8 evenly spaced x labels, always including the last point.
-    final step = math.max(1, (n / 8).ceil());
-    for (var i = 0; i < n; i += step) {
-      if (n - 1 - i < step / 2 && i != n - 1) continue;
+    // Evenly spaced x labels -- as many as fit the plot width without
+    // touching (at most 8, so a narrow phone chart of 30 days shows ~4),
+    // always including the last point.
+    const gap = 12.0;
+    var widest = 0.0;
+    for (final p in points) {
+      widest = math.max(widest, _layout(p.label).width);
+    }
+    final fit = math.max(2, (g.pw / (widest + gap)).floor());
+    final step = math.max(1, (n / math.min(8, fit)).ceil());
+    // Place labels left to right, skipping any whose box would touch the
+    // previous label or the (always shown) last one.
+    double left(int i, double w, int align) => align < 0
+        ? g.x(i)
+        : (align > 0 ? g.x(i) - w : g.x(i) - w / 2);
+    final lastAlign = g.bars ? 0 : 1;
+    final lastLeft =
+        left(n - 1, _layout(points[n - 1].label).width, lastAlign);
+    var prevRight = double.negativeInfinity;
+    for (var i = 0; i < n - 1; i += step) {
+      final align = g.bars ? 0 : (i == 0 ? -1 : 0);
+      final l = left(i, _layout(points[i].label).width, align);
+      final r = l + _layout(points[i].label).width;
+      if (r > lastLeft - gap) break;
+      if (l < prevRight + gap) continue;
       _text(canvas, points[i].label, Offset(g.x(i), g.base + 16),
-          align: g.bars ? 0 : (i == 0 ? -1 : 0));
+          align: align);
+      prevRight = r;
     }
     _text(canvas, points[n - 1].label, Offset(g.x(n - 1), g.base + 16),
-        align: g.bars ? 0 : 1);
+        align: lastAlign);
   }
+
+  TextPainter _layout(String s) => TextPainter(
+        text: TextSpan(
+            text: s,
+            style: const TextStyle(fontSize: 12, color: WebColors.muted)),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
   /// [align]: -1 left of [at], 0 centred, 1 right-aligned; centred vertically.
   void _text(Canvas canvas, String s, Offset at, {int align = 0}) {
-    final tp = TextPainter(
-      text: TextSpan(
-          text: s,
-          style: const TextStyle(fontSize: 12, color: WebColors.muted)),
-      textDirection: TextDirection.ltr,
-    )..layout();
+    final tp = _layout(s);
     final dx = align < 0
         ? at.dx
         : (align > 0 ? at.dx - tp.width : at.dx - tp.width / 2);

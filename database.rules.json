@@ -62,6 +62,12 @@
       ".indexOn": ["timestamp"]
     },
 
+    "deletion_log": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".indexOn": ["timestamp"]
+    },
+
     "automations": {
       ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
       ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"

@@ -7,24 +7,37 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:http/http.dart' as http;
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../firebase_options.dart';
 import '../../utils/placeholder_data.dart';
+import '../../widgets/app_bottom_sheet.dart';
+import '../../widgets/app_chip.dart';
+import '../../widgets/app_segmented_control.dart';
 import '../../widgets/app_text_field.dart';
+import '../../widgets/app_top_bar.dart';
+import '../../widgets/delete_flow.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../theme/app_fonts.dart';
 
-/// Oversees institutes and their members.
+/// Users / "Manage users" (handoff §4.12, institute-admin "Members" variant
+/// §5).
 ///
-/// - Main admin (`admin`/`main_admin`/`super_admin`): sees every institute,
-///   can add/remove admins for any of them, and manages any unassigned
-///   account.
-/// - Institute admin: sees only their own institute, can add "co-admins"
-///   (peers with the same institute_admin role, distinguished by the
-///   `coAdmin` flag) and manage their own institute's members, but can't
-///   touch the admin the main admin originally assigned, nor see other
-///   institutes.
+/// Despite its `screens/shared/` folder location, this file is used
+/// **mobile-only in practice**: it's pushed only from
+/// `dashboard_screen.dart`'s (mobile) burger menu via the `/manage-users`
+/// named route in `main.dart`, which renders it directly (no width-based
+/// `LayoutBuilder`/`DashboardPage.desktopBreakpoint` branch the way
+/// `/building` and `/device` have). The desktop side has its own,
+/// completely separate implementation --
+/// `lib/screens/web/manage_users_screen_web.dart`'s `ManageUsersScreenWeb`,
+/// embedded directly in `dashboard_web.dart` -- which is untouched here.
+/// Confirmed by searching the whole `lib/` tree: nothing outside
+/// `main.dart` and this file's own class declaration references
+/// `ManageUsersScreen` (the web screen is a distinct class,
+/// `ManageUsersScreenWeb`). So the full restyle below is safe: there is no
+/// web caller that could regress from it.
 class ManageUsersScreen extends StatefulWidget {
   final String role;
   final String? institute;
@@ -38,34 +51,27 @@ class ManageUsersScreen extends StatefulWidget {
 class _ManageUsersScreenState extends State<ManageUsersScreen> {
   List<Map<String, dynamic>> _users = [];
   List<Map<String, dynamic>> _institutes = [];
-  String? _expandedCode;
-  bool _otherAccountsOpen = false;
+  String _searchQuery = '';
+  int _segment = 0; // 0 = Members, 1 = Others (campus/main admin view only).
+  final _searchCtrl = TextEditingController();
 
   bool get _viewerIsInstituteAdmin => widget.role == 'institute_admin';
   String? get _currentUid => FirebaseAuth.instance.currentUser?.uid;
 
   // ── Institute theming ──────────────────────────────────────────────────
-  // Unlike the other "Must" phase screens, role/institute are already
-  // passed in via the constructor (see main.dart's '/manage-users' route),
-  // so no auth hydration is needed here. This is the viewer's own resolved
-  // palette -- green for main_admin/super_admin, forCode(institute) for an
-  // institute_admin -- used for all screen-wide chrome. Each institute
-  // card's own accent uses a *different*, per-card palette (see
-  // _buildInstituteCard's local `cardPalette`), by product-owner request.
+  // Role/institute are passed in via the constructor (see main.dart's
+  // '/manage-users' route), so no auth hydration is needed here. This is
+  // the viewer's own resolved palette -- green for main_admin/super_admin,
+  // forCode(institute) for an institute_admin -- used for screen-wide
+  // chrome. Each row's own avatar/pill accent uses a *different*, per-user
+  // palette (that user's own institute), same product-owner request as
+  // before this redesign.
   InstitutePalette get _palette =>
       InstituteTheme.resolve(widget.role, widget.institute).palette;
 
   StreamSubscription? _combinedSub;
 
-  // True until the first combined emission of this screen's 2 Firebase
-  // streams (users, buildings) has been received; never reverts to true
-  // afterwards, so a transient null on either path can't blank out data
-  // already shown this session.
   bool _isLoading = true;
-
-  // Set only if the combined listener fails (or times out) before the
-  // first successful load ever completes -- gives the skeleton shimmer a
-  // real escape hatch instead of spinning forever.
   String? _errorText;
   Timer? _loadTimeoutTimer;
   bool _postLoadErrorNotified = false;
@@ -79,7 +85,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   @override
   void initState() {
     super.initState();
-    if (_viewerIsInstituteAdmin) _expandedCode = widget.institute;
     _listenAll();
   }
 
@@ -87,11 +92,10 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   void dispose() {
     _combinedSub?.cancel();
     _loadTimeoutTimer?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  /// Clears the error state and re-attaches the combined listener from
-  /// scratch. Used by the Retry button shown when the first load fails.
   void _retryLoad() {
     _combinedSub?.cancel();
     _loadTimeoutTimer?.cancel();
@@ -103,9 +107,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     _listenAll();
   }
 
-  // ── Listen to the 2 Firebase paths this screen needs (users, buildings)
-  // in one combined stream so a transient null on either path can't blank
-  // out data already shown this session.
   void _listenAll() {
     _loadTimeoutTimer?.cancel();
     _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
@@ -144,7 +145,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
             return {
               'code': e.key.toString(),
               'name': (b['name'] ?? e.key).toString(),
-              'floors': (b['floors'] ?? 1),
             };
           }).toList()
             ..sort(
@@ -185,37 +185,44 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   String _roleOf(Map<String, dynamic> u) => (u['role'] as String? ?? 'faculty');
   bool _isCoAdmin(Map<String, dynamic> u) => u['coAdmin'] == true;
 
-  /// All institute_admins for [code], primary admin(s) first.
-  List<Map<String, dynamic>> _adminsOf(String code) {
-    final admins = _users
-        .where(
-            (u) => _instituteOf(u) == code && _roleOf(u) == 'institute_admin')
-        .toList()
-      ..sort((a, b) {
-        final aCo = _isCoAdmin(a) ? 1 : 0;
-        final bCo = _isCoAdmin(b) ? 1 : 0;
-        return aCo.compareTo(bCo);
-      });
-    return admins;
-  }
-
-  List<Map<String, dynamic>> _membersOf(String code) => _users
-      .where((u) => _instituteOf(u) == code && _roleOf(u) != 'institute_admin')
-      .toList();
-
-  List<Map<String, dynamic>> get _otherAccounts => _users.where((u) {
-        final institute = _instituteOf(u);
-        final role = _roleOf(u);
-        if (role == 'institute_admin' || role == 'faculty') {
-          return institute.isEmpty;
-        }
-        return true; // admin / main_admin / super_admin tiers
-      }).toList();
-
   bool _isProtected(Map<String, dynamic> u) {
     final email = (u['email'] as String? ?? '').toLowerCase();
     return u['isMainAdmin'] == true || email == 'admin@dnsc.edu.ph';
   }
+
+  bool _matchesSearch(Map<String, dynamic> u) {
+    if (_searchQuery.trim().isEmpty) return true;
+    final q = _searchQuery.trim().toLowerCase();
+    final name = (u['name'] as String? ?? '').toLowerCase();
+    final email = (u['email'] as String? ?? '').toLowerCase();
+    return name.contains(q) || email.contains(q);
+  }
+
+  /// Institute-admin viewer: every account in their own institute (admins
+  /// and members together), self first.
+  List<Map<String, dynamic>> get _instituteAccounts {
+    final code = (widget.institute ?? '').trim();
+    final list = _users
+        .where((u) => _instituteOf(u) == code)
+        .where(_matchesSearch)
+        .toList()
+      ..sort((a, b) {
+        final aSelf = a['uid'] == _currentUid ? 0 : 1;
+        final bSelf = b['uid'] == _currentUid ? 0 : 1;
+        return aSelf.compareTo(bSelf);
+      });
+    return list;
+  }
+
+  /// Campus/main-admin viewer: "Members" = every account assigned to an
+  /// institute (any role); "Others" = unassigned accounts (no institute --
+  /// e.g. a newly created faculty account, or an admin-tier account with no
+  /// institute of its own).
+  List<Map<String, dynamic>> get _members =>
+      _users.where((u) => _instituteOf(u).isNotEmpty).where(_matchesSearch).toList();
+
+  List<Map<String, dynamic>> get _others =>
+      _users.where((u) => _instituteOf(u).isEmpty).where(_matchesSearch).toList();
 
   // ── Firebase Auth REST create (doesn't disturb the current admin session) ─
   String get _apiKey => DefaultFirebaseOptions.currentPlatform.apiKey;
@@ -269,622 +276,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     }
   }
 
-  // ── Actions ────────────────────────────────────────────────────
-  Future<void> _addAdmin(String code, String instituteName,
-      {required bool asCoAdmin}) async {
-    final members = _membersOf(code);
-    bool createNew = members.isEmpty;
-    final nameCtrl = TextEditingController();
-    final emailCtrl = TextEditingController();
-    final passwordCtrl = TextEditingController();
-    String? selectedUid = members.isNotEmpty ? members.first['uid'] : null;
-    String? errorText;
-    String? nameError;
-    String? emailError;
-    String? passwordError;
-    int shake = 0;
-    bool obscure = true;
-    bool submitting = false;
-    final actionLabel = asCoAdmin ? 'Co-Admin' : 'Admin';
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('Add $actionLabel · $instituteName',
-              style: const TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              if (members.isNotEmpty)
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: _palette.mid.withAlpha(51)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => setS(() => createNew = false),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            color:
-                                !createNew ? _palette.dark : Colors.transparent,
-                            borderRadius: const BorderRadius.only(
-                                topLeft: Radius.circular(11),
-                                bottomLeft: Radius.circular(11)),
-                          ),
-                          child: Center(
-                              child: Text('Promote Member',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: !createNew
-                                          ? Colors.white
-                                          : AppColors.textMuted))),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => setS(() => createNew = true),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            color:
-                                createNew ? _palette.dark : Colors.transparent,
-                            borderRadius: const BorderRadius.only(
-                                topRight: Radius.circular(11),
-                                bottomRight: Radius.circular(11)),
-                          ),
-                          child: Center(
-                              child: Text('New Account',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: createNew
-                                          ? Colors.white
-                                          : AppColors.textMuted))),
-                        ),
-                      ),
-                    ),
-                  ]),
-                ),
-              const SizedBox(height: 12),
-              if (!createNew) ...[
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: _palette.mid.withAlpha(51)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: DropdownButton<String>(
-                        value: selectedUid,
-                        isExpanded: true,
-                        items: members
-                            .map((m) => DropdownMenuItem(
-                                  value: m['uid'] as String,
-                                  child: Text(
-                                      (m['name'] as String? ?? '').isNotEmpty
-                                          ? m['name']
-                                          : m['email'] ?? '',
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          color: AppColors.textDark)),
-                                ))
-                            .toList(),
-                        onChanged: (v) => setS(() => selectedUid = v),
-                      ),
-                    ),
-                  ),
-                ),
-              ] else ...[
-                AppTextField(
-                  shakeTrigger: shake,
-                  controller: nameCtrl,
-                  decoration:
-                      _inputDecoration('Full Name', Icons.person_outline)
-                          .copyWith(errorText: nameError),
-                  autofocus: true,
-                ),
-                const SizedBox(height: 12),
-                AppTextField(
-                  shakeTrigger: shake,
-                  controller: emailCtrl,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: _inputDecoration(
-                          'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined)
-                      .copyWith(errorText: emailError),
-                ),
-                const SizedBox(height: 12),
-                AppTextField(
-                  shakeTrigger: shake,
-                  controller: passwordCtrl,
-                  obscureText: obscure,
-                  decoration:
-                      _inputDecoration('Password', Icons.lock_outline).copyWith(
-                    errorText: passwordError,
-                    suffixIcon: GestureDetector(
-                      onTap: () => setS(() => obscure = !obscure),
-                      child: Icon(
-                          obscure ? Icons.visibility_off : Icons.visibility,
-                          size: 18,
-                          color: AppColors.textMuted),
-                    ),
-                  ),
-                ),
-              ],
-              if (errorText != null) ...[
-                const SizedBox(height: 10),
-                Text(errorText!,
-                    style:
-                        const TextStyle(fontSize: 12, color: AppColors.error)),
-              ],
-            ]),
-          ),
-          actions: [
-            TextButton(
-                onPressed: submitting ? null : () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      if (!createNew) {
-                        if (selectedUid == null) {
-                          setS(() => errorText = 'Select a member to promote');
-                          return;
-                        }
-                        setS(() => submitting = true);
-                        await FirebaseDatabase.instance
-                            .ref('users/$selectedUid')
-                            .update({
-                          'role': 'institute_admin',
-                          'coAdmin': asCoAdmin
-                        });
-                        if (!ctx.mounted || !mounted) return;
-                        Navigator.pop(ctx);
-                        TopToast.show(context, '$actionLabel assigned.');
-                        return;
-                      }
-
-                      final name = nameCtrl.text.trim();
-                      final email = emailCtrl.text.trim();
-                      final password = passwordCtrl.text.trim();
-                      final nameErr = name.isEmpty ? 'Name is required' : null;
-                      final emailErr = email.isEmpty
-                          ? 'Email is required'
-                          : !email.endsWith('@dnsc.edu.ph')
-                              ? 'Email must be a @dnsc.edu.ph address'
-                              : null;
-                      final passErr = password.isEmpty
-                          ? 'Password is required'
-                          : password.length < 6
-                              ? 'Password must be at least 6 characters'
-                              : null;
-                      if (nameErr != null ||
-                          emailErr != null ||
-                          passErr != null) {
-                        setS(() {
-                          nameError = nameErr;
-                          emailError = emailErr;
-                          passwordError = passErr;
-                          errorText = null;
-                          shake++;
-                        });
-                        return;
-                      }
-                      setS(() {
-                        errorText = null;
-                        nameError = emailError = passwordError = null;
-                        submitting = true;
-                      });
-                      try {
-                        final err = await _createAccount(
-                          email: email,
-                          password: password,
-                          name: name,
-                          role: 'institute_admin',
-                          institute: code,
-                          coAdmin: asCoAdmin,
-                        );
-                        if (err != null) {
-                          setS(() {
-                            submitting = false;
-                            errorText = _friendlyAuthError(err);
-                          });
-                          return;
-                        }
-                        if (!ctx.mounted || !mounted) return;
-                        Navigator.pop(ctx);
-                        TopToast.show(context, '$name added as $actionLabel.');
-                      } catch (e) {
-                        setS(() {
-                          submitting = false;
-                          errorText = 'Failed: $e';
-                        });
-                      }
-                    },
-              child: submitting
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Add', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _addMember(String code, String instituteName) async {
-    final nameCtrl = TextEditingController();
-    final emailCtrl = TextEditingController();
-    final passwordCtrl = TextEditingController();
-    String? errorText;
-    String? nameError;
-    String? emailError;
-    String? passwordError;
-    int shake = 0;
-    bool obscure = true;
-    bool submitting = false;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('Add Member · $instituteName',
-              style: const TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              AppTextField(
-                shakeTrigger: shake,
-                controller: nameCtrl,
-                decoration: _inputDecoration('Full Name', Icons.person_outline)
-                    .copyWith(errorText: nameError),
-                autofocus: true,
-              ),
-              const SizedBox(height: 12),
-              AppTextField(
-                shakeTrigger: shake,
-                controller: emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                decoration: _inputDecoration(
-                        'Email (e.g. juan@dnsc.edu.ph)', Icons.email_outlined)
-                    .copyWith(errorText: emailError),
-              ),
-              const SizedBox(height: 12),
-              AppTextField(
-                shakeTrigger: shake,
-                controller: passwordCtrl,
-                obscureText: obscure,
-                decoration:
-                    _inputDecoration('Password', Icons.lock_outline).copyWith(
-                  errorText: passwordError,
-                  suffixIcon: GestureDetector(
-                    onTap: () => setS(() => obscure = !obscure),
-                    child: Icon(
-                        obscure ? Icons.visibility_off : Icons.visibility,
-                        size: 18,
-                        color: AppColors.textMuted),
-                  ),
-                ),
-              ),
-              if (errorText != null) ...[
-                const SizedBox(height: 10),
-                Text(errorText!,
-                    style:
-                        const TextStyle(fontSize: 12, color: AppColors.error)),
-              ],
-            ]),
-          ),
-          actions: [
-            TextButton(
-                onPressed: submitting ? null : () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      final name = nameCtrl.text.trim();
-                      final email = emailCtrl.text.trim();
-                      final password = passwordCtrl.text.trim();
-                      final nameErr = name.isEmpty ? 'Name is required' : null;
-                      final emailErr = email.isEmpty
-                          ? 'Email is required'
-                          : !email.endsWith('@dnsc.edu.ph')
-                              ? 'Email must be a @dnsc.edu.ph address'
-                              : null;
-                      final passErr = password.isEmpty
-                          ? 'Password is required'
-                          : password.length < 6
-                              ? 'Password must be at least 6 characters'
-                              : null;
-                      if (nameErr != null ||
-                          emailErr != null ||
-                          passErr != null) {
-                        setS(() {
-                          nameError = nameErr;
-                          emailError = emailErr;
-                          passwordError = passErr;
-                          errorText = null;
-                          shake++;
-                        });
-                        return;
-                      }
-                      setS(() {
-                        errorText = null;
-                        nameError = emailError = passwordError = null;
-                        submitting = true;
-                      });
-                      try {
-                        final err = await _createAccount(
-                          email: email,
-                          password: password,
-                          name: name,
-                          role: 'faculty',
-                          institute: code,
-                        );
-                        if (err != null) {
-                          setS(() {
-                            submitting = false;
-                            errorText = _friendlyAuthError(err);
-                          });
-                          return;
-                        }
-                        if (!ctx.mounted || !mounted) return;
-                        Navigator.pop(ctx);
-                        TopToast.show(
-                            context, '$name added to $instituteName.');
-                      } catch (e) {
-                        setS(() {
-                          submitting = false;
-                          errorText = 'Failed: $e';
-                        });
-                      }
-                    },
-              child: submitting
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Add', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _removeAdmin(Map<String, dynamic> admin) async {
-    await FirebaseDatabase.instance
-        .ref('users/${admin['uid']}')
-        .update({'role': 'faculty', 'coAdmin': false});
-    if (!mounted) return;
-    TopToast.show(
-        context, '${admin['name'] ?? admin['email']} demoted to member.');
-  }
-
-  Future<void> _assignToInstitute(Map<String, dynamic> user) async {
-    String? selectedCode =
-        _institutes.isNotEmpty ? _institutes.first['code'] as String : null;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Assign to Institute',
-              style: TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: _institutes.isEmpty
-              ? const Text('No institutes exist yet.',
-                  style: TextStyle(fontSize: 13, color: AppColors.textMuted))
-              : Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: _palette.mid.withAlpha(51)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: DropdownButton<String>(
-                        value: selectedCode,
-                        isExpanded: true,
-                        items: _institutes
-                            .map((i) => DropdownMenuItem(
-                                  value: i['code'] as String,
-                                  child: Text('${i['code']} · ${i['name']}',
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          color: AppColors.textDark)),
-                                ))
-                            .toList(),
-                        onChanged: (v) => setS(() => selectedCode = v),
-                      ),
-                    ),
-                  ),
-                ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            if (_institutes.isNotEmpty)
-              ElevatedButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: _palette.dark,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10))),
-                child:
-                    const Text('Assign', style: TextStyle(color: Colors.white)),
-              ),
-          ],
-        ),
-      ),
-    );
-
-    if (confirmed != true || selectedCode == null) return;
-    await FirebaseDatabase.instance
-        .ref('users/${user['uid']}/institute')
-        .set(selectedCode);
-    if (!mounted) return;
-    TopToast.show(context, 'Assigned to $selectedCode.');
-  }
-
-  Future<void> _changePassword(String uid, String email) async {
-    final passwordCtrl = TextEditingController();
-    String? errorText;
-    String? passwordError;
-    int shake = 0;
-    bool obscure = true;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Change Password',
-              style: TextStyle(
-                  fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('Account: $email',
-                style:
-                    const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-            const SizedBox(height: 12),
-            AppTextField(
-              shakeTrigger: shake,
-              controller: passwordCtrl,
-              obscureText: obscure,
-              decoration:
-                  _inputDecoration('New Password', Icons.lock_outline).copyWith(
-                errorText: passwordError,
-                suffixIcon: GestureDetector(
-                  onTap: () => setS(() => obscure = !obscure),
-                  child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
-                      size: 18, color: AppColors.textMuted),
-                ),
-              ),
-              autofocus: true,
-            ),
-            if (errorText != null) ...[
-              const SizedBox(height: 8),
-              Text(errorText!,
-                  style: const TextStyle(fontSize: 12, color: AppColors.error)),
-            ],
-          ]),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.textMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: () async {
-                final password = passwordCtrl.text.trim();
-                if (password.length < 6) {
-                  setS(() {
-                    passwordError = 'Password must be at least 6 characters';
-                    errorText = null;
-                    shake++;
-                  });
-                  return;
-                }
-                setS(() => passwordError = null);
-                try {
-                  await FirebaseFunctions.instance
-                      .httpsCallable('changeUserPassword')
-                      .call({'uid': uid, 'newPassword': password});
-                  if (!ctx.mounted || !mounted) return;
-                  Navigator.pop(ctx);
-                  TopToast.show(context, 'Password updated.');
-                } on FirebaseFunctionsException catch (e) {
-                  setS(() => errorText = _friendlyFunctionsError(e));
-                } catch (e) {
-                  setS(() => errorText = 'Failed: $e');
-                }
-              },
-              child: const Text('Save', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _deleteUser(String uid, String email) async {
-    if (uid == _currentUid) {
-      TopToast.show(context, 'You cannot delete your own account.',
-          isError: true);
-      return;
-    }
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Account',
-            style: TextStyle(
-                fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-        content: Text('Delete account "$email"? This cannot be undone.',
-            style: const TextStyle(fontSize: 14)),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.textMuted))),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10))),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-    try {
-      await FirebaseFunctions.instance
-          .httpsCallable('deleteUser')
-          .call({'uid': uid});
-      if (!mounted) return;
-      TopToast.show(context, '$email removed from system.');
-    } on FirebaseFunctionsException catch (e) {
-      if (!mounted) return;
-      TopToast.show(context, _friendlyFunctionsError(e), isError: true);
-    }
-  }
-
   String _friendlyFunctionsError(FirebaseFunctionsException e) {
     switch (e.code) {
       case 'permission-denied':
@@ -898,23 +289,501 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     }
   }
 
-  InputDecoration _inputDecoration(String hint, IconData icon) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
-      prefixIcon: Icon(icon, size: 18, color: AppColors.textMuted),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid.withAlpha(51))),
-      focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _palette.mid)),
+  // ── Actions ────────────────────────────────────────────────────
+
+  Future<void> _makeAdmin(Map<String, dynamic> user) async {
+    final institute = _instituteOf(user);
+    if (institute.isEmpty) {
+      TopToast.show(context, 'Assign an institute to this account first.',
+          isError: true);
+      return;
+    }
+    final label = (user['name'] as String?)?.isNotEmpty == true
+        ? user['name']
+        : user['email'];
+    try {
+      await FirebaseDatabase.instance.ref('users/${user['uid']}').update({
+        'role': 'institute_admin',
+        'coAdmin': _viewerIsInstituteAdmin,
+      });
+      if (!mounted) return;
+      TopToast.show(context, '$label is now an admin.');
+    } catch (e) {
+      if (!mounted) return;
+      TopToast.show(context, 'Failed to update role: $e', isError: true);
+    }
+  }
+
+  Future<void> _showChangeInstituteSheet(Map<String, dynamic> user) async {
+    if (_institutes.isEmpty) {
+      TopToast.show(context, 'No institutes exist yet.', isError: true);
+      return;
+    }
+    final current = _instituteOf(user);
+    await showAppBottomSheet(
+      context,
+      builder: (ctx) => BottomSheetScaffold(
+        title: 'Change institute',
+        palette: _palette,
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: _institutes.map((i) {
+            final code = i['code'] as String;
+            final selected = code == current;
+            return InkWell(
+              onTap: () async {
+                Navigator.pop(ctx);
+                try {
+                  await FirebaseDatabase.instance
+                      .ref('users/${user['uid']}/institute')
+                      .set(code);
+                  if (!mounted) return;
+                  TopToast.show(context, 'Moved to $code.');
+                } catch (e) {
+                  if (!mounted) return;
+                  TopToast.show(context, 'Failed to move account: $e',
+                      isError: true);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  border: Border(bottom: BorderSide(color: _palette.line)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text('$code · ${i['name']}',
+                          style: AppTextStyles.subtitle
+                              .copyWith(color: AppColors.ink)),
+                    ),
+                    if (selected)
+                      Icon(Icons.check, color: _palette.dark, size: 20),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _changePassword(String uid, String email) async {
+    final passwordCtrl = TextEditingController();
+    String? passwordError;
+    int shake = 0;
+    bool obscure = true;
+    bool submitting = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text('Reset password',
+              style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Account: $email',
+                style:
+                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 12),
+            AppTextField(
+              shakeTrigger: shake,
+              controller: passwordCtrl,
+              obscureText: obscure,
+              decoration: InputDecoration(
+                hintText: 'New password',
+                errorText: passwordError,
+                prefixIcon: const Icon(Icons.lock_outline, size: 18),
+                suffixIcon: GestureDetector(
+                  onTap: () => setS(() => obscure = !obscure),
+                  child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
+                      size: 18, color: AppColors.inkMuted),
+                ),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              autofocus: true,
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: submitting ? null : () => Navigator.pop(ctx),
+                child: const Text('Cancel',
+                    style: TextStyle(color: AppColors.inkMuted))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: _palette.dark,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      final password = passwordCtrl.text.trim();
+                      if (password.length < 6) {
+                        setS(() {
+                          passwordError =
+                              'Password must be at least 6 characters';
+                          shake++;
+                        });
+                        return;
+                      }
+                      setS(() {
+                        passwordError = null;
+                        submitting = true;
+                      });
+                      try {
+                        await FirebaseFunctions.instance
+                            .httpsCallable('changeUserPassword')
+                            .call({'uid': uid, 'newPassword': password});
+                        if (!ctx.mounted || !mounted) return;
+                        Navigator.pop(ctx);
+                        TopToast.show(context, 'Password updated.');
+                      } on FirebaseFunctionsException catch (e) {
+                        setS(() {
+                          submitting = false;
+                          passwordError = _friendlyFunctionsError(e);
+                        });
+                      } catch (e) {
+                        setS(() {
+                          submitting = false;
+                          passwordError = 'Failed: $e';
+                        });
+                      }
+                    },
+              child: submitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
+                  : const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Delete account (handoff §4.12/§7): two-step confirm+reason dialog, 5s
+  /// floating Undo, and only once that window elapses does this actually
+  /// call the `deleteUser` Cloud Function (which removes the Firebase Auth
+  /// account *and* the `users/{uid}` record server-side -- see
+  /// `functions/index.js`) and write the `deletion_log` entry. Unlike a
+  /// plain-data delete, the removal itself can't be folded into the same
+  /// atomic RTDB `update()` as the log write (it requires the Admin SDK),
+  /// so this does the Cloud Function call first, then the log write.
+  Future<void> _deleteAccount(Map<String, dynamic> user) async {
+    final uid = user['uid'] as String;
+    final email = (user['email'] as String? ?? '').trim();
+    final name = (user['name'] as String? ?? '').trim();
+    if (uid == _currentUid) {
+      TopToast.show(context, 'You cannot delete your own account.',
+          isError: true);
+      return;
+    }
+
+    await showDeleteFlow(
+      context,
+      type: DeleteType.account,
+      itemName: name.isNotEmpty ? name : email,
+      onCommit: (reason, otherText) async {
+        try {
+          await FirebaseFunctions.instance
+              .httpsCallable('deleteUser')
+              .call({'uid': uid});
+          final db = FirebaseDatabase.instance.ref();
+          await db.child('deletion_log').push().set({
+            'type': 'account',
+            'itemName': email.isNotEmpty ? email : uid,
+            'reason': reason,
+            if (otherText != null && otherText.trim().isNotEmpty)
+              'otherText': otherText.trim(),
+            'deletedBy': _currentUid ?? 'unknown',
+            'deletedByEmail': FirebaseAuth.instance.currentUser?.email ?? '',
+            'timestamp': ServerValue.timestamp,
+          });
+          if (!mounted) return;
+          TopToast.show(context, '$email removed from system.');
+        } on FirebaseFunctionsException catch (e) {
+          if (!mounted) return;
+          TopToast.show(context, _friendlyFunctionsError(e), isError: true);
+        }
+      },
+    );
+  }
+
+  void _openUserActions(Map<String, dynamic> user) {
+    final isSelf = user['uid'] == _currentUid;
+    final role = _roleOf(user);
+    final canMakeAdmin = role != 'institute_admin' && _instituteOf(user).isNotEmpty;
+    final canDelete = !isSelf && !_isProtected(user);
+
+    showAppBottomSheet(
+      context,
+      builder: (ctx) => BottomSheetScaffold(
+        title: (user['name'] as String?)?.isNotEmpty == true
+            ? user['name'] as String
+            : (user['email'] as String? ?? 'Account'),
+        palette: _palette,
+        body: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (canMakeAdmin)
+              _actionRow(
+                icon: Icons.upgrade,
+                label: 'Make admin',
+                color: _palette.dark,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _makeAdmin(user);
+                },
+              ),
+            if (!_viewerIsInstituteAdmin)
+              _actionRow(
+                icon: Icons.swap_horiz,
+                label: 'Change institute',
+                color: _palette.dark,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showChangeInstituteSheet(user);
+                },
+              ),
+            _actionRow(
+              icon: Icons.key_outlined,
+              label: 'Reset password',
+              color: _palette.dark,
+              onTap: () {
+                Navigator.pop(ctx);
+                _changePassword(user['uid'] as String, user['email'] as String? ?? '');
+              },
+            ),
+            if (canDelete)
+              _actionRow(
+                icon: Icons.person_remove_outlined,
+                label: 'Delete account',
+                // Neutral grey, not red -- handoff §4.12/§3.7 ("Delete =
+                // icon only, grey ... not red"). Red only appears inside
+                // the delete dialog itself.
+                color: AppColors.inkMid,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteAccount(user);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actionRow({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 14),
+            Text(label, style: AppTextStyles.subtitle.copyWith(color: color)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAddAccountSheet() async {
+    if (!_viewerIsInstituteAdmin && _institutes.isEmpty) {
+      TopToast.show(context, 'Add an institute (building) first.',
+          isError: true);
+      return;
+    }
+
+    String? selectedInstitute = _viewerIsInstituteAdmin
+        ? widget.institute
+        : (_institutes.first['code'] as String);
+    var asAdmin = false;
+    final nameCtrl = TextEditingController();
+    final emailCtrl = TextEditingController();
+    final passwordCtrl = TextEditingController();
+    String? nameError, emailError, passwordError, formError;
+    var shake = 0;
+    var obscure = true;
+    var submitting = false;
+    final adminLabel = _viewerIsInstituteAdmin ? 'Co-admin' : 'Admin';
+
+    await showAppBottomSheet(
+      context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => BottomSheetScaffold(
+          title: 'Add account',
+          palette: _palette,
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!_viewerIsInstituteAdmin) ...[
+                Text('Institute',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _institutes.map((i) {
+                    final code = i['code'] as String;
+                    return AppFilterChip(
+                      label: code,
+                      selected: selectedInstitute == code,
+                      onTap: () => setS(() => selectedInstitute = code),
+                      palette: InstituteColors.forCode(code),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+              ],
+              Text('Role',
+                  style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+              const SizedBox(height: 8),
+              AppSegmentedControl(
+                segments: [
+                  const AppSegment(label: 'Member'),
+                  AppSegment(label: adminLabel),
+                ],
+                selectedIndex: asAdmin ? 1 : 0,
+                onChanged: (i) => setS(() => asAdmin = i == 1),
+                palette: _palette,
+              ),
+              const SizedBox(height: 16),
+              AppTextField(
+                shakeTrigger: shake,
+                controller: nameCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Full name',
+                  errorText: nameError,
+                  prefixIcon: const Icon(Icons.person_outline, size: 18),
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 12),
+              AppTextField(
+                shakeTrigger: shake,
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  hintText: 'Email (e.g. juan@dnsc.edu.ph)',
+                  errorText: emailError,
+                  prefixIcon: const Icon(Icons.email_outlined, size: 18),
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              AppTextField(
+                shakeTrigger: shake,
+                controller: passwordCtrl,
+                obscureText: obscure,
+                decoration: InputDecoration(
+                  hintText: 'Password',
+                  errorText: passwordError,
+                  prefixIcon: const Icon(Icons.lock_outline, size: 18),
+                  suffixIcon: GestureDetector(
+                    onTap: () => setS(() => obscure = !obscure),
+                    child: Icon(
+                        obscure ? Icons.visibility_off : Icons.visibility,
+                        size: 18,
+                        color: AppColors.inkMuted),
+                  ),
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              if (formError != null) ...[
+                const SizedBox(height: 10),
+                Text(formError!,
+                    style: AppTextStyles.bodySm
+                        .copyWith(color: AppColors.errorText)),
+              ],
+            ],
+          ),
+          footer: BottomSheetFooter(
+            palette: _palette,
+            applyLabel: submitting ? 'Adding...' : 'Add',
+            onCancel: () => Navigator.pop(ctx),
+            onApply: submitting
+                ? null
+                : () async {
+                    final name = nameCtrl.text.trim();
+                    final email = emailCtrl.text.trim();
+                    final password = passwordCtrl.text.trim();
+                    final nameErr = name.isEmpty ? 'Name is required' : null;
+                    final emailErr = email.isEmpty
+                        ? 'Email is required'
+                        : !email.endsWith('@dnsc.edu.ph')
+                            ? 'Email must be a @dnsc.edu.ph address'
+                            : null;
+                    final passErr = password.isEmpty
+                        ? 'Password is required'
+                        : password.length < 6
+                            ? 'Password must be at least 6 characters'
+                            : null;
+                    if (nameErr != null || emailErr != null || passErr != null) {
+                      setS(() {
+                        nameError = nameErr;
+                        emailError = emailErr;
+                        passwordError = passErr;
+                        formError = null;
+                        shake++;
+                      });
+                      return;
+                    }
+                    if (selectedInstitute == null || selectedInstitute!.isEmpty) {
+                      setS(() => formError = 'Choose an institute.');
+                      return;
+                    }
+                    setS(() {
+                      nameError = emailError = passwordError = formError = null;
+                      submitting = true;
+                    });
+                    try {
+                      final err = await _createAccount(
+                        email: email,
+                        password: password,
+                        name: name,
+                        role: asAdmin ? 'institute_admin' : 'faculty',
+                        institute: selectedInstitute,
+                        coAdmin: asAdmin && _viewerIsInstituteAdmin,
+                      );
+                      if (err != null) {
+                        setS(() {
+                          submitting = false;
+                          formError = _friendlyAuthError(err);
+                        });
+                        return;
+                      }
+                      if (!ctx.mounted || !mounted) return;
+                      Navigator.pop(ctx);
+                      TopToast.show(context, '$name added to $selectedInstitute.');
+                    } catch (e) {
+                      setS(() {
+                        submitting = false;
+                        formError = 'Failed: $e';
+                      });
+                    }
+                  },
+          ),
+        ),
+      ),
     );
   }
 
@@ -925,664 +794,290 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
       data: Theme.of(context).copyWith(
         extensions: [InstituteTheme.resolve(widget.role, widget.institute)],
       ),
-      child: _buildContent(context),
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppTopBar(
+          title: _viewerIsInstituteAdmin ? 'Members' : 'Users',
+          subtitle: _viewerIsInstituteAdmin
+              ? '${(widget.institute ?? '').toUpperCase()} · ${_instituteAccounts.length} accounts'
+              : '${_members.length} members · ${_others.length} other accounts',
+          variant: AppTopBarVariant.small,
+          showBackButton: true,
+          showInstituteLine: _viewerIsInstituteAdmin,
+          actions: [
+            AppTopBarAction(
+              icon: Icons.person_add_alt_1_outlined,
+              tooltip: 'Add account',
+              onTap: _showAddAccountSheet,
+            ),
+          ],
+        ),
+        body: SafeArea(
+          top: false,
+          child: _errorText != null ? _buildError() : _buildContent(),
+        ),
+      ),
     );
   }
 
-  Widget _buildContent(BuildContext context) {
-    if (_errorText != null) {
-      return _buildError();
-    }
-
-    if (_viewerIsInstituteAdmin) {
-      final code = widget.institute;
-      // While still loading, show a skeleton card for this admin's own
-      // institute (matched by code) instead of the real -- currently
-      // empty -- `_institutes` list.
-      final institutesSource = _institutes.isEmpty && _isLoading
-          ? [placeholderBuilding(code: code ?? 'B1')]
-          : _institutes;
-      final match = institutesSource.firstWhere(
-        (i) => i['code'] == code,
-        orElse: () => <String, dynamic>{},
-      );
-      return ScreenSkeleton(
-        isLoading: _isLoading,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeader(),
-            const SizedBox(height: 16),
-            if (code == null || code.isEmpty || match.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: AppColors.cardBg,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: _palette.mid.withAlpha(26)),
-                ),
-                child: const Center(
-                  child: Text(
-                      'No institute assigned to your account yet. Ask your main admin to assign one.',
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 13, color: AppColors.textMuted)),
-                ),
-              )
-            else
-              _buildInstituteCard(match),
-          ],
-        ),
-      );
-    }
-
-    final institutesSource = _institutes.isEmpty && _isLoading
-        ? placeholderBuildingList()
-        : _institutes;
-
+  Widget _buildContent() {
+    final usingPlaceholder = _users.isEmpty && _isLoading;
     return ScreenSkeleton(
       isLoading: _isLoading,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildHeader(),
-          const SizedBox(height: 16),
-          ...institutesSource.map(_buildInstituteCard),
-          if (institutesSource.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: AppColors.cardBg,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _palette.mid.withAlpha(26)),
-              ),
-              child: const Center(
-                child: Text('No institutes (buildings) yet.',
-                    style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            child: AppTextField(
+              controller: _searchCtrl,
+              onChanged: (v) => setState(() => _searchQuery = v),
+              decoration: InputDecoration(
+                hintText: 'Search name or email',
+                prefixIcon: const Icon(Icons.search, size: 20),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: _palette.line),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: _palette.line),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: _palette.dark),
+                ),
               ),
             ),
-          const SizedBox(height: 16),
-          _buildOtherAccountsSection(),
+          ),
+          if (!_viewerIsInstituteAdmin) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              child: AppSegmentedControl(
+                segments: [
+                  AppSegment(label: 'Members ${_members.length}'),
+                  AppSegment(label: 'Others ${_others.length}'),
+                ],
+                selectedIndex: _segment,
+                onChanged: (i) => setState(() => _segment = i),
+                palette: _palette,
+              ),
+            ),
+          ],
+          Expanded(
+            child: _viewerIsInstituteAdmin
+                ? _buildInstituteList(usingPlaceholder)
+                : _buildCampusList(usingPlaceholder),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildError() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildInstituteList(bool usingPlaceholder) {
+    final list = usingPlaceholder ? placeholderUserList() : _instituteAccounts;
+    return ListView(
+      padding: const EdgeInsets.only(top: 8, bottom: 24),
       children: [
-        _buildHeader(),
-        const SizedBox(height: 40),
-        Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                  width: 72,
-                  height: 72,
-                  decoration: BoxDecoration(
-                      color: _palette.pale,
-                      borderRadius: BorderRadius.circular(20)),
-                  child:
-                      Icon(Icons.lock_outline, size: 34, color: _palette.mid)),
-              const SizedBox(height: 16),
-              const Text('Cannot load users',
-                  style: TextStyle(
-                      fontFamily: AppFonts.family,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textDark)),
-              const SizedBox(height: 8),
-              Text(_errorText ?? 'Something went wrong.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 13, color: AppColors.textMuted)),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: _retryLoad,
-                icon: const Icon(Icons.refresh, size: 16, color: Colors.white),
-                label:
-                    const Text('Retry', style: TextStyle(color: Colors.white)),
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: _palette.dark,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10))),
+        if (list.isEmpty)
+          _emptyState('No accounts in this institute yet.')
+        else
+          ...list.map((u) => _userRow(u, isSelf: u['uid'] == _currentUid)),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.lock_outline, size: 16, color: AppColors.inkMuted),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                    'You can only see and manage ${(widget.institute ?? '').toUpperCase()} accounts.',
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.inkMuted)),
               ),
-            ]),
+            ],
           ),
         ),
       ],
     );
   }
 
-  Widget _buildHeader() {
-    return Row(children: [
-      Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: _palette.dark.withAlpha(20),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(Icons.admin_panel_settings_outlined,
-            color: _palette.dark, size: 22),
+  Widget _buildCampusList(bool usingPlaceholder) {
+    final source = usingPlaceholder
+        ? placeholderUserList()
+        : (_segment == 0 ? _members : _others);
+    return ListView(
+      padding: const EdgeInsets.only(top: 8, bottom: 24),
+      children: [
+        if (source.isEmpty)
+          _emptyState(_segment == 0
+              ? 'No members yet.'
+              : 'No unassigned accounts.')
+        else
+          ...source.map((u) => _userRow(u, isSelf: u['uid'] == _currentUid)),
+      ],
+    );
+  }
+
+  Widget _emptyState(String message) {
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Center(
+        child: Text(message,
+            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
       ),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Column(
+    );
+  }
+
+  Widget _userRow(Map<String, dynamic> user, {required bool isSelf}) {
+    final role = _roleOf(user);
+    final institute = _instituteOf(user);
+    final name = (user['name'] as String? ?? '').trim();
+    final email = (user['email'] as String? ?? '').trim();
+    final displayName = name.isNotEmpty ? name : (email.isNotEmpty ? email : 'Unnamed');
+    final cardPalette =
+        institute.isNotEmpty ? InstituteColors.forCode(institute) : _palette;
+    final isAdminRole = role != 'faculty';
+    final initialsSource = name.isNotEmpty ? name : email;
+    final initials = initialsSource.isEmpty
+        ? '?'
+        : initialsSource.substring(0, 1).toUpperCase();
+
+    return InkWell(
+      onTap: () => _openUserActions(user),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: _palette.line)),
+        ),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Manage Users',
-                style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark)),
-            const SizedBox(height: 2),
-            Text(
-              _viewerIsInstituteAdmin
-                  ? 'Manage your own institute\'s members and co-admins.'
-                  : 'Institute admins oversee their own institute only.',
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+            Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                border: Border.all(color: cardPalette.dark, width: 1.5),
+              ),
+              child: Text(initials,
+                  style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: cardPalette.dark)),
             ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(displayName,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.subtitle
+                                .copyWith(color: AppColors.ink)),
+                      ),
+                      if (isSelf) ...[
+                        const SizedBox(width: 6),
+                        Text('(you)',
+                            style: AppTextStyles.bodySm
+                                .copyWith(color: AppColors.inkMuted)),
+                      ],
+                    ],
+                  ),
+                  if (email.isNotEmpty && name.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(email,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.bodySm
+                            .copyWith(color: AppColors.inkMuted)),
+                  ],
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _pill(
+                        _roleLabel(role, _isCoAdmin(user)),
+                        color: isAdminRole ? cardPalette.dark : AppColors.inkMid,
+                      ),
+                      if (institute.isNotEmpty) _pill(institute),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.more_vert, color: AppColors.inkMid),
           ],
         ),
       ),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: _palette.pale,
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Text(_viewerIsInstituteAdmin ? 'Institute Admin' : 'Main Admin',
-            style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: _palette.dark)),
-      ),
-    ]);
-  }
-
-  Widget _buildInstituteCard(Map<String, dynamic> institute) {
-    final code = institute['code'] as String;
-    final name = institute['name'] as String;
-    final floors = institute['floors'];
-    final admins = _adminsOf(code);
-    final members = _membersOf(code);
-    final isOpen = _expandedCode == code;
-    final actionLabel = _viewerIsInstituteAdmin ? 'Co-Admin' : 'Admin';
-
-    // Per-card theming (product-owner requested, distinct from every other
-    // screen's flat single-`_palette` pattern): this card's own accent
-    // (badge, border, icon tint below) always reflects *this institute's*
-    // own color ramp via InstituteColors.forCode(code), independent of the
-    // viewer's role. For a main_admin/super_admin viewer (whose `_palette`
-    // always resolves to green), this makes each card in the list show its
-    // own institute's color. For an institute_admin viewer, `_palette`
-    // already equals `InstituteColors.forCode(widget.institute)` and they
-    // only ever see their own institute's card here, so `cardPalette` and
-    // `_palette` are the same value in that case -- no special-casing by
-    // role is needed.
-    final cardPalette = InstituteColors.forCode(code);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: isOpen
-              ? cardPalette.dark.withAlpha(70)
-              : cardPalette.mid.withAlpha(26),
-        ),
-      ),
-      child: Column(children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: () => setState(() => _expandedCode = isOpen ? null : code),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: cardPalette.pale,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(code,
-                          maxLines: 1,
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: cardPalette.dark,
-                              fontSize: 13)),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textDark,
-                            fontSize: 14)),
-                    const SizedBox(height: 3),
-                    Text(
-                        '$floors ${floors == 1 ? 'floor' : 'floors'} · ${members.length} member${members.length == 1 ? '' : 's'}',
-                        style: const TextStyle(
-                            fontSize: 11, color: AppColors.textMuted)),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Semantic: admins.isNotEmpty coverage badge, paired against
-              // AppColors.warning for the "no admin" state -- data-coverage
-              // status, not brand chrome, so deliberately NOT retheme'd even
-              // though the rest of this card picks up cardPalette above
-              // (per requirements review).
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: admins.isNotEmpty
-                      ? AppColors.greenPale
-                      : AppColors.warning.withAlpha(20),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(
-                      admins.isNotEmpty
-                          ? Icons.verified_user_outlined
-                          : Icons.warning_amber_outlined,
-                      size: 13,
-                      color: admins.isNotEmpty
-                          ? AppColors.greenDark
-                          : AppColors.warning),
-                  const SizedBox(width: 5),
-                  Text(
-                    admins.isEmpty
-                        ? 'No admin'
-                        : '${admins.length} admin${admins.length == 1 ? '' : 's'}',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: admins.isNotEmpty
-                            ? AppColors.greenDark
-                            : AppColors.warning),
-                  ),
-                ]),
-              ),
-              const SizedBox(width: 8),
-              Icon(isOpen ? Icons.expand_less : Icons.expand_more,
-                  color: AppColors.textMuted),
-            ]),
-          ),
-        ),
-        AnimatedCrossFade(
-          firstChild: const SizedBox.shrink(),
-          secondChild: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Divider(height: 1),
-                const SizedBox(height: 12),
-                Row(children: [
-                  const Text('Institute Admins',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textDark)),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: () => _addAdmin(code, name,
-                        asCoAdmin: _viewerIsInstituteAdmin),
-                    icon: const Icon(Icons.person_add_alt_1_outlined, size: 15),
-                    label: Text('Add $actionLabel',
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600)),
-                    // Icon tint picks up this card's own institute color
-                    // (see cardPalette above), not the viewer's `_palette`.
-                    style: TextButton.styleFrom(
-                        foregroundColor: cardPalette.dark,
-                        padding: EdgeInsets.zero,
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                  ),
-                ]),
-                const SizedBox(height: 8),
-                if (admins.isEmpty)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.warning.withAlpha(15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Text(
-                      'No admin assigned. Members can still be added, but nobody can manage this institute\'s devices yet.',
-                      style: TextStyle(fontSize: 11, color: AppColors.warning),
-                    ),
-                  )
-                else
-                  ...admins.map((a) {
-                    final isCo = _isCoAdmin(a);
-                    // An institute admin may only remove their co-admin
-                    // peers — never the admin the main admin assigned, and
-                    // never themselves.
-                    final canRemove = a['uid'] != _currentUid &&
-                        (!_viewerIsInstituteAdmin || isCo);
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _buildUserRow(
-                        a,
-                        badgeOverride: isCo ? 'CO-ADMIN' : 'ADMIN',
-                        paletteOverride: cardPalette,
-                        trailing: [
-                          _rowActionButton('Change Password',
-                              () => _changePassword(a['uid'], a['email'] ?? ''),
-                              palette: cardPalette),
-                          if (canRemove) ...[
-                            const SizedBox(width: 8),
-                            _rowActionButton('Remove', () => _removeAdmin(a),
-                                isDanger: true, palette: cardPalette),
-                          ],
-                        ],
-                      ),
-                    );
-                  }),
-                const SizedBox(height: 14),
-                Row(children: [
-                  const Text('Members',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textDark)),
-                  const SizedBox(width: 6),
-                  Text('${members.length}',
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textMuted)),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: () => _addMember(code, name),
-                    icon: const Icon(Icons.person_add_outlined, size: 15),
-                    label: const Text('Add Member',
-                        style: TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600)),
-                    // Icon tint picks up this card's own institute color
-                    // (see cardPalette above), not the viewer's `_palette`.
-                    style: TextButton.styleFrom(
-                        foregroundColor: cardPalette.dark,
-                        padding: EdgeInsets.zero,
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                  ),
-                ]),
-                const SizedBox(height: 8),
-                if (members.isEmpty)
-                  const Text('No members yet.',
-                      style:
-                          TextStyle(fontSize: 12, color: AppColors.textMuted))
-                else
-                  ...members.map((m) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: _buildUserRow(
-                          m,
-                          paletteOverride: cardPalette,
-                          trailing: [
-                            _rowActionButton(
-                                'Change Password',
-                                () =>
-                                    _changePassword(m['uid'], m['email'] ?? ''),
-                                palette: cardPalette),
-                            const SizedBox(width: 8),
-                            _rowIconButton(Icons.delete_outline,
-                                () => _deleteUser(m['uid'], m['email'] ?? ''),
-                                isDanger: true, palette: cardPalette),
-                          ],
-                        ),
-                      )),
-              ],
-            ),
-          ),
-          crossFadeState:
-              isOpen ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-          duration: const Duration(milliseconds: 180),
-          sizeCurve: Curves.easeOut,
-        ),
-      ]),
     );
   }
 
-  Widget _buildOtherAccountsSection() {
-    final others = _otherAccounts;
+  Widget _pill(String text, {Color? color}) {
+    final c = color ?? AppColors.inkMid;
     return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: AppColors.cardBg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: _otherAccountsOpen
-              ? _palette.dark.withAlpha(70)
-              : _palette.mid.withAlpha(26),
-        ),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: c.withAlpha(160)),
       ),
-      child: Column(children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: () => setState(() => _otherAccountsOpen = !_otherAccountsOpen),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: _palette.pale,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child:
-                    Icon(Icons.groups_outlined, size: 18, color: _palette.dark),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text('Other Accounts (${others.length})',
-                    style: const TextStyle(
-                        fontFamily: AppFonts.family,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark)),
-              ),
-              Icon(_otherAccountsOpen ? Icons.expand_less : Icons.expand_more,
-                  color: AppColors.textMuted),
-            ]),
-          ),
-        ),
-        AnimatedCrossFade(
-          firstChild: const SizedBox.shrink(),
-          secondChild: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-            child: others.isEmpty
-                ? const Text('No unassigned accounts.',
-                    style: TextStyle(fontSize: 12, color: AppColors.textMuted))
-                : Column(
-                    children: others
-                        .map((u) => Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: _buildUserRow(
-                                u,
-                                trailing: [
-                                  if (_roleOf(u) == 'faculty')
-                                    _rowActionButton('Assign to Institute',
-                                        () => _assignToInstitute(u)),
-                                  if (_roleOf(u) == 'faculty')
-                                    const SizedBox(width: 8),
-                                  _rowActionButton(
-                                      'Change Password',
-                                      () => _changePassword(
-                                          u['uid'], u['email'] ?? '')),
-                                  if (!_isProtected(u) &&
-                                      u['uid'] != _currentUid) ...[
-                                    const SizedBox(width: 8),
-                                    _rowIconButton(
-                                        Icons.delete_outline,
-                                        () => _deleteUser(
-                                            u['uid'], u['email'] ?? ''),
-                                        isDanger: true),
-                                  ],
-                                ],
-                              ),
-                            ))
-                        .toList(),
-                  ),
-          ),
-          crossFadeState: _otherAccountsOpen
-              ? CrossFadeState.showSecond
-              : CrossFadeState.showFirst,
-          duration: const Duration(milliseconds: 180),
-          sizeCurve: Curves.easeOut,
-        ),
-      ]),
+      child: Text(text, style: AppTextStyles.caption.copyWith(color: c)),
     );
   }
 
-  Widget _buildUserRow(Map<String, dynamic> user,
-      {required List<Widget> trailing,
-      String? badgeOverride,
-      InstitutePalette? paletteOverride}) {
-    final role = _roleOf(user);
-    final email = (user['email'] as String? ?? '');
-    final name = (user['name'] as String? ?? '');
-    final isHighTier = role != 'faculty';
-    final palette = paletteOverride ?? _palette;
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.mid.withAlpha(18)),
-      ),
-      child: Row(children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: isHighTier ? palette.dark.withAlpha(20) : palette.pale,
-            borderRadius: BorderRadius.circular(9),
-          ),
-          child: Center(
-            child: Text(email.isNotEmpty ? email[0].toUpperCase() : 'U',
-                style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                    color: isHighTier ? palette.dark : palette.mid)),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(name.isNotEmpty ? name : email,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textDark)),
-              Text(email,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 10, color: AppColors.textMuted)),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-          decoration: BoxDecoration(
-            color: isHighTier ? palette.dark.withAlpha(20) : palette.pale,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(badgeOverride ?? _roleLabel(role),
-              style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  color: isHighTier ? palette.dark : AppColors.textMid)),
-        ),
-        const SizedBox(width: 8),
-        ...trailing,
-      ]),
-    );
-  }
-
-  String _roleLabel(String role) {
+  String _roleLabel(String role, bool isCoAdmin) {
     switch (role) {
       case 'main_admin':
-        return 'MAIN ADMIN';
+        return 'Main admin';
       case 'super_admin':
-        return 'SUPER ADMIN';
+        return 'Super admin';
       case 'admin':
-        return 'ADMIN';
+        return 'Admin';
       case 'institute_admin':
-        return 'INST. ADMIN';
+        return isCoAdmin ? 'Co-admin' : 'Institute admin';
       default:
-        return 'MEMBER';
+        return 'Member';
     }
   }
 
-  // Semantic: only the isDanger (Remove/Delete) branch is a genuine
-  // live-state signal, paired against AppColors.error -- that side stays
-  // fixed. The non-danger branch is just this button's default/chrome
-  // style (a "primary vs destructive" variant, not a status pairing), so
-  // it follows the resolved institute palette like the rest of the row.
-  Widget _rowActionButton(String label, VoidCallback onTap,
-      {bool isDanger = false, InstitutePalette? palette}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: 28,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: isDanger
-              ? AppColors.error.withAlpha(18)
-              : (palette ?? _palette).pale,
-          borderRadius: BorderRadius.circular(8),
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.lock_outline, size: 44, color: AppColors.inkMuted),
+            const SizedBox(height: 16),
+            Text('Cannot load users',
+                style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+            const SizedBox(height: 8),
+            Text(_errorText ?? 'Something went wrong.',
+                textAlign: TextAlign.center,
+                style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _retryLoad,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _palette.dark,
+                side: BorderSide(color: _palette.dark),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
         ),
-        child: Center(
-          child: Text(label,
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color:
-                      isDanger ? AppColors.error : (palette ?? _palette).dark)),
-        ),
-      ),
-    );
-  }
-
-  Widget _rowIconButton(IconData icon, VoidCallback onTap,
-      {bool isDanger = false, InstitutePalette? palette}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          color: isDanger
-              ? AppColors.error.withAlpha(18)
-              : (palette ?? _palette).pale,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(icon,
-            size: 14,
-            color: isDanger ? AppColors.error : (palette ?? _palette).dark),
       ),
     );
   }
