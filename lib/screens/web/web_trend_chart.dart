@@ -113,12 +113,12 @@ class _WebTrendChartState extends State<WebTrendChart> {
                 // Anchored by its bottom edge just above the point, clear of
                 // its marker ring whatever the text height; below the point
                 // when it is too near the top.
-                bottom: geo.y(pts[bubble].value) >= 56
-                    ? c.maxHeight - geo.y(pts[bubble].value) + 18
+                bottom: _markY(geo, pts, widget.compare, bubble) >= 56
+                    ? c.maxHeight - _markY(geo, pts, widget.compare, bubble) + 18
                     : null,
-                top: geo.y(pts[bubble].value) >= 56
+                top: _markY(geo, pts, widget.compare, bubble) >= 56
                     ? null
-                    : geo.y(pts[bubble].value) + 18,
+                    : _markY(geo, pts, widget.compare, bubble) + 18,
                 child: IgnorePointer(
                   child: Container(
                     width: 190,
@@ -153,6 +153,31 @@ class _WebTrendChartState extends State<WebTrendChart> {
       }),
     );
   }
+}
+
+/// Index runs of consecutive finite values in the first [m] of [v]; a
+/// non-finite value (no data) breaks the line.
+List<List<int>> _runs(List<double> v, int m) {
+  final out = <List<int>>[];
+  var cur = <int>[];
+  for (var i = 0; i < m; i++) {
+    if (v[i].isFinite) {
+      cur.add(i);
+    } else if (cur.isNotEmpty) {
+      out.add(cur);
+      cur = <int>[];
+    }
+  }
+  if (cur.isNotEmpty) out.add(cur);
+  return out;
+}
+
+/// Where the marker / bubble for point [i] sits: the main value, else the
+/// comparison value, else the axis.
+double _markY(_Geo g, List<TrendPoint> pts, List<double>? cmp, int i) {
+  if (pts[i].value.isFinite) return g.y(pts[i].value);
+  if (cmp != null && i < cmp.length && cmp[i].isFinite) return g.y(cmp[i]);
+  return g.base;
 }
 
 /// Shared x/y mapping between the painter and the hover logic.
@@ -222,6 +247,7 @@ class _TrendPainter extends CustomPainter {
       final slot = g.pw / n;
       final w = (slot * 0.62).clamp(3.0, 26.0);
       for (var i = 0; i < n; i++) {
+        if (!points[i].value.isFinite) continue; // no data: no bar
         final top = g.y(points[i].value);
         final r = RRect.fromRectAndCorners(
           Rect.fromLTRB(g.x(i) - w / 2, top, g.x(i) + w / 2, g.base),
@@ -234,35 +260,41 @@ class _TrendPainter extends CustomPainter {
         canvas.drawRRect(r, Paint()..color = color.withAlpha(alpha));
       }
     } else {
-      final line = Path()..moveTo(g.x(0), g.y(points[0].value));
-      for (var i = 1; i < n; i++) {
-        line.lineTo(g.x(i), g.y(points[i].value));
+      // A non-finite value means "no data" (e.g. a month that hasn't
+      // happened yet): the line breaks there instead of dropping to zero.
+      final values = [for (final p in points) p.value];
+      for (final run in _runs(values, n)) {
+        final line = Path()..moveTo(g.x(run.first), g.y(values[run.first]));
+        for (final i in run.skip(1)) {
+          line.lineTo(g.x(i), g.y(values[i]));
+        }
+        final area = Path.from(line)
+          ..lineTo(g.x(run.last), g.base)
+          ..lineTo(g.x(run.first), g.base)
+          ..close();
+        canvas.drawPath(
+          area,
+          Paint()
+            ..shader = LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [color.withAlpha(90), color.withAlpha(6)],
+            ).createShader(Rect.fromLTRB(0, _padT, size.width, g.base)),
+        );
+        canvas.drawPath(
+          line,
+          Paint()
+            ..color = color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..strokeJoin = StrokeJoin.round,
+        );
       }
-      final area = Path.from(line)
-        ..lineTo(g.x(n - 1), g.base)
-        ..lineTo(g.x(0), g.base)
-        ..close();
-      canvas.drawPath(
-        area,
-        Paint()
-          ..shader = LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [color.withAlpha(90), color.withAlpha(6)],
-          ).createShader(Rect.fromLTRB(0, _padT, size.width, g.base)),
-      );
-      canvas.drawPath(
-        line,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..strokeJoin = StrokeJoin.round,
-      );
       // Dots only while they stay legible.
       if (n <= 62) {
         for (var i = 0; i < n; i++) {
-          final o = Offset(g.x(i), g.y(points[i].value));
+          if (!values[i].isFinite) continue;
+          final o = Offset(g.x(i), g.y(values[i]));
           final big = i == hover || i == selected;
           canvas.drawCircle(o, big ? 6 : 4.2, Paint()..color = Colors.white);
           canvas.drawCircle(
@@ -279,19 +311,35 @@ class _TrendPainter extends CustomPainter {
     final cmp = compare;
     if (cmp != null && cmp.isNotEmpty) {
       final m = math.min(n, cmp.length);
-      final path = Path()..moveTo(g.x(0), g.y(cmp[0]));
-      for (var i = 1; i < m; i++) {
-        path.lineTo(g.x(i), g.y(cmp[i]));
-      }
       final dash = Paint()
         ..color = compareColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2
         ..strokeCap = StrokeCap.round;
-      for (final metric in path.computeMetrics()) {
-        for (var d = 0.0; d < metric.length; d += 11) {
-          canvas.drawPath(
-              metric.extractPath(d, math.min(d + 6, metric.length)), dash);
+      for (final run in _runs(cmp, m)) {
+        final path = Path()..moveTo(g.x(run.first), g.y(cmp[run.first]));
+        for (final i in run.skip(1)) {
+          path.lineTo(g.x(i), g.y(cmp[i]));
+        }
+        for (final metric in path.computeMetrics()) {
+          for (var d = 0.0; d < metric.length; d += 11) {
+            canvas.drawPath(
+                metric.extractPath(d, math.min(d + 6, metric.length)), dash);
+          }
+        }
+        // Small dots on the comparison line too, so each month is findable.
+        if (m <= 31) {
+          for (final i in run) {
+            final o = Offset(g.x(i), g.y(cmp[i]));
+            canvas.drawCircle(o, 3.4, Paint()..color = Colors.white);
+            canvas.drawCircle(
+                o,
+                3.4,
+                Paint()
+                  ..color = compareColor
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = 1.6);
+          }
         }
       }
     }
@@ -301,16 +349,19 @@ class _TrendPainter extends CustomPainter {
       // Selected point: a guide line down to the axis and a filled dot in a
       // soft halo, on the line point or on top of the bar.
       final sx = g.x(sel);
-      final sy = g.y(points[sel].value);
+      // No data on the main line here: mark the comparison point instead.
+      final onMain = points[sel].value.isFinite;
+      final mc = onMain ? color : compareColor;
+      final sy = _markY(g, points, compare, sel);
       final guide = Paint()
-        ..color = color.withAlpha(140)
+        ..color = mc.withAlpha(140)
         ..strokeWidth = 1.5;
       for (var d = sy + 10; d < g.base; d += 7) {
         canvas.drawLine(
             Offset(sx, d), Offset(sx, math.min(d + 4, g.base)), guide);
       }
-      canvas.drawCircle(Offset(sx, sy), 13, Paint()..color = color.withAlpha(46));
-      canvas.drawCircle(Offset(sx, sy), 7, Paint()..color = color);
+      canvas.drawCircle(Offset(sx, sy), 13, Paint()..color = mc.withAlpha(46));
+      canvas.drawCircle(Offset(sx, sy), 7, Paint()..color = mc);
       canvas.drawCircle(
           Offset(sx, sy),
           7,
@@ -324,7 +375,10 @@ class _TrendPainter extends CustomPainter {
       final hx = g.x(hover!);
       canvas.drawLine(Offset(hx, _padT), Offset(hx, g.base),
           Paint()..color = const Color(0x4D0E2E1A));
-      canvas.drawCircle(Offset(hx, g.y(points[hover!].value)), 5, Paint()..color = color);
+      if (points[hover!].value.isFinite) {
+        canvas.drawCircle(
+            Offset(hx, g.y(points[hover!].value)), 5, Paint()..color = color);
+      }
     }
 
     // Evenly spaced x labels -- as many as fit the plot width without

@@ -18,6 +18,7 @@ import 'analytics/analytics_focus.dart';
 import 'analytics/analytics_ui.dart';
 import 'analytics/breakdown_panel.dart';
 import 'analytics/utility_donut.dart';
+import 'analytics/year_comparison.dart';
 import 'web_forecast_cards.dart';
 import 'history_trend_panel.dart';
 import 'web_theme.dart';
@@ -1130,6 +1131,18 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                     ),
                   ],
                   const SizedBox(height: 22),
+                  _panel(
+                    title: 'Year comparison',
+                    subtitle:
+                        '${_asCost ? '₱' : 'kWh'} per month for two years · follows the scope, utility and day filters',
+                    body: YearComparison(
+                      rows: _forecastRows(),
+                      filter: f,
+                      palette: _palette,
+                      today: today,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
                   KeyedSubtree(
                     key: _keyFor(AnalyticsSection.history),
                     child: HistoryTrendPanel(palette: _palette),
@@ -1177,7 +1190,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white, border: Border.all(color: WebColors.outline),
                   borderRadius: BorderRadius.circular(20)),
               child: Icon(Icons.cloud_off_outlined,
                   size: 34, color: _palette.mid)),
@@ -1222,7 +1235,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           width: 64,
           height: 64,
           decoration: BoxDecoration(
-              color: _palette.pale.withAlpha(160),
+              color: Colors.white, border: Border.all(color: WebColors.outline),
               borderRadius: BorderRadius.circular(18)),
           child: Icon(Icons.filter_alt_off_outlined,
               size: 30, color: _palette.dark),
@@ -1275,7 +1288,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   Widget _livePill() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-            color: _palette.pale, borderRadius: BorderRadius.circular(20)),
+            color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(20)),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(
               width: 7,
@@ -1454,7 +1467,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           width: 52,
           height: 52,
           decoration: BoxDecoration(
-              color: _palette.pale.withAlpha(153), shape: BoxShape.circle),
+              color: Colors.white, border: Border.all(color: WebColors.outline), shape: BoxShape.circle),
           child: Icon(icon, color: _palette.dark, size: 24),
         ),
         const SizedBox(width: 14),

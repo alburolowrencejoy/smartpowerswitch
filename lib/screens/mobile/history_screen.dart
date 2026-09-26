@@ -28,6 +28,7 @@ import '../../widgets/top_toast.dart';
 import '../web/analytics/analytics_data.dart';
 import '../web/analytics/analytics_filter.dart';
 import '../web/analytics/breakdown_panel.dart';
+import '../web/analytics/year_comparison.dart';
 import '../web/history_trend_panel.dart';
 import '../web/web_trend_chart.dart';
 
@@ -724,6 +725,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
           compareAllowedDays, ds, online),
       const SizedBox(height: 28),
       _buildTrendSection(f, span, compareSpan, rows, compareRows),
+      const SizedBox(height: 28),
+      _sectionHead('Year comparison',
+          '${_isCost(f) ? '₱' : 'kWh'} per month, two years overlaid'),
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.fromLTRB(12, 14, 12, 14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _palette.line),
+        ),
+        child: YearComparison(
+          rows: _allRows,
+          filter: f,
+          palette: _palette,
+          today: today,
+          compact: true,
+        ),
+      ),
       const SizedBox(height: 28),
       _buildUtilitySection(f, rows, total),
       const SizedBox(height: 28),
