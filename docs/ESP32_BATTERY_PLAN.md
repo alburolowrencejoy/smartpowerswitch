@@ -117,6 +117,23 @@ after regulator losses and ageing margin); load on 10 h/day; each wake-up
 | Same, 15 min, **two 18650s** in parallel | ~7–8 mAh | about **1.5 years** (self-discharge starts to matter) |
 | Option A: mains + backup battery | ~0 (outages only) | **years** (battery ageing is the limit) |
 
+### With the 32650 cell on hand
+
+The cell is labelled "24000 mAh", which a 32650 cannot hold: real 32650
+cells are about 5,000–7,000 mAh. Plan with ~6,000 mAh (~4,800 mAh usable)
+until its real capacity is measured with a capacity tester.
+
+| Setup | Life on the 32650 (~6,000 mAh real) |
+|---|---|
+| Today (Dev Module, Wi-Fi always on, SSR) | about 1–2 days |
+| Dev Module + deep sleep every 5 min + SSR | about 2 weeks |
+| Low-power board + deep sleep 5 min + latching relay | about **8 months** |
+| Same, wake every 15 min | about **1.5 years** |
+
+Check the chemistry on the label: **3.2 V / LiFePO4** needs a LiFePO4
+(3.6 V) charger, not a TP4056; **3.7 V / Li-ion** works with a protected
+Li-ion charger (e.g. TP4056 + DW01).
+
 The lesson: **board choice and the latching relay matter more than the wake
 interval.** With a Dev Module and an SSR, no firmware trick gets past a
 week or two.
