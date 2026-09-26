@@ -870,9 +870,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       decoration: BoxDecoration(
         border: last
             ? null
-            : Border(
-                bottom:
-                    BorderSide(color: const Color(0xFF2E9E52).withAlpha(33))),
+            : const Border(bottom: BorderSide(color: WebColors.outline)),
       ),
       child: Row(children: [
         Text(label,

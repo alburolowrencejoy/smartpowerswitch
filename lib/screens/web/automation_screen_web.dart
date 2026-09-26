@@ -79,7 +79,7 @@ Widget _scheduleModeToggle({
 
   return Container(
     decoration: BoxDecoration(
-      border: Border.all(color: palette.mid.withAlpha(51)),
+      border: Border.all(color: WebColors.outline),
       borderRadius: BorderRadius.circular(12),
     ),
     child: Row(children: [
@@ -426,7 +426,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 12),
                     decoration: BoxDecoration(
-                      color: widget.palette.pale,
+                      color: Colors.white, border: Border.all(color: WebColors.outline),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Text(
@@ -477,7 +477,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 12, vertical: 12),
                         decoration: BoxDecoration(
-                          color: widget.palette.pale,
+                          color: Colors.white, border: Border.all(color: WebColors.outline),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
@@ -501,34 +501,29 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                               margin: const EdgeInsets.only(bottom: 8),
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: isSelected
-                                    ? widget.palette.dark
-                                    : Colors.white,
+                                color: Colors.white,
                                 borderRadius: BorderRadius.circular(12),
+                                // Outline style: selected = theme ring.
                                 border: Border.all(
                                   color: isSelected
                                       ? widget.palette.dark
-                                      : widget.palette.mid.withAlpha(60),
+                                      : WebColors.outline,
+                                  width: isSelected ? 1.5 : 1,
                                 ),
                               ),
                               child: Row(children: [
                                 Icon(Icons.device_hub,
-                                    size: 16,
-                                    color: isSelected
-                                        ? Colors.white
-                                        : widget.palette.mid),
+                                    size: 16, color: widget.palette.dark),
                                 const SizedBox(width: 10),
                                 Expanded(
                                     child: Text(e.value,
-                                        style: TextStyle(
+                                        style: const TextStyle(
                                             fontSize: 13,
                                             fontWeight: FontWeight.w600,
-                                            color: isSelected
-                                                ? Colors.white
-                                                : AppColors.textDark))),
+                                            color: WebColors.ink))),
                                 if (isSelected)
-                                  const Icon(Icons.check_circle,
-                                      size: 16, color: Colors.white),
+                                  Icon(Icons.check_circle,
+                                      size: 16, color: widget.palette.dark),
                               ]),
                             ),
                           );
@@ -564,14 +559,16 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
       Container(
         width: 20,
         height: 20,
-        decoration:
-            BoxDecoration(color: widget.palette.dark, shape: BoxShape.circle),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: widget.palette.dark, width: 1.5)),
         child: Center(
             child: Text(step,
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
-                    color: Colors.white))),
+                    color: widget.palette.dark))),
       ),
       const SizedBox(width: 8),
       Text(label,
@@ -598,10 +595,10 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
             const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: widget.palette.mid.withAlpha(51))),
+            borderSide: const BorderSide(color: WebColors.outline)),
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: widget.palette.mid.withAlpha(51))),
+            borderSide: const BorderSide(color: WebColors.outline)),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide(color: widget.palette.mid)),
@@ -1105,7 +1102,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: hasError ? AppColors.error : _p.mid.withAlpha(60),
+                  color: hasError ? AppColors.error : WebColors.outline,
                   width: hasError ? 1.6 : 1.2,
                 ),
               ),
@@ -1179,7 +1176,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
       },
       style: OutlinedButton.styleFrom(
         foregroundColor: WebColors.ink,
-        side: BorderSide(color: _p.mid.withAlpha(70)),
+        side: const BorderSide(color: WebColors.outline),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
       ),
@@ -1222,7 +1219,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
           border: Border.all(
             color: _errors.containsKey('days')
                 ? AppColors.error
-                : _p.mid.withAlpha(40),
+                : WebColors.outline,
             width: _errors.containsKey('days') ? 1.6 : 1,
           ),
         ),
@@ -1245,8 +1242,10 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
 
   Widget _dayChip(String label, bool selected, VoidCallback onTap) {
     return Material(
-      color: selected ? _p.dark : _p.pale,
-      borderRadius: BorderRadius.circular(8),
+      color: selected ? _p.dark : Colors.white,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(color: selected ? _p.dark : WebColors.outline)),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
@@ -1256,7 +1255,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
               style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: selected ? Colors.white : AppColors.textMid)),
+                  color: selected ? Colors.white : WebColors.mid)),
         ),
       ),
     );
@@ -1580,7 +1579,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white, border: Border.all(color: WebColors.outline),
                   borderRadius: BorderRadius.circular(20)),
               child: Icon(Icons.lock_outline, size: 34, color: _palette.mid)),
           const SizedBox(height: 16),
@@ -1614,7 +1613,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: _palette.pale,
+                  color: Colors.white, border: Border.all(color: WebColors.outline),
                   borderRadius: BorderRadius.circular(20)),
               child: Icon(Icons.schedule, size: 36, color: _palette.dark)),
           const SizedBox(height: 16),
@@ -1703,7 +1702,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
-              color: _palette.pale, borderRadius: BorderRadius.circular(20)),
+              color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(20)),
           child: Text('$count',
               style: TextStyle(
                   fontSize: 12,
@@ -1808,8 +1807,10 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                 decoration: BoxDecoration(
-                  color: active ? _palette.dark : _palette.pale,
+                  color: active ? _palette.dark : Colors.white,
                   borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: active ? _palette.dark : WebColors.outline),
                 ),
                 child: Text(d,
                     style: TextStyle(

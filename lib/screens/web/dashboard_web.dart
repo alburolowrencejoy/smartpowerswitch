@@ -808,7 +808,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: highlighted ? _palette.pale : AppColors.cardBg,
+        color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
             color: highlighted ? _palette.mid.withAlpha(90) : Colors.black12),
@@ -900,10 +900,10 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           children: [
             Container(
               padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.cardBg,
                 border: Border(
-                  bottom: BorderSide(color: _palette.mid.withAlpha(26)),
+                  bottom: BorderSide(color: WebColors.outline),
                 ),
               ),
               child: Row(
@@ -1086,7 +1086,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                   width: 72,
                   height: 72,
                   decoration: BoxDecoration(
-                      color: _palette.pale,
+                      color: Colors.white, border: Border.all(color: WebColors.outline),
                       borderRadius: BorderRadius.circular(20)),
                   child: Icon(Icons.cloud_off_outlined,
                       size: 34, color: _palette.mid)),
@@ -1243,7 +1243,7 @@ class _WebBuildingCard extends StatelessWidget {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: palette.pale,
+                      color: Colors.white, border: Border.all(color: WebColors.outline),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(Icons.apartment_rounded,

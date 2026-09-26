@@ -788,8 +788,8 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
     final high = role != 'faculty';
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 9),
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: p.mid.withAlpha(22))),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: WebColors.outline)),
       ),
       child: Row(children: [
         CircleAvatar(

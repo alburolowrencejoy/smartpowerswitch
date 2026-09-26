@@ -507,7 +507,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
             width: 72,
             height: 72,
             decoration: BoxDecoration(
-                color: _palette.pale, borderRadius: BorderRadius.circular(20)),
+                color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(20)),
             child:
                 Icon(Icons.cloud_off_outlined, size: 34, color: _palette.mid),
           ),
@@ -758,7 +758,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: p.pale.withAlpha(115),
+        color: Colors.white, border: Border.all(color: WebColors.outline),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(text,

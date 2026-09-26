@@ -446,118 +446,174 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       return;
     }
 
-    final utility = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text('Select Utility Type',
-            style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          _utilityPickTile('Lights', Icons.lightbulb_outline, 'Lights',
-              const Color(0xFFE8922A)),
-          const SizedBox(height: 8),
-          _utilityPickTile('Outlets', Icons.electrical_services, 'Outlets',
-              AppColors.greenMid),
-          const SizedBox(height: 8),
-          _utilityPickTile(
-              'AC', Icons.ac_unit, 'AC Unit', const Color(0xFF2196F3)),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel',
-                  style: TextStyle(color: AppColors.inkMuted))),
-        ],
-      ),
-    );
-    if (utility == null || !mounted) return;
-
+    // One "Add device" sheet (utility + ID together) in the redesign's
+    // sheet chrome, instead of two back-to-back dialogs.
     final idController = TextEditingController();
+    String? pickedUtility;
+    String? utilityError;
     String? idError;
     int idShake = 0;
+    bool checking = false;
 
-    final deviceId = await showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('Enter Device ID',
-              style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('Type the unique Device ID from the sticker on your ESP32.',
-                style:
-                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
-            const SizedBox(height: 12),
-            AppTextField(
-              controller: idController,
-              shakeTrigger: idShake,
-              textCapitalization: TextCapitalization.characters,
-              autofocus: true,
-              decoration: InputDecoration(
-                hintText: 'e.g. DEV-2024-A3F7',
-                errorText: idError,
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                prefixIcon:
-                    const Icon(Icons.qr_code, color: AppColors.inkMuted),
-              ),
-            ),
-          ]),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.inkMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: () async {
-                final id = idController.text.trim().toUpperCase();
-                if (id.isEmpty) {
-                  setS(() {
-                    idError = 'Please enter a Device ID';
-                    idShake++;
-                  });
-                  return;
-                }
-                final snap = await FirebaseDatabase.instance
-                    .ref('master_devices/$id')
-                    .get();
-                if (!snap.exists) {
-                  setS(() {
-                    idError = 'Device ID not found in system';
-                    idShake++;
-                  });
-                  return;
-                }
-                final assigned = (snap.value as Map?)?['assignedTo'] as String?;
+    final picked = await showAppBottomSheet<(String, String)>(
+      context,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setS) {
+          Future<void> submit() async {
+            final id = idController.text.trim().toUpperCase();
+            String? ue = pickedUtility == null ? 'Choose a utility type' : null;
+            String? ie = id.isEmpty ? 'Please enter a Device ID' : null;
+            if (ue != null || ie != null) {
+              setS(() {
+                utilityError = ue;
+                idError = ie;
+                idShake++;
+              });
+              return;
+            }
+            if (_devices.containsKey(id)) {
+              setS(() {
+                idError = 'Device already added to this floor';
+                idShake++;
+              });
+              return;
+            }
+            setS(() => checking = true);
+            String? err;
+            try {
+              final snap = await FirebaseDatabase.instance
+                  .ref('master_devices/$id')
+                  .get();
+              if (!snap.exists) {
+                err = 'Device ID not found in system';
+              } else {
+                final assigned =
+                    (snap.value as Map?)?['assignedTo'] as String?;
                 if (assigned != null && assigned.isNotEmpty) {
-                  setS(() {
-                    idError = 'Device already assigned to $assigned';
-                    idShake++;
-                  });
-                  return;
+                  err = 'Device already assigned to $assigned';
                 }
-                if (_devices.containsKey(id)) {
-                  setS(() {
-                    idError = 'Device already added to this floor';
-                    idShake++;
-                  });
-                  return;
-                }
-                if (ctx.mounted) Navigator.pop(ctx, id);
-              },
-              child: const Text('Add Device',
-                  style: TextStyle(color: Colors.white)),
+              }
+            } catch (e) {
+              err = 'Could not check this ID: $e';
+            }
+            if (!sheetCtx.mounted) return;
+            if (err != null) {
+              setS(() {
+                checking = false;
+                idError = err;
+                idShake++;
+              });
+              return;
+            }
+            Navigator.pop(sheetCtx, (pickedUtility!, id));
+          }
+
+          Widget option(String value, IconData icon, String label) {
+            final selected = pickedUtility == value;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => setS(() {
+                  pickedUtility = value;
+                  utilityError = null;
+                }),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  // Outline system: selected = theme ring, never a fill.
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: selected ? _palette.dark : AppColors.hairline,
+                      width: selected ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Row(children: [
+                    OutlineIconBox(icon: icon, palette: _palette),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(label,
+                          style: AppTextStyles.subtitle
+                              .copyWith(color: AppColors.ink)),
+                    ),
+                    Icon(
+                        selected
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        size: 22,
+                        color: selected ? _palette.dark : AppColors.inkMuted),
+                  ]),
+                ),
+              ),
+            );
+          }
+
+          return BottomSheetScaffold(
+            title: 'Add device to $room',
+            palette: _palette,
+            body: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Utility',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 8),
+                ShakeOnError(
+                  error: utilityError,
+                  trigger: idShake,
+                  child: Column(children: [
+                    option('Lights', Icons.lightbulb_outline, 'Lights'),
+                    option('Outlets', Icons.electrical_services, 'Outlets'),
+                    option('AC', Icons.ac_unit, 'AC unit'),
+                  ]),
+                ),
+                if (utilityError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 4),
+                    child: Text(utilityError!,
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.errorText)),
+                  ),
+                const SizedBox(height: 10),
+                Text('Device ID',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 4),
+                Text('The ID on the sticker of the ESP32 board.',
+                    style: AppTextStyles.bodySm
+                        .copyWith(color: AppColors.inkMid)),
+                const SizedBox(height: 8),
+                AppTextField(
+                  controller: idController,
+                  shakeTrigger: idError == null ? 0 : idShake,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    hintText: 'e.g. ESP32-ROOM101-001',
+                    errorText: idError,
+                    prefixIcon:
+                        const Icon(Icons.qr_code, color: AppColors.inkMuted),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onChanged: (_) {
+                    if (idError != null) setS(() => idError = null);
+                  },
+                  onSubmitted: (_) => submit(),
+                ),
+              ],
             ),
-          ],
-        ),
+            footer: BottomSheetFooter(
+              palette: _palette,
+              applyLabel: checking ? 'Checking…' : 'Add device',
+              onCancel: () => Navigator.pop(sheetCtx),
+              onApply: checking ? null : submit,
+            ),
+          );
+        },
       ),
     );
-    if (deviceId == null || !mounted) return;
+    if (picked == null || !mounted) return;
+    final (utility, deviceId) = picked;
 
     try {
       await FirebaseDatabase.instance
@@ -593,38 +649,6 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       if (!mounted) return;
       TopToast.error(context, 'Failed to add device: $e');
     }
-  }
-
-  Widget _utilityPickTile(
-      String value, IconData icon, String label, Color color) {
-    return GestureDetector(
-      onTap: () => Navigator.pop(context, value),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withAlpha(51)),
-        ),
-        child: Row(children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: color.withAlpha(90)),
-                borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, size: 20, color: color),
-          ),
-          const SizedBox(width: 12),
-          Text(label,
-              style: AppTextStyles.subtitle
-                  .copyWith(color: AppColors.ink, fontSize: 14)),
-          const Spacer(),
-          Icon(Icons.chevron_right, color: color, size: 18),
-        ]),
-      ),
-    );
   }
 
   // ── Delete room (handoff §7: two-step confirm + 5s Undo) ─────────────

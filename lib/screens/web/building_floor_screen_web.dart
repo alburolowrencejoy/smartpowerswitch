@@ -829,7 +829,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-                color: _palette.pale.withAlpha(115),
+                color: Colors.white, border: Border.all(color: WebColors.outline),
                 borderRadius: BorderRadius.circular(8)),
             child: Text('$onCount/${devices.length} on',
                 style: TextStyle(
@@ -905,15 +905,14 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       decoration: BoxDecoration(
         border: first
             ? null
-            : Border(
-                top: BorderSide(color: const Color(0xFF2E9E52).withAlpha(33))),
+            : const Border(top: BorderSide(color: WebColors.outline)),
       ),
       child: Row(children: [
         Container(
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-              color: _palette.pale.withAlpha(140),
+              color: Colors.white, border: Border.all(color: WebColors.outline),
               borderRadius: BorderRadius.circular(10)),
           child: Icon(_utilityIcon(utility), size: 18, color: _palette.dark),
         ),

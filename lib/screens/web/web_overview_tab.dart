@@ -458,7 +458,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                       painter: _DonutPainter(
                         values: [for (final e in entries) e.value],
                         colors: [for (final e in entries) _utilityColor(e.key)],
-                        track: p.pale.withAlpha(140),
+                        track: WebColors.track,
                       ),
                     ),
                     Column(
@@ -494,7 +494,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                           value: e.value,
                           share: total <= 0 ? 0 : e.value / total,
                           color: _utilityColor(e.key),
-                          track: p.pale.withAlpha(110),
+                          track: WebColors.track,
                         ),
                       ),
                   ],
@@ -603,7 +603,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: p.pale.withAlpha(150),
+                      color: Colors.white, border: Border.all(color: WebColors.outline),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
@@ -654,7 +654,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                     child: _Bar(
                       share: share,
                       color: color,
-                      track: p.pale.withAlpha(110),
+                      track: WebColors.track,
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -819,7 +819,7 @@ class _StatCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final accent = alert ? AppColors.error : palette.dark;
     final chipBg =
-        alert ? AppColors.error.withAlpha(24) : palette.pale.withAlpha(150);
+        alert ? AppColors.error.withAlpha(24) : Colors.white;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: _cardDecoration(palette, 16),
@@ -828,7 +828,13 @@ class _StatCard extends StatelessWidget {
           Container(
             width: 52,
             height: 52,
-            decoration: BoxDecoration(color: chipBg, shape: BoxShape.circle),
+            decoration: BoxDecoration(
+                color: chipBg,
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: alert
+                        ? AppColors.error.withAlpha(60)
+                        : WebColors.outline)),
             child: Icon(icon, color: accent, size: 24),
           ),
           const SizedBox(width: 14),
@@ -894,7 +900,7 @@ class _LivePill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: palette.pale.withAlpha(140),
+        color: Colors.white, border: Border.all(color: WebColors.outline),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -928,7 +934,7 @@ class _SoftChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: palette.pale.withAlpha(110),
+        color: Colors.white, border: Border.all(color: WebColors.outline),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(text,
@@ -1160,7 +1166,7 @@ class _BarChart extends StatelessWidget {
                           Positioned.fill(
                             child: DecoratedBox(
                               decoration: BoxDecoration(
-                                color: palette.pale.withAlpha(90),
+                                color: WebColors.track,
                                 borderRadius: BorderRadius.circular(8),
                               ),
                             ),

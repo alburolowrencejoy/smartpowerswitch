@@ -1023,7 +1023,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-              color: _p.pale, borderRadius: BorderRadius.circular(10)),
+              color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(10)),
           child: Icon(icon, color: _p.dark, size: 20),
         ),
         const SizedBox(width: 12),

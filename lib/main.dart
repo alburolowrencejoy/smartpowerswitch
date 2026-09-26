@@ -151,6 +151,28 @@ class SmartPowerSwitchApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.greenDark),
         scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
+        // Material 3 tints every surface (dialogs, menus, pickers, sheets,
+        // cards) with the green seed, which reads as a grey-green wash.
+        // The design is white + outlines, so surfaces are plain white.
+        dialogTheme: const DialogThemeData(
+            backgroundColor: Colors.white, surfaceTintColor: Colors.transparent),
+        popupMenuTheme: const PopupMenuThemeData(
+            color: Colors.white, surfaceTintColor: Colors.transparent),
+        menuTheme: const MenuThemeData(
+          style: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(Colors.white),
+            surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
+          ),
+        ),
+        bottomSheetTheme: const BottomSheetThemeData(
+            surfaceTintColor: Colors.transparent),
+        cardTheme: const CardThemeData(
+            color: Colors.white, surfaceTintColor: Colors.transparent),
+        datePickerTheme: const DatePickerThemeData(
+            backgroundColor: Colors.white,
+            surfaceTintColor: Colors.transparent),
+        timePickerTheme:
+            const TimePickerThemeData(backgroundColor: Colors.white),
       ),
       initialRoute: '/',
       routes: {

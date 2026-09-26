@@ -1092,16 +1092,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       for (final b in _buildings) (b['code'] ?? '').toString().toUpperCase()
     };
 
+    // Sheet state lives out here: declared inside the StatefulBuilder's
+    // builder, it was reset on every setS, so errors, the shake and
+    // "Adding…" never showed.
+    String? codeError;
+    String? nameError;
+    String? floorsError;
+    int shake = 0;
+    bool submitting = false;
+
     showAppBottomSheet(
       context,
       builder: (sheetCtx) => StatefulBuilder(
         builder: (sheetCtx, setS) {
-          String? codeError;
-          String? nameError;
-          String? floorsError;
-          int shake = 0;
-          bool submitting = false;
-
           Future<void> submit(void Function(void Function()) setState) async {
             final code = codeCtrl.text.trim().toUpperCase();
             final name = nameCtrl.text.trim();

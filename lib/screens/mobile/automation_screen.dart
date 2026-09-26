@@ -8,6 +8,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/app_bottom_sheet.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_chip.dart';
 import '../../widgets/app_segmented_control.dart';
@@ -345,8 +346,8 @@ class _DevicePickerDialog extends StatefulWidget {
   State<_DevicePickerDialog> createState() => _DevicePickerDialogState();
 }
 
-// Institute theming: this dialog is opened via `showDialog(context: ctx,
-// ...)` with the default `useRootNavigator: true`, so its route (and this
+// Institute theming: this picker is opened as a bottom sheet (a modal route
+// on the navigator), so its route (and this
 // State's own BuildContext) is inserted at the root Overlay -- it is not a
 // descendant of any screen's local `Theme(...)` override in build(), and
 // `context.institutePalette` can't resolve correctly here. Instead of
@@ -472,13 +473,10 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
         ? List.generate(_buildingFloors[_selectedBuilding!] ?? 1, (i) => i + 1)
         : <int>[];
 
-    return AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: const Text('Select Device',
-          style: TextStyle(
-              fontFamily: AppFonts.family, fontWeight: FontWeight.w600)),
-      content: SingleChildScrollView(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+    return BottomSheetScaffold(
+      title: 'Select device',
+      palette: widget.palette,
+      body: Column(mainAxisSize: MainAxisSize.min, children: [
           // Step 1 — Building
           _stepLabel('1', 'Building'),
           const SizedBox(height: 6),
@@ -494,7 +492,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                   ),
                   child: const Text(
                     'No buildings found',
-                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+                    style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
                   ),
                 )
               : _dropdown<String>(
@@ -555,7 +553,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                             ? 'Select a room first'
                             : 'No devices in this room',
                         style: const TextStyle(
-                            fontSize: 13, color: AppColors.textMuted),
+                            fontSize: 13, color: AppColors.inkMuted),
                       ),
                     )
                   : Column(
@@ -570,53 +568,44 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                             duration: const Duration(milliseconds: 150),
                             margin: const EdgeInsets.only(bottom: 8),
                             padding: const EdgeInsets.all(12),
+                            // Outline system (handoff §3.2): selected = white
+                            // with a theme ring, never a solid fill.
                             decoration: BoxDecoration(
-                              color: isSelected
-                                  ? widget.palette.dark
-                                  : Colors.white,
+                              color: Colors.white,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
                                 color: isSelected
                                     ? widget.palette.dark
-                                    : widget.palette.mid.withAlpha(60),
+                                    : AppColors.hairline,
+                                width: isSelected ? 1.5 : 1,
                               ),
                             ),
                             child: Row(children: [
-                              Icon(Icons.device_hub,
-                                  size: 16,
-                                  color: isSelected
-                                      ? Colors.white
-                                      : widget.palette.mid),
-                              const SizedBox(width: 10),
+                              OutlineIconBox(
+                                  icon: Icons.device_hub,
+                                  size: 36,
+                                  iconSize: 18,
+                                  palette: widget.palette),
+                              const SizedBox(width: 12),
                               Expanded(
                                   child: Text(e.value,
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          color: isSelected
-                                              ? Colors.white
-                                              : AppColors.textDark))),
+                                      style: AppTextStyles.subtitle.copyWith(
+                                          fontSize: 14,
+                                          color: AppColors.ink))),
                               if (isSelected)
-                                const Icon(Icons.check_circle,
-                                    size: 16, color: Colors.white),
+                                Icon(Icons.check_circle,
+                                    size: 20, color: widget.palette.dark),
                             ]),
                           ),
                         );
                       }).toList(),
                     ),
-        ]),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => _safeDialogPop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textMuted))),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-              backgroundColor: widget.palette.dark,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10))),
-          onPressed: _selectedDeviceId == null || _selectedDeviceLabel == null
+      ]),
+      footer: BottomSheetFooter(
+          palette: widget.palette,
+          applyLabel: 'Select',
+          onCancel: () => _safeDialogPop(context),
+          onApply: _selectedDeviceId == null || _selectedDeviceLabel == null
               ? null
               // Building/room are included alongside id/label so the caller
               // (the schedule editor) can show "<building> · <room>" right
@@ -627,33 +616,29 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
                     'label': _selectedDeviceLabel!,
                     'building': _selectedBuilding ?? '',
                     'room': _selectedRoom ?? '',
-                  }),
-          child: const Text('Confirm', style: TextStyle(color: Colors.white)),
-        ),
-      ],
+                  })),
     );
   }
 
   Widget _stepLabel(String step, String label) {
     return Row(children: [
+      // Outline system: step number in a theme ring, not a filled dot.
       Container(
-        width: 20,
-        height: 20,
-        decoration:
-            BoxDecoration(color: widget.palette.dark, shape: BoxShape.circle),
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: widget.palette.dark, width: 1.5)),
         child: Center(
             child: Text(step,
-                style: const TextStyle(
-                    fontSize: 10,
+                style: TextStyle(
+                    fontSize: 11,
                     fontWeight: FontWeight.w700,
-                    color: Colors.white))),
+                    color: widget.palette.dark))),
       ),
       const SizedBox(width: 8),
-      Text(label,
-          style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textDark)),
+      Text(label, style: AppTextStyles.label.copyWith(color: AppColors.ink)),
     ]);
   }
 
@@ -673,16 +658,16 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
             const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: widget.palette.mid.withAlpha(51))),
+            borderSide: const BorderSide(color: AppColors.hairline)),
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: widget.palette.mid.withAlpha(51))),
+            borderSide: const BorderSide(color: AppColors.hairline)),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: widget.palette.mid)),
+            borderSide: BorderSide(color: widget.palette.dark, width: 1.5)),
       ),
       hint: Text(hint,
-          style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+          style: AppTextStyles.bodySm.copyWith(color: AppColors.placeholder)),
       items: items
           .map((i) => DropdownMenuItem<T>(value: i, child: Text(labelOf(i))))
           .toList(),
@@ -1598,8 +1583,8 @@ class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
   // ── Device section ──────────────────────────────────────────────────────
 
   Future<void> _pickDevice() async {
-    final result = await showDialog<Map<String, String>>(
-      context: context,
+    final result = await showAppBottomSheet<Map<String, String>>(
+      context,
       builder: (_) => _DevicePickerDialog(
         buildingList: widget.buildings,
         buildingFloors: widget.buildingFloors,

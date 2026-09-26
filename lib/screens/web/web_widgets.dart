@@ -17,8 +17,10 @@ export '../../widgets/app_text_field.dart';
 // ── Icon-only action button ──────────────────────────────────────────────
 
 /// A square, tooltip-labelled icon button used for add / edit / delete
-/// actions. [solid] fills it with the palette colour (primary "add"
-/// actions); [danger] tints it red (delete / remove).
+/// actions, in the outline style shared with mobile (white box, 1px
+/// outline, themed icon). [solid] marks the primary "add" action with a
+/// theme-coloured ring; [danger] (delete / remove) uses a grey icon: red
+/// only appears inside the delete dialog itself.
 class WebIconButton extends StatelessWidget {
   final IconData icon;
   final String tooltip;
@@ -41,32 +43,41 @@ class WebIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = context.institutePalette;
     final Color fg;
-    final Color bg;
+    final Color ring;
     if (solid) {
-      fg = Colors.white;
-      bg = palette.dark;
+      fg = palette.dark;
+      ring = palette.dark;
     } else if (danger) {
-      fg = AppColors.error;
-      bg = AppColors.error.withAlpha(18);
+      fg = AppColors.inkMid;
+      ring = WebColors.outline;
     } else {
       fg = palette.dark;
-      bg = palette.pale.withAlpha(170);
+      ring = WebColors.outline;
     }
+    final enabled = onPressed != null;
     return Tooltip(
       message: tooltip,
       child: Semantics(
         button: true,
         label: tooltip,
         child: Material(
-          color: onPressed == null ? bg.withAlpha(60) : bg,
-          borderRadius: BorderRadius.circular(9),
+          color: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(9),
+            side: BorderSide(
+                color: enabled ? ring : ring.withAlpha(90),
+                width: solid ? 1.5 : 1),
+          ),
           child: InkWell(
             borderRadius: BorderRadius.circular(9),
+            hoverColor: palette.pale.withAlpha(70),
             onTap: onPressed,
             child: SizedBox(
               width: size,
               height: size,
-              child: Icon(icon, size: size * 0.53, color: fg),
+              child: Icon(icon,
+                  size: size * 0.53,
+                  color: enabled ? fg : fg.withAlpha(110)),
             ),
           ),
         ),

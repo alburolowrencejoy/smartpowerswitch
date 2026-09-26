@@ -377,93 +377,96 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     bool obscure = true;
     bool submitting = false;
 
-    await showDialog(
-      context: context,
+    await showAppBottomSheet(
+      context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text('Reset password',
-              style: AppTextStyles.title.copyWith(color: AppColors.ink)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('Account: $email',
-                style:
-                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
-            const SizedBox(height: 12),
-            AppTextField(
-              shakeTrigger: shake,
-              controller: passwordCtrl,
-              obscureText: obscure,
-              decoration: InputDecoration(
-                hintText: 'New password',
-                errorText: passwordError,
-                prefixIcon: const Icon(Icons.lock_outline, size: 18),
-                suffixIcon: GestureDetector(
-                  onTap: () => setS(() => obscure = !obscure),
-                  child: Icon(obscure ? Icons.visibility_off : Icons.visibility,
-                      size: 18, color: AppColors.inkMuted),
+        builder: (ctx, setS) {
+          Future<void> submit() async {
+            final password = passwordCtrl.text.trim();
+            if (password.length < 6) {
+              setS(() {
+                passwordError = 'Password must be at least 6 characters';
+                shake++;
+              });
+              return;
+            }
+            setS(() {
+              passwordError = null;
+              submitting = true;
+            });
+            try {
+              await FirebaseFunctions.instance
+                  .httpsCallable('changeUserPassword')
+                  .call({'uid': uid, 'newPassword': password});
+              if (!ctx.mounted || !mounted) return;
+              Navigator.pop(ctx);
+              TopToast.show(context, 'Password updated.');
+            } on FirebaseFunctionsException catch (e) {
+              setS(() {
+                submitting = false;
+                passwordError = _friendlyFunctionsError(e);
+                shake++;
+              });
+            } catch (e) {
+              setS(() {
+                submitting = false;
+                passwordError = 'Failed: $e';
+                shake++;
+              });
+            }
+          }
+
+          return BottomSheetScaffold(
+            title: 'Reset password',
+            palette: _palette,
+            body: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Account: $email',
+                    style: AppTextStyles.bodySm
+                        .copyWith(color: AppColors.inkMid)),
+                const SizedBox(height: 12),
+                AppTextField(
+                  shakeTrigger: shake,
+                  controller: passwordCtrl,
+                  obscureText: obscure,
+                  decoration: InputDecoration(
+                    labelText: 'New password',
+                    errorText: passwordError,
+                    prefixIcon: const Icon(Icons.lock_outline, size: 18),
+                    suffixIcon: IconButton(
+                      tooltip: obscure ? 'Show password' : 'Hide password',
+                      onPressed: () => setS(() => obscure = !obscure),
+                      icon: Icon(
+                          obscure ? Icons.visibility_off : Icons.visibility,
+                          size: 18,
+                          color: AppColors.inkMuted),
+                    ),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  autofocus: true,
+                  onChanged: (_) {
+                    if (passwordError != null) {
+                      setS(() => passwordError = null);
+                    }
+                  },
+                  onSubmitted: (_) {
+                    if (!submitting) submit();
+                  },
                 ),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-              autofocus: true,
+              ],
             ),
-          ]),
-          actions: [
-            TextButton(
-                onPressed: submitting ? null : () => Navigator.pop(ctx),
-                child: const Text('Cancel',
-                    style: TextStyle(color: AppColors.inkMuted))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: _palette.dark,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      final password = passwordCtrl.text.trim();
-                      if (password.length < 6) {
-                        setS(() {
-                          passwordError =
-                              'Password must be at least 6 characters';
-                          shake++;
-                        });
-                        return;
-                      }
-                      setS(() {
-                        passwordError = null;
-                        submitting = true;
-                      });
-                      try {
-                        await FirebaseFunctions.instance
-                            .httpsCallable('changeUserPassword')
-                            .call({'uid': uid, 'newPassword': password});
-                        if (!ctx.mounted || !mounted) return;
-                        Navigator.pop(ctx);
-                        TopToast.show(context, 'Password updated.');
-                      } on FirebaseFunctionsException catch (e) {
-                        setS(() {
-                          submitting = false;
-                          passwordError = _friendlyFunctionsError(e);
-                        });
-                      } catch (e) {
-                        setS(() {
-                          submitting = false;
-                          passwordError = 'Failed: $e';
-                        });
-                      }
-                    },
-              child: submitting
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Save', style: TextStyle(color: Colors.white)),
+            footer: BottomSheetFooter(
+              palette: _palette,
+              applyLabel: submitting ? 'Saving…' : 'Save',
+              onCancel: () {
+                if (!submitting) Navigator.pop(ctx);
+              },
+              onApply: submitting ? null : submit,
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

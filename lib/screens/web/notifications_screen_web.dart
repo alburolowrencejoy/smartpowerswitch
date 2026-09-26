@@ -352,9 +352,9 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                   constraints: const BoxConstraints(maxHeight: 280),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: _palette.pale,
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _palette.mid.withAlpha(40)),
+                    border: Border.all(color: WebColors.outline),
                   ),
                   child: SingleChildScrollView(
                     child: Text(
@@ -490,8 +490,10 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
     return Tooltip(
       message: tooltip,
       child: Material(
-        color: _palette.pale,
-        borderRadius: BorderRadius.circular(8),
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: WebColors.outline)),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: onTap,
@@ -521,7 +523,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               width: 60,
               height: 60,
               decoration: BoxDecoration(
-                color: _palette.pale,
+                color: Colors.white, border: Border.all(color: WebColors.outline),
                 borderRadius: BorderRadius.circular(18),
               ),
               child: Icon(Icons.notifications_none,
@@ -565,7 +567,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               width: 60,
               height: 60,
               decoration: BoxDecoration(
-                color: _palette.pale,
+                color: Colors.white, border: Border.all(color: WebColors.outline),
                 borderRadius: BorderRadius.circular(18),
               ),
               child: Icon(Icons.lock_outline, size: 28, color: _palette.mid),
