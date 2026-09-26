@@ -130,9 +130,24 @@ until its real capacity is measured with a capacity tester.
 | Low-power board + deep sleep 5 min + latching relay | about **8 months** |
 | Same, wake every 15 min | about **1.5 years** |
 
-Check the chemistry on the label: **3.2 V / LiFePO4** needs a LiFePO4
-(3.6 V) charger, not a TP4056; **3.7 V / Li-ion** works with a protected
-Li-ion charger (e.g. TP4056 + DW01).
+The cell is **LiFePO4** (3.2 V nominal). Consequences for the build:
+
+- **Charger:** a 3.6 V LiFePO4 charger (e.g. TP5000 in LiFePO4 mode, or
+  CN3058) plus a 1S LiFePO4 protection board (cut-off ~2.5 V). **Never a
+  TP4056**: it charges to 4.2 V and overcharges LiFePO4.
+- **No regulator needed:** the cell sits at ~3.2–3.35 V for most of its
+  charge, inside the ESP32's 3.0–3.6 V range, so it can feed the board's
+  3.3 V pin directly (not 5V/VIN), which removes regulator losses. Use a
+  charger that terminates at 3.6 V (not 3.65 V); the cell settles to
+  ~3.35 V within minutes of charging.
+- **Battery %:** the voltage curve is nearly flat, so voltage only works as
+  a threshold (~3.1 V low, ~3.0 V critical → long sleep). Estimate % by
+  counting charge used (awake time × current) in RTC memory.
+- **Everything runs at ~3.2 V:** choose a latching relay with a **3 V coil**
+  rated for the load; test the PZEM interface side at 3.3 V (add a small
+  boost converter, powered only while reading, if it needs 5 V).
+- Low self-discharge and long cycle life suit a board that sleeps for
+  months.
 
 The lesson: **board choice and the latching relay matter more than the wake
 interval.** With a Dev Module and an SSR, no firmware trick gets past a
@@ -167,8 +182,8 @@ their command once per wake-up** instead of streaming it.
    board; record awake current, sleep current and SSR current. This gives
    the real numbers for section 5.
 3. **Parts:** low-power ESP32 board, low-quiescent regulator, latching
-   relay (+ driver), MOSFET switch for the PZEM feed, 18650 holder + charger
-   with protection (e.g. TP4056 with DW01), high-value divider.
+   relay (+ driver), MOSFET switch for the PZEM feed, 32650 LiFePO4 holder + 3.6 V LiFePO4 charger (e.g. TP5000) + 1S
+   LiFePO4 protection board, high-value divider.
 4. **Firmware v2 on one test board:** deep-sleep loop (section 4), RTC
    memory state, fast Wi-Fi reconnect, one PATCH + one GET per wake-up,
    latching-relay pulses, local schedules, battery reading, button wake-up.
