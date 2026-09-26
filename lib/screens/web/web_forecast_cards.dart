@@ -245,7 +245,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       LayoutBuilder(builder: (context, c) {
-        if (c.maxWidth < 900) {
+        if (c.maxWidth < kWebWideContent) {
           return Column(children: [leftCard, const SizedBox(height: 16), rightCard]);
         }
         // No IntrinsicHeight: the charts use LayoutBuilder, which it can't

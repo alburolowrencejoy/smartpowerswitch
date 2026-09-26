@@ -387,7 +387,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
                       child: Text(_errorText!,
                           style: const TextStyle(color: WebColors.mid)))
                   : LayoutBuilder(builder: (context, c) {
-                      final wide = c.maxWidth >= 980;
+                      final wide = c.maxWidth >= kWebWideContent;
                       final map = _mapCard();
                       if (!wide) {
                         return Column(children: [

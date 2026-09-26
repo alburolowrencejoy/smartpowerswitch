@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../services/notification_seen.dart';
 
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
@@ -45,8 +45,6 @@ class MoreScreen extends StatefulWidget {
 }
 
 class _MoreScreenState extends State<MoreScreen> {
-  static const String _lastSeenNotificationTsKey =
-      'notifications_last_seen_timestamp';
 
   String _role = 'faculty';
   String? _institute;
@@ -76,6 +74,7 @@ class _MoreScreenState extends State<MoreScreen> {
 
   @override
   void dispose() {
+    NotificationSeen.instance.lastSeen.removeListener(_recountUnread);
     _notificationsSub?.cancel();
     super.dispose();
   }
@@ -113,36 +112,31 @@ class _MoreScreenState extends State<MoreScreen> {
   /// timestamp), scoped to this institute for an institute admin. Kept
   /// independent of [NotificationsScreen]'s own listener since this screen
   /// can be alive at the same time as that one is not.
+  Map<dynamic, dynamic>? _notificationsRaw;
+
+  void _recountUnread() {
+    if (!mounted) return;
+    final data = _notificationsRaw;
+    setState(() => _unreadCount = data == null
+        ? 0
+        : NotificationSeen.instance.unreadCount(data.values,
+            instituteCode: _isInstituteAdmin ? _institute : null));
+  }
+
   void _listenUnreadCount() {
+    NotificationSeen.instance.ensureLoaded().then((_) {
+      NotificationSeen.instance.lastSeen.addListener(_recountUnread);
+      _recountUnread();
+    });
     _notificationsSub = FirebaseDatabase.instance
         .ref('notifications')
         .orderByChild('timestamp')
         .limitToLast(50)
         .onValue
-        .listen((event) async {
+        .listen((event) {
       if (!mounted) return;
-      final data = event.snapshot.value as Map<dynamic, dynamic>?;
-      if (data == null) {
-        setState(() => _unreadCount = 0);
-        return;
-      }
-      final prefs = await SharedPreferences.getInstance();
-      final lastSeen = prefs.getInt(_lastSeenNotificationTsKey) ?? 0;
-      final code = _institute?.trim().toUpperCase();
-      var count = 0;
-      for (final entry in data.entries) {
-        final val = Map<String, dynamic>.from(entry.value as Map);
-        final ts = (val['timestamp'] as num?)?.toInt() ?? 0;
-        if (ts <= lastSeen) continue;
-        if (_isInstituteAdmin) {
-          final building =
-              (val['building'] as String? ?? '').trim().toUpperCase();
-          if (building.isNotEmpty && building != code) continue;
-        }
-        count++;
-      }
-      if (!mounted) return;
-      setState(() => _unreadCount = count);
+      _notificationsRaw = event.snapshot.value as Map<dynamic, dynamic>?;
+      _recountUnread();
     }, onError: (_) {
       // Leave the badge at its last known value on failure.
     });

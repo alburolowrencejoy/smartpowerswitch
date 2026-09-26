@@ -1430,7 +1430,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       ),
     ];
     return LayoutBuilder(builder: (context, c) {
-      if (c.maxWidth >= 1100) return _equalRow(cards);
+      if (c.maxWidth >= kWebWideContent) return _equalRow(cards);
       if (c.maxWidth < 560) {
         return Column(children: [
           for (var i = 0; i < cards.length; i++) ...[
@@ -1455,8 +1455,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     required String caption,
     Widget? delta,
   }) {
+    // Narrow cards (4 in a row on a ~1150px window) get a smaller icon and
+    // number so the value still fits.
+    return LayoutBuilder(builder: (context, c) {
+    final compact = c.maxWidth < 250;
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.all(compact ? 14 : 18),
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(16),
@@ -1464,22 +1468,22 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       ),
       child: Row(children: [
         Container(
-          width: 52,
-          height: 52,
+          width: compact ? 40 : 52,
+          height: compact ? 40 : 52,
           decoration: BoxDecoration(
               color: Colors.white, border: Border.all(color: WebColors.outline), shape: BoxShape.circle),
-          child: Icon(icon, color: _palette.dark, size: 24),
+          child: Icon(icon, color: _palette.dark, size: compact ? 20 : 24),
         ),
-        const SizedBox(width: 14),
+        SizedBox(width: compact ? 10 : 14),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text.rich(
               TextSpan(children: [
                 TextSpan(
                     text: value,
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontFamily: AppFonts.family,
-                        fontSize: 26,
+                        fontSize: compact ? 22 : 26,
                         fontWeight: FontWeight.w700,
                         color: WebColors.ink)),
                 if (unit != null)
@@ -1510,6 +1514,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         ),
       ]),
     );
+    });
   }
 
   /// A card with the preview's panel header (title, subtitle, trailing).
@@ -1682,7 +1687,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final a = _utilityCard(ctx, rows);
     final b = _topCard(ctx, rows, span);
     return LayoutBuilder(builder: (context, c) {
-      if (c.maxWidth < 900) {
+      if (c.maxWidth < kWebWideContent) {
         return Column(children: [a, const SizedBox(height: 22), b]);
       }
       return IntrinsicHeight(

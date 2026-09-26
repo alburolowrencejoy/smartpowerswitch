@@ -603,7 +603,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                   LayoutBuilder(builder: (context, c) {
                     final trend = _buildTrendCard();
                     final control = _buildControlCard();
-                    if (c.maxWidth < 900) {
+                    if (c.maxWidth < kWebWideContent) {
                       return Column(children: [
                         trend,
                         const SizedBox(height: 22),

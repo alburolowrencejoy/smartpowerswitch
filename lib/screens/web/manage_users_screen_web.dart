@@ -623,7 +623,7 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
     }
     return LayoutBuilder(builder: (context, c) {
       const gap = 20.0;
-      final cols = c.maxWidth >= 980 ? 2 : 1;
+      final cols = c.maxWidth >= kWebWideContent ? 2 : 1;
       final w = (c.maxWidth - gap * (cols - 1)) / cols;
       return Wrap(
         spacing: gap,

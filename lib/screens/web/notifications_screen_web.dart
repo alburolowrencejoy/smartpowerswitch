@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../services/notification_seen.dart';
 import '../../services/download_open_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
@@ -27,9 +27,6 @@ class NotificationsScreenWeb extends StatefulWidget {
 }
 
 class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
-  static const String _lastSeenNotificationTsKey =
-      'notifications_last_seen_timestamp';
-
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
   String? _errorText;
@@ -144,15 +141,10 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
     });
   }
 
-  Future<void> _markNotificationsAsRead(List<Map<String, dynamic>> list) async {
-    if (list.isEmpty) return;
-
-    final newestTimestamp = _notificationTimestamp(list.first['timestamp']);
-    if (newestTimestamp <= 0) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_lastSeenNotificationTsKey, newestTimestamp);
-  }
+  /// Newest of the list, whatever its sort order, through the shared seen
+  /// state so every bell and badge clears at once.
+  Future<void> _markNotificationsAsRead(List<Map<String, dynamic>> list) =>
+      NotificationSeen.instance.markSeen(NotificationSeen.newestOf(list));
 
   /// Notification ids whose delete animation is playing / commit pending.
   final Set<String> _clearingIds = {};
@@ -213,8 +205,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
             'timestamp': ServerValue.timestamp,
           };
           await db.update(updates);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setInt(_lastSeenNotificationTsKey, 0);
+          await NotificationSeen.instance.reset();
         } catch (_) {
           if (mounted) setState(() => _clearingIds.removeAll(ids));
           if (!mounted) return;

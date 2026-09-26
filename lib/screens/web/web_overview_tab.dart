@@ -40,6 +40,10 @@ class WebOverviewTab extends StatefulWidget {
   final void Function(AnalyticsSection section)? onOpenAnalytics;
   final void Function(String code, String name, int floors) onBuildingTap;
 
+  /// Shown at the right end of the "Dashboard" title row (the role badge and
+  /// notification bell), so it scrolls with the header.
+  final Widget? headerTrailing;
+
   const WebOverviewTab({
     super.key,
     required this.vm,
@@ -49,6 +53,7 @@ class WebOverviewTab extends StatefulWidget {
     this.onOpenAnalytics,
     this.instituteCode,
     this.userName,
+    this.headerTrailing,
   });
 
   @override
@@ -243,7 +248,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
               child: LayoutBuilder(
                 builder: (context, c) {
                   final w = c.maxWidth;
-                  final wide = w >= 1000;
+                  final wide = w >= kWebWideContent;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -311,6 +316,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
             ),
             const SizedBox(width: 12),
             _LivePill(palette: widget.palette),
+            const Spacer(),
+            if (widget.headerTrailing != null) widget.headerTrailing!,
           ],
         ),
         const SizedBox(height: 4),
@@ -327,7 +334,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
   Widget _statGrid(List<Widget> cards, double w) {
     const gap = 18.0;
-    final perRow = w >= 1000 ? 4 : (w >= 560 ? 2 : 1);
+    final perRow = w >= kWebWideContent ? 4 : (w >= 560 ? 2 : 1);
     final itemW = ((w - gap * (perRow - 1)) / perRow).floorToDouble();
     return Wrap(
       spacing: gap,
@@ -820,14 +827,18 @@ class _StatCard extends StatelessWidget {
     final accent = alert ? AppColors.error : palette.dark;
     final chipBg =
         alert ? AppColors.error.withAlpha(24) : Colors.white;
+    // Narrow cards (4 in a row on a ~1150px window) get a smaller icon and
+    // number so values like "₱12,345" still fit.
+    return LayoutBuilder(builder: (context, c) {
+    final compact = c.maxWidth < 250;
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.all(compact ? 14 : 18),
       decoration: _cardDecoration(palette, 16),
       child: Row(
         children: [
           Container(
-            width: 52,
-            height: 52,
+            width: compact ? 40 : 52,
+            height: compact ? 40 : 52,
             decoration: BoxDecoration(
                 color: chipBg,
                 shape: BoxShape.circle,
@@ -835,9 +846,9 @@ class _StatCard extends StatelessWidget {
                     color: alert
                         ? AppColors.error.withAlpha(60)
                         : WebColors.outline)),
-            child: Icon(icon, color: accent, size: 24),
+            child: Icon(icon, color: accent, size: compact ? 20 : 24),
           ),
-          const SizedBox(width: 14),
+          SizedBox(width: compact ? 10 : 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -851,9 +862,9 @@ class _StatCard extends StatelessWidget {
                         value,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: AppFonts.family,
-                          fontSize: 26,
+                          fontSize: compact ? 22 : 26,
                           fontWeight: FontWeight.w700,
                           color: AppColors.textDark,
                           height: 1.1,
@@ -888,6 +899,7 @@ class _StatCard extends StatelessWidget {
         ],
       ),
     );
+    });
   }
 }
 

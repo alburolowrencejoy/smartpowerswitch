@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../services/history_clock.dart';
+import '../services/notification_seen.dart';
 
 class DashboardViewModel extends ChangeNotifier {
   // Data fields
@@ -56,18 +56,33 @@ class DashboardViewModel extends ChangeNotifier {
   Timer? _timeoutTimer;
 
   int unreadNotificationCount = 0;
-  int _lastSeenNotificationTimestamp = 0;
-  int _latestNotificationTimestamp = 0;
   Object? _latestNotificationsRaw;
+
+  /// Institute code of an institute admin, so the bell only counts the
+  /// notifications they can see (null = sees everything).
+  String? _notificationInstitute;
+  void setNotificationViewer({String? instituteCode}) {
+    if (_notificationInstitute == instituteCode) return;
+    _notificationInstitute = instituteCode;
+    _recalculateUnreadNotificationCount();
+    notifyListeners();
+  }
+
+  void _onSeenChanged() {
+    _recalculateUnreadNotificationCount();
+    notifyListeners();
+  }
 
   StreamSubscription? _combinedSub;
 
   Future<void> initialize() async {
-    await _loadNotificationReadState();
+    await NotificationSeen.instance.ensureLoaded();
+    NotificationSeen.instance.lastSeen.addListener(_onSeenChanged);
     _listenAll();
   }
 
   Future<void> disposeViewModel() async {
+    NotificationSeen.instance.lastSeen.removeListener(_onSeenChanged);
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     await _combinedSub?.cancel();
@@ -86,14 +101,6 @@ class DashboardViewModel extends ChangeNotifier {
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
     _listenAll();
-  }
-
-  Future<void> _loadNotificationReadState() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _lastSeenNotificationTimestamp =
-          prefs.getInt('notifications_last_seen_timestamp') ?? 0;
-    } catch (_) {}
   }
 
   void _listenAll() {
@@ -179,38 +186,16 @@ class DashboardViewModel extends ChangeNotifier {
       return;
     }
 
-    int unread = 0;
-    int latest = 0;
-    for (final value in raw.values) {
-      if (value is! Map) continue;
-      final map = Map<String, dynamic>.from(value);
-      final timestamp = _asTimestamp(map['timestamp']);
-      if (timestamp <= 0) continue;
-      if (timestamp > _lastSeenNotificationTimestamp) unread++;
-      if (timestamp > latest) latest = timestamp;
-    }
-    unreadNotificationCount = unread;
-    _latestNotificationTimestamp = latest;
+    unreadNotificationCount = NotificationSeen.instance
+        .unreadCount(raw.values, instituteCode: _notificationInstitute);
   }
 
-  int _asTimestamp(dynamic value) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    return int.tryParse(value?.toString() ?? '') ?? 0;
-  }
-
-  /// Mirrors the mobile dashboard's `_openNotifications()`: persists the
-  /// latest notification timestamp as "seen" and clears the badge.
+  /// Marks every notification as seen (clears every bell and badge).
   Future<void> markNotificationsSeen() async {
-    final latest = _latestNotificationTimestamp;
-    if (latest <= 0) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('notifications_last_seen_timestamp', latest);
-      _lastSeenNotificationTimestamp = latest;
-      unreadNotificationCount = 0;
-      notifyListeners();
-    } catch (_) {}
+    final raw = _latestNotificationsRaw;
+    if (raw is! Map) return;
+    await NotificationSeen.instance
+        .markSeen(NotificationSeen.newestOf(raw.values));
   }
 
   void _applyBuildings(Object? raw) {

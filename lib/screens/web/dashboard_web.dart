@@ -12,6 +12,7 @@ import '../../viewmodels/dashboard_viewmodel.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../widgets/responsive_center.dart';
+import '../../widgets/ringing_bell.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'automation_screen_web.dart';
@@ -421,6 +422,9 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         _role = (data['role'] as String? ?? _role).toLowerCase();
         _institute = (data['institute'] as String?)?.trim();
       });
+      // The bell counts only what this viewer's notifications list shows.
+      vm.setNotificationViewer(
+          instituteCode: _isInstituteAdmin ? _institute : null);
     } catch (e) {
       debugPrint('[DashboardWeb] Failed to load role for ${user.uid}: $e');
     }
@@ -495,25 +499,28 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                           child: Container(color: Colors.transparent),
                         ),
                       ),
-                    // Floating overlays level with each screen's title row:
-                    // the bell on every tab, the role badge (the app's only
-                    // role tag) on the Dashboard tab only.
-                    if (safeIndex == _tabDashboard && !_isDrilledDown)
+                    // On the Dashboard the role badge and bell sit in the page's
+                    // title row (see _buildOverviewTab) and scroll with it; on
+                    // every other tab the bell floats level with the title row.
+                    if (!(safeIndex == _tabDashboard && !_isDrilledDown))
                       Positioned(
-                        top: 22,
-                        right: 76,
-                        child: _buildRoleBadge(),
+                        top: 12,
+                        right: 20,
+                        child: _buildNotificationBell(palette),
                       ),
-                    Positioned(
-                      top: 12,
-                      right: 20,
-                      child: _buildNotificationBell(palette),
-                    ),
+                    // The panel follows the bell wherever it is drawn.
                     if (_showNotificationPanel)
                       Positioned(
-                        top: 60,
-                        right: 20,
-                        child: _buildNotificationPanel(),
+                        left: 0,
+                        top: 0,
+                        child: CompositedTransformFollower(
+                          link: _bellLink,
+                          targetAnchor: Alignment.bottomRight,
+                          followerAnchor: Alignment.topRight,
+                          offset: const Offset(0, 8),
+                          showWhenUnlinked: false,
+                          child: _buildNotificationPanel(),
+                        ),
                       ),
                   ],
                 ),
@@ -763,6 +770,11 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           palette: _palette,
           instituteCode: _isInstituteAdmin ? _institute : null,
           userName: widget.name,
+          headerTrailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            _buildRoleBadge(),
+            const SizedBox(width: 12),
+            _buildNotificationBell(_palette),
+          ]),
           onOpenDevices: () => _selectTab(_tabDevices),
           onOpenAnalytics:
               _isInstituteAdmin ? null : _openAnalytics,
@@ -830,9 +842,14 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     );
   }
 
+  /// Ties the notification panel to wherever the bell is drawn.
+  final LayerLink _bellLink = LayerLink();
+
   Widget _buildNotificationBell(InstitutePalette palette) {
     final count = vm.unreadNotificationCount;
-    return Material(
+    return CompositedTransformTarget(
+      link: _bellLink,
+      child: Material(
       color: Colors.white,
       shape: const CircleBorder(),
       elevation: 4,
@@ -845,7 +862,11 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-              Icon(Icons.notifications_outlined, color: palette.dark, size: 22),
+              RingingBell(
+                ringing: count > 0,
+                child: Icon(Icons.notifications_outlined,
+                    color: palette.dark, size: 22),
+              ),
               if (count > 0)
                 Positioned(
                   right: -3,
@@ -873,6 +894,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

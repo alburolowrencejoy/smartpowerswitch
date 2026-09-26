@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../services/notification_seen.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
@@ -20,7 +20,7 @@ import '../../widgets/top_toast.dart';
 /// This is a single **shared** Firebase list (`notifications`), not a
 /// per-user inbox -- there is no per-notification "read by me" flag, so
 /// "unread" is derived client-side from a locally-stored
-/// [_lastSeenNotificationTsKey] timestamp (as the old screen already did).
+/// "last seen" timestamp ([NotificationSeen]) (as the old screen already did).
 /// [_lastSeenAtOpen] captures that value once, *before* this screen's own
 /// visit silently advances it, so rows opened this session still render
 /// their correct unread dot instead of a lastSeen value that already moved.
@@ -34,8 +34,6 @@ class NotificationsScreen extends StatefulWidget {
 enum _NotifFilter { all, alerts, rate, updates }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
-  static const String _lastSeenNotificationTsKey =
-      'notifications_last_seen_timestamp';
 
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
@@ -107,10 +105,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _captureLastSeen() async {
-    final prefs = await SharedPreferences.getInstance();
+    await NotificationSeen.instance.ensureLoaded();
     if (!mounted) return;
     setState(() {
-      _lastSeenAtOpen = prefs.getInt(_lastSeenNotificationTsKey) ?? 0;
+      _lastSeenAtOpen = NotificationSeen.instance.lastSeen.value;
       _lastSeenCaptured = true;
     });
   }
@@ -166,21 +164,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     });
   }
 
-  Future<void> _markNotificationsAsRead(List<Map<String, dynamic>> list) async {
-    if (list.isEmpty) return;
-
-    final newestTimestamp = _notificationTimestamp(list.first['timestamp']);
-    if (newestTimestamp <= 0) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_lastSeenNotificationTsKey, newestTimestamp);
-  }
+  /// Newest of the list, whatever its sort order, through the shared seen
+  /// state so every bell and badge clears at once.
+  Future<void> _markNotificationsAsRead(List<Map<String, dynamic>> list) =>
+      NotificationSeen.instance.markSeen(NotificationSeen.newestOf(list));
 
   Future<void> _markAllRead() async {
     if (_notifications.isEmpty) return;
-    final newest = _notificationTimestamp(_notifications.first['timestamp']);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_lastSeenNotificationTsKey, newest);
+    final newest = NotificationSeen.newestOf(_notifications);
+    await NotificationSeen.instance.markSeen(newest);
     if (!mounted) return;
     setState(() => _lastSeenAtOpen = newest);
     TopToast.success(context, 'All notifications marked as read.');
@@ -260,8 +252,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             'timestamp': ServerValue.timestamp,
           };
           await db.update(updates);
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setInt(_lastSeenNotificationTsKey, 0);
+          await NotificationSeen.instance.reset();
         } catch (e) {
           if (mounted) setState(() => _clearingIds.removeAll(ids));
           if (!mounted) return;

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'ringing_bell.dart';
 
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
@@ -224,7 +225,10 @@ class _IconBtn extends StatelessWidget {
       icon: Stack(
         clipBehavior: Clip.none,
         children: [
-          Icon(icon, color: AppColors.ink),
+          // Only the bell gets a badge; it rings while there are unread
+          // notifications.
+          RingingBell(
+              ringing: hasBadge, child: Icon(icon, color: AppColors.ink)),
           if (hasBadge)
             Positioned(
               top: -4,

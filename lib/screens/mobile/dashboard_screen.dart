@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/breakpoints.dart';
@@ -30,6 +29,7 @@ import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
 import '../../services/history_clock.dart';
+import '../../services/notification_seen.dart';
 import '../../services/rate_timeline.dart';
 import '../../widgets/history_fallback_notice.dart';
 
@@ -97,9 +97,6 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  static const String _lastSeenNotificationTsKey =
-      'notifications_last_seen_timestamp';
-
   int _selectedIndex = 0;
   String _role = 'faculty';
   String? _institute;
@@ -208,8 +205,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // re-touching Firebase.
   Map<String, dynamic> _historyRoot = {};
   int _unreadNotificationCount = 0;
-  int _lastSeenNotificationTimestamp = 0;
-  int _latestNotificationTimestamp = 0;
   Object? _latestNotificationsRaw;
 
   // True until the very first combined emission of all of this screen's
@@ -260,6 +255,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    NotificationSeen.instance.lastSeen
+        .removeListener(_recalculateUnreadNotificationCount);
     _loadTimeoutTimer?.cancel();
     _cancelRealtimeSubs();
     _deviceSearchCtrl.dispose();
@@ -326,16 +323,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// The shared "last seen" state (NotificationSeen): reading notifications
+  /// on any screen clears this badge right away.
   Future<void> _loadNotificationReadState() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _lastSeenNotificationTimestamp =
-          prefs.getInt(_lastSeenNotificationTsKey) ?? 0;
-      if (!mounted) return;
-      _recalculateUnreadNotificationCount();
-    } catch (_) {
-      // Keep the badge hidden if unread state cannot be loaded.
-    }
+    await NotificationSeen.instance.ensureLoaded();
+    if (!mounted) return;
+    NotificationSeen.instance.lastSeen
+        .addListener(_recalculateUnreadNotificationCount);
+    _recalculateUnreadNotificationCount();
   }
 
   void _listenToNotifications() {
@@ -359,53 +354,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (raw == null || raw is! Map) {
       if (_notificationsLoadedOnce) return;
       if (!mounted) return;
-      setState(() {
-        _latestNotificationTimestamp = 0;
-        _unreadNotificationCount = 0;
-      });
+      setState(() => _unreadNotificationCount = 0);
       return;
     }
 
-    int unread = 0;
-    int latest = 0;
-    for (final value in raw.values) {
-      if (value is! Map) continue;
-      final map = Map<String, dynamic>.from(value);
-      final timestamp = _asTimestamp(map['timestamp']);
-      if (timestamp <= 0) continue;
-      if (timestamp > _lastSeenNotificationTimestamp) {
-        unread++;
-      }
-      if (timestamp > latest) {
-        latest = timestamp;
-      }
-    }
+    // Only what this viewer's notifications screen shows (institute
+    // admins: campus-wide + their own institute).
+    final unread = NotificationSeen.instance.unreadCount(raw.values,
+        instituteCode: _isInstituteAdmin ? _institute : null);
 
     if (!mounted) return;
     setState(() {
-      _latestNotificationTimestamp = latest;
       _unreadNotificationCount = unread;
       _notificationsLoadedOnce = true;
     });
   }
 
-  int _asTimestamp(dynamic value) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    return int.tryParse(value?.toString() ?? '') ?? 0;
-  }
-
+  /// The notifications screen marks what it shows as read (after noting
+  /// which were new, so it can show their unread dots); the badge clears as
+  /// soon as it does, through NotificationSeen.
   Future<void> _openNotifications() async {
-    final latest = _latestNotificationTimestamp;
-    if (latest > 0) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_lastSeenNotificationTsKey, latest);
-      if (!mounted) return;
-      _lastSeenNotificationTimestamp = latest;
-      setState(() => _unreadNotificationCount = 0);
-    }
-
-    if (!mounted) return;
     Navigator.pushNamed(context, '/notifications');
   }
 

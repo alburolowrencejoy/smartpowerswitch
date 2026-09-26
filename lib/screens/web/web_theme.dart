@@ -27,6 +27,12 @@ class WebColors {
   static const track = Color(0xFFF2F4F3);
 }
 
+/// Content width at which the web pages switch from their full desktop
+/// layout (side-by-side panels, 4 stat cards in a row) to stacked. 820 is
+/// the content width of a 1150px window: 1150 minus the side nav (264) and
+/// page padding (~64). Below a 1150px window, pages stack.
+const double kWebWideContent = 820;
+
 /// The web shell's theme: the app font ([AppFonts.family]) everywhere, with
 /// darker web text colors and web-sized button, tooltip and input text.
 /// Applied only inside `DesktopDashboardScreen`, so the mobile UI is untouched.
