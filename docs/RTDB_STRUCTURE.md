@@ -1,7 +1,8 @@
 # Realtime Database: a scalable structure and the plan to get there
 
 Status: **plan only, nothing migrated yet.** Agreed 2026-09-26: document
-first, no code changes yet; keep the current device IDs.
+first, no code changes yet; keep the current device IDs; **one campus (DNSC)
+only**, so there is no campus level in the design.
 
 Built from every read/write path in `lib/`, `functions/`, `esp32/`,
 `tools/train_and_push.py` and `database.rules.json`. Live data was not
@@ -9,7 +10,7 @@ inspected, so sizes below are estimates from the code, not measurements.
 
 The goal is not only to tidy what exists today, but to shape the database
 so it keeps working, and stays affordable, as SmartSwitch grows: more
-devices, more buildings, years of history, possibly more campuses.
+devices, more buildings and years of history on the one campus.
 
 ---
 
@@ -20,10 +21,10 @@ choice below is sized against them.
 
 | | Today (approx.) | Design target |
 |---|---|---|
-| Campuses | 1 (DNSC) | 10 |
-| Buildings per campus | 5 | 30 |
-| Devices (ESP32 + PZEM) | tens | 5,000 total |
-| People with the app open at once | a few | 500 |
+| Campuses | 1 (DNSC) | 1 (fixed) |
+| Buildings | 5 | 30 |
+| Devices (ESP32 + PZEM) | tens | 2,000 |
+| People with the app open at once | a few | 300 |
 | History kept | since 2026 | 10 years |
 
 ---
@@ -39,7 +40,7 @@ The numbers below use the firmware's current timings
   the whole `automations` list every 15 s**. At 1,000 devices that is about
   **1,000 reads/s** just for relay polling, before anyone opens the app.
 - **Every board writes telemetry every 3 s**: 1,000 devices ≈ **330
-  writes/s**; 5,000 devices ≈ 1,670 writes/s. Firebase documents a limit of
+  writes/s**; the 2,000-device target ≈ **670 writes/s**. Firebase documents a limit of
   roughly 1,000 writes/second for a single Realtime Database instance (check
   the current value in the Firebase "Limits" docs).
 - **Screens listen to the whole `devices` node**, so every open screen
@@ -52,7 +53,7 @@ The numbers below use the firmware's current timings
 
 ### 2.2 Data that grows forever
 - `history/daily/{day}/devices/{id}`: one entry per device per day
-  (5,000 devices ≈ 1.8 million entries a year), and analytics downloads
+  (2,000 devices ≈ 730,000 entries a year), and analytics downloads
   whole day nodes to filter them on the phone.
 - `history/hourly` and `history/raw` have no cleanup at all.
 - The web analytics screen downloads **all of `history`**
@@ -74,14 +75,13 @@ The numbers below use the firmware's current timings
    `readings/{CODE}/{room}/{id}`. Every assign or delete has to touch all of
    them, and screens do it slightly differently.
 5. **`readings` is keyed by location**, so moving a device orphans its data.
-6. **No campus level anywhere**: a second campus would mix with the first.
-7. **Boards have no identity of their own.** The firmware calls the REST API
+6. **Boards have no identity of their own.** The firmware calls the REST API
    without a per-device credential, so rules can't limit a board to its own
    record.
-8. **Rules look up the role from `users/{uid}` in every check** (long,
+7. **Rules look up the role from `users/{uid}` in every check** (long,
    copy-pasted expressions). That is slow to evaluate and easy to get wrong
    as roles grow; Firebase Auth custom claims do this better.
-9. `floor` is sometimes a string, sometimes a number; notification IDs mix
+8. `floor` is sometimes a string, sometimes a number; notification IDs mix
    push IDs and `rate_change_{ts}`; `settings` is a grab bag.
 
 ---
@@ -101,9 +101,10 @@ The numbers below use the firmware's current timings
    counters; a scheduled function rolls them up into building and campus
    totals (every few minutes), instead of thousands of transactions fighting
    over one number.
-5. **Partition by campus from day one**, even with one campus, so a second
-   campus is new data, not a migration. If one database ever gets too busy,
-   a campus can move to its own database instance with the same layout.
+5. **Keep one level of partitioning that can be split later.** Devices,
+   live data and usage are keyed so that, if one database instance ever gets
+   too busy, the busiest part (live telemetry) can move to its own database
+   instance without changing its layout.
 6. **Everything that grows is split by time and has a retention rule**:
    raw data kept for weeks, hourly for a year, daily and monthly forever;
    older detail is archived out of the Realtime Database.
@@ -111,7 +112,7 @@ The numbers below use the firmware's current timings
    device IDs stay; they are treated as plain names.)
 8. **Queries use keys or indexed fields** (`.indexOn`), never "download the
    parent and filter on the phone".
-9. **Security by identity**: role and campus in Auth custom claims; each
+9. **Security by identity**: role and institute in Auth custom claims; each
    board signs in as itself and can write only its own record.
 10. **Versioned schema and repeatable migrations**: `meta/schemaVersion`,
     migration scripts that are idempotent and have a dry-run mode, a backup
@@ -121,54 +122,52 @@ The numbers below use the firmware's current timings
 
 ## 4. Target structure
 
-`{campus}` is a short campus ID (e.g. `dnsc`); `{CODE}` an upper-case
-building code; `{deviceId}` today's device ID.
+`{CODE}` is an upper-case building code; `{deviceId}` today's device ID.
 
 ```
 meta/                    { schemaVersion }
-users/{uid}              profile only (role + campus live in Auth custom claims)
+users/{uid}              profile only (role + institute in Auth custom claims)
 
-campuses/{campus}/       { name, timezone }
-settings/{campus}/
+settings/
   rate/                  { current, updatedAt, fetchedAt }
-  app/                   { mode }
-rateHistory/{campus}/{timestampMs}       (was rate_changes)
+  app/                   { mode, timezone }
+rateHistory/{timestampMs}                (was rate_changes)
 
-buildings/{campus}/{CODE}/
+buildings/{CODE}/
   name, floors, map/{x,y,w,h}             (map was hotspots/{CODE})
   floors/{n}/rooms/{roomId}/{name}        (was floorData/{n}/rooms)
 
 # One device, split by how often each part changes
-devices/{campus}/{deviceId}/              CONFIG: changes rarely (app writes)
+devices/{deviceId}/              CONFIG: changes rarely (app writes)
   name, utility, building, floor (number), room, map/{x,y}, registeredAt
-live/{campus}/{deviceId}/                 TELEMETRY: the board writes only here
+live/{deviceId}/                 TELEMETRY: the board writes only here
   voltage, current, power, kwhMeter, relay (actual), online, lastSeen
-commands/{campus}/{deviceId}/             COMMANDS: the app writes, the board listens
+commands/{deviceId}/             COMMANDS: the app writes, the board listens
   relay (desired), requestedBy, requestedAt
-schedules/{campus}/{scheduleId}           (was automations)
-schedulesByDevice/{campus}/{deviceId}/{scheduleId}: true
+schedules/{scheduleId}           (was automations)
+schedulesByDevice/{deviceId}/{scheduleId}: true
                                           a board downloads only its own schedules
 
 # Indexes (small, written by functions, replace the old copies)
-index/{campus}/devicesByBuilding/{CODE}/{deviceId}: true
-index/{campus}/devicesByRoom/{CODE}/{n}/{roomId}/{deviceId}: true
+index/devicesByBuilding/{CODE}/{deviceId}: true
+index/devicesByRoom/{CODE}/{n}/{roomId}/{deviceId}: true
 
 # What dashboards listen to (small, updated by a function every ~1 min)
-summaries/{campus}/campus                 { kwhToday, costMonth, online, total, ... }
-summaries/{campus}/buildings/{CODE}       same, per building
+summaries/campus                 { kwhToday, costMonth, online, total, ... }
+summaries/buildings/{CODE}       same, per building
 
 # Usage: per-device counters + server rollups, all time-partitioned
-usage/{campus}/device/{deviceId}/{YYYY-MM-DD}   { kwh, cost }   one writer: function
-usage/{campus}/building/{CODE}/{YYYY-MM-DD}     { kwh, cost }   rollup
-usage/{campus}/campus/{YYYY-MM-DD}              { kwh, cost }   rollup
-usage/{campus}/…/month/{YYYY-MM}                monthly rollups (same shape)
-usage/{campus}/hourly/{deviceId}/{YYYY-MM-DD}/{HH}              kept 1 year
-rawReadings/{campus}/{deviceId}/{YYYY-MM-DD}                    kept 60 days
-usageHidden/{campus}/{range}/{key}: true  (was history/deleted)
-forecasts/{campus}/{daily, models/{lstm,xgboost}, modelUrl}
+usage/device/{deviceId}/{YYYY-MM-DD}   { kwh, cost }   one writer: function
+usage/building/{CODE}/{YYYY-MM-DD}     { kwh, cost }   rollup
+usage/campus/{YYYY-MM-DD}              { kwh, cost }   rollup
+usage/{device|building|campus}/…/{YYYY-MM}   monthly rollups (same shape)
+usage/hourly/{deviceId}/{YYYY-MM-DD}/{HH}              kept 1 year
+rawReadings/{deviceId}/{YYYY-MM-DD}                    kept 60 days
+usageHidden/{range}/{key}: true  (was history/deleted)
+forecasts/{daily, models/{lstm,xgboost}, modelUrl}
 
-notifications/{campus}/{pushId}           type + fields in the body
-logs/{campus}/deletions/{pushId}          (was deletion_log)
+notifications/{pushId}           type + fields in the body
+logs/deletions/{pushId}          (was deletion_log)
 ```
 
 **Why per-device usage keyed by device, then date:** a device's history is
@@ -199,18 +198,19 @@ ranges longer than what is kept in the database read from the archive.
 
 ---
 
-## 6. Load with the target design (5,000 devices, 500 open screens)
+## 6. Load at the target (2,000 devices, 300 open screens)
 
 | | Current design | Target design |
 |---|---|---|
-| Relay | 5,000 GETs/s (1 s polling) | 0 polling: each board keeps one streaming connection to its `commands` node |
-| Telemetry writes | ~1,670/s (every 3 s) | ~170/s: every 30 s, or sooner on a real change (relay flip, > 5 % power change) |
+| Relay | 2,000 GETs/s (1 s polling) | 0 polling: each board keeps one streaming connection to its `commands` node |
+| Telemetry writes | ~670/s (every 3 s), close to one instance's limit | ~70/s: every 30 s, or sooner on a real change (relay flip, > 5 % power change) |
 | Schedules | every board downloads all schedules every 15 s | each board streams only its own |
-| What a dashboard receives | every board's telemetry | a few summary nodes, ~once a minute |
+| What open screens download | every board's telemetry: ~670 × 300 B × 300 screens ≈ 60 MB/s | a few summary nodes, ~once a minute |
 | History writes | ~25 contended transactions per reading | one plain write per device counter + a rollup every few minutes |
 
-If the target write rate is still too high for one database instance, the
-campus partition allows one database per campus without changing the layout.
+If the write rate ever gets too high for one database instance, `live` (the
+only high-frequency node) can move to its own database instance with the
+same layout; everything else stays where it is.
 
 ---
 
@@ -226,10 +226,10 @@ be rolled back.
 | **1. Correct the numbers** | History written only by a Cloud Function, from the meter's *change* (keeps the last meter value per device); app stops writing history. | no | totals become trustworthy |
 | **2. Stop the big downloads** | Summary nodes for dashboards; screens stop listening to all of `devices`; analytics stops downloading all of `history`; move raw/deleted/predictions out of `history`. | no | biggest bandwidth and cost cut |
 | **3. Device protocol** | `commands` + streaming instead of 1 s polling; telemetry every 30 s or on change; per-device schedule index; OTA firmware update path. | **yes** | removes most device traffic |
-| **4. One device record + campus partition** | `devices` / `live` / `commands` split under `{campus}`; fold in `master_devices`, `hotspots`, the `floorData` copies; indexes; `floor` → number. | yes (paths) | one source of truth; ready for campus 2 |
-| **5. Security by identity** | Role and campus as Auth custom claims; each board signs in with its own credential and may write only `live/{campus}/{its id}`; rules rewritten short and tested in the emulator. | yes (auth) | safe to add campuses and devices |
+| **4. One device record** | `devices` / `live` / `commands` split; fold in `master_devices`, `hotspots`, the `floorData` copies; indexes; `floor` → number. | yes (paths) | one source of truth for every device |
+| **5. Security by identity** | Role and institute as Auth custom claims; each board signs in with its own credential and may write only `live/{its id}`; rules rewritten short and tested in the emulator. | yes (auth) | safe to add devices and users |
 | **6. Lifecycle** | Per-device usage + rollups; retention jobs; archive to Cloud Storage/BigQuery. | no | storage stays bounded for years |
-| **7. Only if needed** | Separate database instance per campus. | no | headroom beyond one instance |
+| **7. Only if needed** | Move `live` telemetry to its own database instance. | no | headroom beyond one instance |
 
 Past totals inflated by problem 2.3.2 can't be repaired automatically; they
 can only be recomputed from `history/raw` where it exists. That is a
@@ -239,13 +239,11 @@ separate decision.
 
 ## 8. Decisions needed before building
 
-1. Are the growth targets in section 1 right (especially campuses and
-   device count)?
-2. Is a second campus realistic? (If never, the `{campus}` level can be
-   dropped, but it costs little to keep.)
-3. How fresh must "live" be on dashboards: ~1 minute summaries, with
+1. Are the growth targets in section 1 right (buildings, devices, people
+   using the app at once, years of history)?
+2. How fresh must "live" be on dashboards: ~1 minute summaries, with
    second-by-second data only on a device's own screen?
-4. Archive destination: Cloud Storage (cheap, simple) or BigQuery (queryable
+3. Archive destination: Cloud Storage (cheap, simple) or BigQuery (queryable
    long-range analytics, costs more)?
-5. Can every board be reached for a firmware update (OTA or by hand)?
+4. Can every board be reached for a firmware update (OTA or by hand)?
    Phases 3–5 depend on it.
