@@ -24,6 +24,7 @@ import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import '../../theme/app_fonts.dart';
 import '../../services/history_clock.dart';
+import '../../services/rate_timeline.dart';
 
 /// Opens the device detail screen for a device.
 typedef OpenDeviceCallback = void Function(
@@ -146,6 +147,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _listenBuildings();
     _listenRange();
     widget.focus?.addListener(_scrollToFocus);
+    RateHistory.instance.log.addListener(_onRateLog);
     // A link may have asked for a section before this page existed.
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToFocus());
   }
@@ -201,6 +203,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   @override
   void dispose() {
     widget.focus?.removeListener(_scrollToFocus);
+    RateHistory.instance.log.removeListener(_onRateLog);
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
     _rangeSub?.cancel();
@@ -974,7 +977,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       _fcSource = src;
       _fcDeleted = deleted;
       _fcMeta = _meta;
-      _fcRows = parseDaily(src, _meta, deleted: deleted);
+      _fcRows = parseDaily(src, _meta, rates: _rates, deleted: deleted);
     }
     return _fcRows;
   }
@@ -1024,12 +1027,20 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   }
 
   bool get _asCost => _filter.metric == ValueMetric.cost;
-  double get _mult => _asCost ? _electricityRate : 1.0;
+  /// Past rates, so records without a stored cost are priced at their own
+  /// day's rate rather than today's.
+  RateTimeline get _rates => RateHistory.instance.timeline(_electricityRate);
+  void _onRateLog() {
+    if (mounted) setState(() {});
+  }
 
-  /// A value in the "Show values as" metric.
-  String _fmtValue(double kwh) => _asCost
-      ? '₱${_fmtNumber(kwh * _electricityRate, decimals: 2)}'
-      : '${_fmtNumber(kwh, decimals: 1)} kWh';
+  /// A bucket in the "Show values as" metric: its stored cost or its kWh.
+  double _bucketValue(Bucket b) => _asCost ? b.cost : b.kwh;
+
+  /// A value already in the "Show values as" metric.
+  String _fmtValue(double v) => _asCost
+      ? '₱${_fmtNumber(v, decimals: 2)}'
+      : '${_fmtNumber(v, decimals: 1)} kWh';
 
   @override
   Widget build(BuildContext context) {
@@ -1038,12 +1049,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final span = f.span(today);
     final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
     final rows =
-        applyFilter(f, parseDaily(_rangeRaw, _meta, deleted: deleted), span);
+        applyFilter(f, parseDaily(_rangeRaw, _meta, rates: _rates, deleted: deleted), span);
     final cmpSpan = f.compareSpan(today);
     final cmpRows = cmpSpan == null
         ? null
         : applyFilter(
-            f, parseDaily(_compareRaw, _meta, deleted: deleted), cmpSpan);
+            f, parseDaily(_compareRaw, _meta, rates: _rates, deleted: deleted), cmpSpan);
     final empty = _rangeLoaded && rows.isEmpty;
 
     return Theme(
@@ -1353,6 +1364,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final days = _allowedDays(span);
     final avg = days == 0 ? 0.0 : total / days;
     final cTotal = cmp == null ? null : sumKwh(cmp);
+    final cost = sumCost(rows);
+    final cCost = cmp == null ? null : sumCost(cmp);
+    final avgRate = total > 0 ? cost / total : _electricityRate;
     final cDays = cmpSpan == null ? 0 : _allowedDays(cmpSpan);
     final cAvg = cTotal == null ? null : (cDays == 0 ? 0.0 : cTotal / cDays);
     final scoped = _meta.values.where(_metaInScope).toList();
@@ -1375,10 +1389,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       ),
       _statCard(
         icon: Icons.payments_outlined,
-        value: '₱${_fmtNumber(total * _electricityRate)}',
+        value: '₱${_fmtNumber(cost)}',
         label: 'Total cost',
-        caption: 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh',
-        delta: _delta(total, cTotal),
+        caption: (avgRate - _electricityRate).abs() < 0.005
+            ? 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh'
+            : 'At rates recorded · ₱${avgRate.toStringAsFixed(2)} avg per kWh',
+        delta: _delta(cost, cCost),
       ),
       _statCard(
         icon: Icons.show_chart_rounded,
@@ -1530,16 +1546,16 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       for (var i = 0; i < buckets.length; i++)
         TrendPoint(
           buckets[i].label,
-          '${buckets[i].tooltipLabel} · ${_fmtValue(buckets[i].kwh)}'
-          '${cb != null && i < cb.length ? '\nEarlier: ${_fmtValue(cb[i].kwh)}' : ''}',
-          buckets[i].kwh * _mult,
+          '${buckets[i].tooltipLabel} · ${_fmtValue(_bucketValue(buckets[i]))}'
+          '${cb != null && i < cb.length ? '\nEarlier: ${_fmtValue(_bucketValue(cb[i]))}' : ''}',
+          _bucketValue(buckets[i]),
         ),
     ];
     final compare = cb == null
         ? null
         : [
             for (var i = 0; i < math.min(cb.length, buckets.length); i++)
-              cb[i].kwh * _mult
+              _bucketValue(cb[i])
           ];
     final noun = switch (f.group) {
       GroupBy.hourly => 'hour',
@@ -1760,10 +1776,10 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       );
 
   Widget _utilityCard(BuildContext ctx, List<UsageRow> rows) {
-    final groups = groupSum(rows, (r) => r.utility)
+    final groups = groupSum(rows, (r) => r.utility, cost: _asCost)
         .where((e) => e.value > 0)
         .toList();
-    final total = sumKwh(rows);
+    final total = _asCost ? sumCost(rows) : sumKwh(rows);
     return _panel(
       title: 'Top Consuming Utilities',
       subtitle:
@@ -1773,9 +1789,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
               style: TextStyle(fontSize: 14, color: WebColors.muted))
           : Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
               UtilityDonut(
-                data: [for (final g in groups) MapEntry(g.key, g.value * _mult)],
+                data: [for (final g in groups) MapEntry(g.key, g.value)],
                 centerValue: _asCost
-                    ? '₱${_fmtNumber(total * _mult)}'
+                    ? '₱${_fmtNumber(total)}'
                     : total.toStringAsFixed(1),
                 centerCaption: _asCost ? 'cost' : 'kWh',
                 onTap: (u) =>
@@ -1825,14 +1841,20 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
             : _TopMode.devices);
     final perDevice = rows.where((r) => r.deviceId.isNotEmpty);
     final groups = switch (mode) {
-      _TopMode.institutes => groupSum(rows, (r) => r.building),
-      _TopMode.rooms => groupSum(perDevice, (r) => r.roomKey),
-      _TopMode.devices => groupSum(perDevice, (r) => r.deviceId),
+      _TopMode.institutes => groupSum(rows, (r) => r.building, cost: _asCost),
+      _TopMode.rooms =>
+        groupSum(perDevice, (r) => r.roomKey, cost: _asCost),
+      _TopMode.devices =>
+        groupSum(perDevice, (r) => r.deviceId, cost: _asCost),
     }
         .where((e) => e.value > 0)
         .take(mode == _TopMode.institutes ? 50 : 10)
         .toList();
     final max = groups.isEmpty ? 0.0 : groups.first.value;
+    // Load levels stay on kWh even when values are shown as cost.
+    final kwhBy = _asCost
+        ? {for (final e in groupSum(rows, (r) => r.building)) e.key: e.value}
+        : {for (final g in groups) g.key: g.value};
 
     // HIGH / MID / LOW, the dashboard's 100 / 50 kWh-a-month thresholds
     // scaled to the length of the range.
@@ -1879,7 +1901,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                       ]),
                       value: _fmtValue(g.value),
                       frac: max <= 0 ? 0 : g.value / max,
-                      color: levelColor(g.value),
+                      color: levelColor(kwhBy[g.key] ?? 0),
                     ),
                   _TopMode.rooms => () {
                       final parts = g.key.split('|');

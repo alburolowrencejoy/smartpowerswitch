@@ -17,6 +17,17 @@ class DashboardViewModel extends ChangeNotifier {
   int unassignedDevices = 0;
   Map<String, int> buildingDeviceCounts = {};
   Map<String, double> buildingEnergy = {};
+
+  /// This month's cost per building (₱), as recorded with each reading.
+  Map<String, double> buildingCost = {};
+
+  /// This month's `total_cost` as stored in history -- costs are locked in
+  /// at the rate in force when each reading was recorded, so a later rate
+  /// change never reprices them. Null when the month has no stored cost.
+  double? _storedMonthlyCost;
+
+  void _refreshMonthlyCost() =>
+      monthlyCostPhp = _storedMonthlyCost ?? monthlyKwh * electricityRate;
   Map<String, double> utilityTotals = {};
   List<Map<String, dynamic>> historyData = [];
 
@@ -289,7 +300,7 @@ class DashboardViewModel extends ChangeNotifier {
     });
     totalKwh = total;
     utilityTotals = uTotals;
-    monthlyCostPhp = monthlyKwh * electricityRate;
+    _refreshMonthlyCost();
   }
 
   void _applyRate(Object? raw) {
@@ -299,7 +310,7 @@ class DashboardViewModel extends ChangeNotifier {
       return;
     }
     electricityRate = rate;
-    monthlyCostPhp = monthlyKwh * rate;
+    _refreshMonthlyCost();
   }
 
   void _applyHistory(Object? raw) {
@@ -313,6 +324,7 @@ class DashboardViewModel extends ChangeNotifier {
     try {
       final root = Map<String, dynamic>.from(raw as Map);
       buildingEnergy = _currentMonthBuildingEnergy(root);
+      buildingCost = _currentMonthBuildingEnergy(root, field: 'cost');
       final monthKey = _monthKey(HistoryClock.instance.now());
       final monthlyNode = root['monthly'];
       if (monthlyNode is Map) {
@@ -322,9 +334,10 @@ class DashboardViewModel extends ChangeNotifier {
           final monthMap = Map<String, dynamic>.from(monthNode);
           final totalKwh = monthMap['total_kwh'] ?? 0.0;
           monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
-          monthlyCostPhp = (monthMap['total_cost'] is num)
-              ? (monthMap['total_cost'] as num).toDouble()
-              : monthlyKwh * electricityRate;
+          final storedCost = monthMap['total_cost'];
+          _storedMonthlyCost =
+              storedCost is num ? storedCost.toDouble() : null;
+          _refreshMonthlyCost();
         }
       }
       historyData = _parseAnalyticsEntries(root, 'daily');
@@ -336,7 +349,9 @@ class DashboardViewModel extends ChangeNotifier {
     }
   }
 
-  Map<String, double> _currentMonthBuildingEnergy(Map<String, dynamic> root) {
+  /// This month's per-building [field] (`kwh` or `cost`).
+  Map<String, double> _currentMonthBuildingEnergy(Map<String, dynamic> root,
+      {String field = 'kwh'}) {
     final monthKey = _monthKey(HistoryClock.instance.now());
     final monthlyNode = root['monthly'];
     if (monthlyNode is! Map) return {};
@@ -351,9 +366,9 @@ class DashboardViewModel extends ChangeNotifier {
     buildingsMap.forEach((building, value) {
       if (value is Map) {
         final data = Map<String, dynamic>.from(value);
-        final kwh = (data['kwh'] ?? 0.0) as num;
-        result[building.toString()] = kwh.toDouble();
-      } else if (value is num) {
+        final v = data[field];
+        if (v is num) result[building.toString()] = v.toDouble();
+      } else if (value is num && field == 'kwh') {
         result[building.toString()] = value.toDouble();
       }
     });

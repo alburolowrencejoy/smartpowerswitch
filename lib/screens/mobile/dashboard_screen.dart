@@ -30,6 +30,7 @@ import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
 import '../../services/history_clock.dart';
+import '../../services/rate_timeline.dart';
 import '../../widgets/history_fallback_notice.dart';
 
 /// One-shot snapshot of what deleting a building would touch, used to build
@@ -599,9 +600,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _instituteActiveScheduleCount = 0;
         }
 
-        // Cost is always shown live against the current rate.
-        _monthlyCostPhp = _monthlyKwh * _electricityRate;
-
         _isLoading = false;
         _errorText = null;
         _postLoadErrorNotified = false;
@@ -779,10 +777,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final monthMap = Map<String, dynamic>.from(monthNode);
       final totalKwh = monthMap['total_kwh'] ?? 0.0;
-      final totalCost = monthMap['total_cost'] ?? 0.0;
+      final totalCost = monthMap['total_cost'];
 
       _monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
-      _monthlyCostPhp = (totalCost is num) ? totalCost.toDouble() : 0.0;
+      // The recorded cost: each reading was priced at the rate in force when
+      // it was saved, so changing the rate never reprices past usage. Only a
+      // month with no stored cost falls back to kWh x the current rate.
+      _monthlyCostPhp = (totalCost is num)
+          ? totalCost.toDouble()
+          : _monthlyKwh * _electricityRate;
     } catch (e) {
       _monthlyKwh = 0;
       _monthlyCostPhp = 0;
@@ -964,7 +967,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final cost = b['cost'];
     if (cost is num) return cost.toDouble();
     final kwh = b['kwh'];
-    if (kwh is num) return kwh.toDouble() * _electricityRate;
+    if (kwh is num) {
+      // No stored cost: price it at the rate in force at the end of that
+      // month, not today's rate.
+      final monthEnd = DateTime(d.year, d.month + 1, 0);
+      return kwh.toDouble() *
+          RateHistory.instance.timeline(_electricityRate).rateForDay(monthEnd);
+    }
     return null;
   }
 
@@ -1744,6 +1753,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     final weekKwh = _weeklyBuildingKwh(now, code);
     final roomCount = _instituteRooms.length;
+    final monthCost = _monthlyBuildingCost(now, code) ??
+        _instituteMonthlyKwh * _electricityRate;
 
     return Container(
       width: double.infinity,
@@ -1800,17 +1811,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
           decoration: BoxDecoration(
               color: Colors.white.withAlpha(15),
               borderRadius: BorderRadius.circular(12)),
-          child: Row(children: [
-            _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 0),
-                'This week',
-                compact: compact),
-            _vertDivider(),
-            _miniStat(_safeFormatDouble(_instituteMonthlyKwh, 0), 'This month',
-                compact: compact),
-            _vertDivider(),
-            _miniStat('$floors ${floors > 1 ? 'floors' : 'floor'}',
-                '$roomCount rooms',
-                compact: compact),
+          child: Column(children: [
+            Row(children: [
+              _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 1),
+                  'This week',
+                  compact: compact, unit: weekKwh == null ? null : 'kWh'),
+              _vertDivider(),
+              _miniStat(_safeFormatDouble(_instituteMonthlyKwh, 1),
+                  'This month',
+                  compact: compact, unit: 'kWh'),
+              _vertDivider(),
+              _miniStat('$floors ${floors > 1 ? 'floors' : 'floor'}',
+                  '$roomCount rooms',
+                  compact: compact),
+            ]),
+            _heroRowDivider(compact),
+            Row(children: [
+              _miniStat(
+                  yesterday == null ? '—' : _safeFormatDouble(yesterday, 1),
+                  'Yesterday',
+                  compact: compact, unit: yesterday == null ? null : 'kWh'),
+              _vertDivider(),
+              _miniStat('₱${_safeFormatDouble(monthCost, 0)}', 'Month cost',
+                  compact: compact),
+              _vertDivider(),
+              _miniStat('$_instituteOnlineDevices', 'Online',
+                  compact: compact, unit: '/ $_instituteAssignedDevices'),
+            ]),
           ]),
         ),
       ]),
@@ -1821,7 +1848,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final now = HistoryClock.instance.now();
     final lastMonth = DateTime(now.year, now.month - 1, 1);
     final lastMonthCost = _monthlyBuildingCost(lastMonth, code);
-    final monthCost = _instituteMonthlyKwh * _electricityRate;
+    final monthCost = _monthlyBuildingCost(now, code) ??
+        _instituteMonthlyKwh * _electricityRate;
     double? costDeltaPct;
     if (lastMonthCost != null && lastMonthCost > 0) {
       costDeltaPct = ((monthCost - lastMonthCost) / lastMonthCost) * 100;
@@ -2184,15 +2212,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
           decoration: BoxDecoration(
               color: Colors.white.withAlpha(15),
               borderRadius: BorderRadius.circular(12)),
-          child: Row(children: [
-            _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 0),
-                'This week',
-                compact: compact),
-            _vertDivider(),
-            _miniStat(_safeFormatDouble(_monthlyKwh, 0), 'This month',
-                compact: compact),
-            _vertDivider(),
-            _miniStat(peakHour ?? '—', 'Peak hour', compact: compact),
+          child: Column(children: [
+            Row(children: [
+              _miniStat(weekKwh == null ? '—' : _safeFormatDouble(weekKwh, 1),
+                  'This week',
+                  compact: compact, unit: weekKwh == null ? null : 'kWh'),
+              _vertDivider(),
+              _miniStat(_safeFormatDouble(_monthlyKwh, 1), 'This month',
+                  compact: compact, unit: 'kWh'),
+              _vertDivider(),
+              _miniStat(peakHour ?? '—', 'Peak hour', compact: compact),
+            ]),
+            _heroRowDivider(compact),
+            Row(children: [
+              _miniStat(
+                  yesterday == null ? '—' : _safeFormatDouble(yesterday, 1),
+                  'Yesterday',
+                  compact: compact, unit: yesterday == null ? null : 'kWh'),
+              _vertDivider(),
+              _miniStat('₱${_safeFormatDouble(_monthlyCostPhp, 0)}',
+                  'Month cost',
+                  compact: compact),
+              _vertDivider(),
+              _miniStat('$_onlineDevicesCount', 'Online',
+                  compact: compact, unit: '/ $_assignedDevices'),
+            ]),
           ]),
         ),
       ]),
@@ -2222,6 +2266,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Hairline between the hero's two stat rows.
+  Widget _heroRowDivider(bool compact) => Container(
+      height: 1,
+      margin: EdgeInsets.symmetric(vertical: compact ? 8 : 10),
+      color: Colors.white.withAlpha(30));
+
   Widget _vertDivider() => Container(
       width: 1,
       height: 32,
@@ -2232,10 +2282,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// cells" / preview `.h-cell`). Kept as `(value, label)` -- the order
   /// callers pass this in changed from the pre-redesign `(label, value)`
   /// signature, so every call site above was updated together with this.
-  Widget _miniStat(String value, String label, {bool compact = false}) {
+  Widget _miniStat(String value, String label,
+      {bool compact = false, String? unit}) {
     return Expanded(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(value,
+      Text.rich(
+          TextSpan(children: [
+            TextSpan(text: value),
+            if (unit != null)
+              TextSpan(
+                  text: ' $unit',
+                  style: TextStyle(
+                      fontSize: compact ? 10 : 11,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white70)),
+          ]),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(

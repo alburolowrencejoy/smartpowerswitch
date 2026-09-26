@@ -138,6 +138,9 @@ class BreakdownPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final mine = rows.where(_belongs).toList();
     final total = sumKwh(mine);
+    // Stored per-record costs, so past days keep the rate they were billed at.
+    final cost = sumCost(mine);
+    final avgRate = total > 0 ? cost / total : rate;
     final byDevice = groupSum(mine.where((r) => r.deviceId.isNotEmpty),
         (r) => r.deviceId);
     // Every device of this group, including ones that reported nothing.
@@ -277,7 +280,7 @@ class BreakdownPanel extends StatelessWidget {
                       children: [
                         TextSpan(
                             text:
-                                '₱${_money(total * rate)} at ₱${rate.toStringAsFixed(2)} per kWh · ${ids.length} device${ids.length == 1 ? '' : 's'}'),
+                                '₱${_money(cost)} at ₱${avgRate.toStringAsFixed(2)} ${(avgRate - rate).abs() < 0.005 ? '' : 'avg '}per kWh · ${ids.length} device${ids.length == 1 ? '' : 's'}'),
                         if (offline > 0)
                           TextSpan(
                               text: ' · $offline offline',

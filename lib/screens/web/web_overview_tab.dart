@@ -188,9 +188,14 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
         final rate = vm.electricityRate.toDouble();
         final todayKwh = scoped ? _scopedKwh : vm.totalKwh.toDouble();
-        final monthKwh = rows.fold<double>(0, (a, r) => a + r.monthKwh);
-        final monthCost =
-            scoped ? monthKwh * rate : vm.monthlyCostPhp.toDouble();
+        // Recorded costs (each reading priced at the rate of its day), not
+        // this month's kWh x today's rate.
+        final monthCost = scoped
+            ? rows.fold<double>(
+                0,
+                (a, r) =>
+                    a + (vm.buildingCost[r.code] ?? r.monthKwh * rate))
+            : vm.monthlyCostPhp.toDouble();
         final highLoad =
             rows.where((r) => _levelFor(r.monthKwh) == 'HIGH').length;
         final reporting = _online + _offline;

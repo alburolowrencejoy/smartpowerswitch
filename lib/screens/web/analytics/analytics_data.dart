@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../services/rate_timeline.dart';
 import 'analytics_filter.dart';
 
 /// Live facts about one device from the `devices` node.
@@ -59,6 +60,10 @@ class UsageRow {
   final String room;
   final double kwh;
 
+  /// Cost in ₱ at the rate in force on [date] -- the cost stored with the
+  /// reading when there is one, so later rate changes never reprice it.
+  final double cost;
+
   const UsageRow({
     required this.date,
     required this.deviceId,
@@ -67,6 +72,7 @@ class UsageRow {
     required this.floor,
     required this.room,
     required this.kwh,
+    required this.cost,
   });
 
   /// Rooms are only unique within a building + floor.
@@ -88,10 +94,14 @@ final _dayKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 List<UsageRow> parseDaily(
   Object? raw,
   Map<String, DeviceMeta> meta, {
+  required RateTimeline rates,
   Set<String> deleted = const {},
   DateTime? until,
 }) {
   final rows = <UsageRow>[];
+  // Stored cost when the record has one; otherwise kWh at that day's rate.
+  double costOf(Object? stored, double kwh, DateTime date) =>
+      stored is num ? stored.toDouble() : kwh * rates.rateForDay(date);
   if (raw is! Map) return rows;
   raw.forEach((key, val) {
     final k = key.toString();
@@ -106,6 +116,7 @@ List<UsageRow> parseDaily(
       devices.forEach((id, d) {
         if (d is! Map) return;
         final m = meta[id.toString()];
+        final kwh = _num(d['kwh'] ?? d['total_kwh']);
         final histBuilding = (d['building'] ?? '').toString();
         rows.add(UsageRow(
           date: date,
@@ -114,7 +125,8 @@ List<UsageRow> parseDaily(
           utility: m?.utility ?? 'Unknown',
           floor: m?.floor ?? 0,
           room: m?.room ?? '',
-          kwh: _num(d['kwh'] ?? d['total_kwh']),
+          kwh: kwh,
+          cost: costOf(d['cost'] ?? d['total_cost'], kwh, date),
         ));
       });
       return;
@@ -123,6 +135,7 @@ List<UsageRow> parseDaily(
     if (buildings is Map && buildings.isNotEmpty) {
       buildings.forEach((code, b) {
         if (b is! Map) return;
+        final kwh = _num(b['kwh']);
         rows.add(UsageRow(
           date: date,
           deviceId: '',
@@ -130,7 +143,8 @@ List<UsageRow> parseDaily(
           utility: 'Unknown',
           floor: 0,
           room: '',
-          kwh: _num(b['kwh']),
+          kwh: kwh,
+          cost: costOf(b['cost'], kwh, date),
         ));
       });
       return;
@@ -145,6 +159,7 @@ List<UsageRow> parseDaily(
         floor: 0,
         room: '',
         kwh: total,
+        cost: costOf(val['total_cost'], total, date),
       ));
     }
   });
@@ -185,13 +200,17 @@ List<UsageRow> applyFilter(
 double sumKwh(Iterable<UsageRow> rows) =>
     rows.fold<double>(0, (a, r) => a + r.kwh);
 
-/// Sums [rows] by [key], largest first.
+double sumCost(Iterable<UsageRow> rows) =>
+    rows.fold<double>(0, (a, r) => a + r.cost);
+
+/// Sums [rows] by [key], largest first -- kWh, or ₱ when [cost] is set.
 List<MapEntry<String, double>> groupSum(
-    Iterable<UsageRow> rows, String Function(UsageRow) key) {
+    Iterable<UsageRow> rows, String Function(UsageRow) key,
+    {bool cost = false}) {
   final m = <String, double>{};
   for (final r in rows) {
     final k = key(r);
-    m[k] = (m[k] ?? 0) + r.kwh;
+    m[k] = (m[k] ?? 0) + (cost ? r.cost : r.kwh);
   }
   return m.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
 }
@@ -203,7 +222,8 @@ class Bucket {
   final String label;
   final String tooltipLabel;
   final double kwh;
-  const Bucket(this.start, this.label, this.tooltipLabel, this.kwh);
+  final double cost;
+  const Bucket(this.start, this.label, this.tooltipLabel, this.kwh, this.cost);
 }
 
 /// Buckets every allowed day of [span] by [group]; empty days count as 0 so
@@ -211,11 +231,14 @@ class Bucket {
 List<Bucket> bucketize(AnalyticsFilter f, List<UsageRow> rows,
     DateTimeRange span, GroupBy group) {
   final byDay = <DateTime, double>{};
+  final costByDay = <DateTime, double>{};
   for (final r in rows) {
     byDay[r.date] = (byDay[r.date] ?? 0) + r.kwh;
+    costByDay[r.date] = (costByDay[r.date] ?? 0) + r.cost;
   }
   final out = <Bucket>[];
   final buckets = <DateTime, double>{};
+  final costs = <DateTime, double>{};
   final order = <DateTime>[];
   for (var d = span.start;
       !d.isAfter(span.end);
@@ -233,19 +256,21 @@ List<Bucket> bucketize(AnalyticsFilter f, List<UsageRow> rows,
     }
     if (!buckets.containsKey(b)) order.add(b);
     buckets[b] = (buckets[b] ?? 0) + (byDay[d] ?? 0);
+    costs[b] = (costs[b] ?? 0) + (costByDay[d] ?? 0);
   }
   for (final b in order) {
     final v = buckets[b]!;
+    final c = costs[b]!;
     switch (group) {
       case GroupBy.weekly:
-        out.add(Bucket(b, fmtDate(b), 'Week of ${fmtDate(b)}', v));
+        out.add(Bucket(b, fmtDate(b), 'Week of ${fmtDate(b)}', v, c));
       case GroupBy.monthly:
         out.add(Bucket(b, kMonths[b.month - 1],
-            '${kMonths[b.month - 1]} ${b.year}', v));
+            '${kMonths[b.month - 1]} ${b.year}', v, c));
       case GroupBy.hourly:
       case GroupBy.daily:
         out.add(Bucket(b, fmtDate(b),
-            '${fmtDate(b)} · ${kWeekdays[b.weekday - 1]}', v));
+            '${fmtDate(b)} · ${kWeekdays[b.weekday - 1]}', v, c));
     }
   }
   return out;

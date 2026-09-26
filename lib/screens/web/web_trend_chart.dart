@@ -29,6 +29,14 @@ class WebTrendChart extends StatefulWidget {
   final List<double>? compare;
   final Color compareColor;
 
+  /// The tapped point, kept marked (ring, guide line and value bubble)
+  /// until tapped again -- for touch screens, where there is no hover.
+  final int? selected;
+
+  /// Makes the chart tappable: called with the tapped index, or null when
+  /// the selected point is tapped again.
+  final ValueChanged<int?>? onSelect;
+
   const WebTrendChart({
     super.key,
     required this.points,
@@ -37,6 +45,8 @@ class WebTrendChart extends StatefulWidget {
     this.height = 280,
     this.compare,
     this.compareColor = const Color(0xFF8A9A90),
+    this.selected,
+    this.onSelect,
   });
 
   @override
@@ -67,8 +77,13 @@ class _WebTrendChartState extends State<WebTrendChart> {
         final all = [...pts.map((p) => p.value), ...?widget.compare];
         final maxV = niceAxisMax(all.isEmpty ? 0 : all.reduce(math.max));
         final geo = _Geo(n, pw, c.maxHeight, maxV, widget.bars);
+        final sel = widget.selected != null && widget.selected! < n
+            ? widget.selected
+            : null;
+        // The bubble follows the mouse; with none, it stays on the selection.
+        final bubble = _hover ?? sel;
 
-        return MouseRegion(
+        final chart = MouseRegion(
           onHover: (e) {
             if (n == 0) return;
             final i = geo.indexAt(e.localPosition.dx);
@@ -83,15 +98,24 @@ class _WebTrendChartState extends State<WebTrendChart> {
                   geo: geo,
                   color: widget.color,
                   hover: _hover,
+                  selected: sel,
                   compare: widget.compare,
                   compareColor: widget.compareColor,
                 ),
               ),
             ),
-            if (_hover != null && _hover! < n)
+            if (bubble != null && bubble < n)
               Positioned(
-                left: (geo.x(_hover!) - 95).clamp(0.0, math.max(0.0, c.maxWidth - 190)),
-                top: math.max(0, geo.y(pts[_hover!].value) - 44),
+                left: (geo.x(bubble) - 95).clamp(0.0, math.max(0.0, c.maxWidth - 190)),
+                // Anchored by its bottom edge just above the point, clear of
+                // its marker ring whatever the text height; below the point
+                // when it is too near the top.
+                bottom: geo.y(pts[bubble].value) >= 56
+                    ? c.maxHeight - geo.y(pts[bubble].value) + 18
+                    : null,
+                top: geo.y(pts[bubble].value) >= 56
+                    ? null
+                    : geo.y(pts[bubble].value) + 18,
                 child: IgnorePointer(
                   child: Container(
                     width: 190,
@@ -101,7 +125,7 @@ class _WebTrendChartState extends State<WebTrendChart> {
                       color: WebColors.ink,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Text(pts[_hover!].tooltip,
+                    child: Text(pts[bubble].tooltip,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                             fontSize: 12.5,
@@ -111,6 +135,17 @@ class _WebTrendChartState extends State<WebTrendChart> {
                 ),
               ),
           ]),
+        );
+        final onSelect = widget.onSelect;
+        if (onSelect == null) return chart;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) {
+            if (n == 0) return;
+            final i = geo.indexAt(d.localPosition.dx);
+            onSelect(i == sel ? null : i);
+          },
+          child: chart,
         );
       }),
     );
@@ -151,6 +186,7 @@ class _TrendPainter extends CustomPainter {
   final _Geo geo;
   final Color color;
   final int? hover;
+  final int? selected;
   final List<double>? compare;
   final Color compareColor;
 
@@ -159,6 +195,7 @@ class _TrendPainter extends CustomPainter {
     required this.geo,
     required this.color,
     required this.hover,
+    this.selected,
     this.compare,
     this.compareColor = const Color(0xFF8A9A90),
   });
@@ -187,8 +224,10 @@ class _TrendPainter extends CustomPainter {
           topLeft: const Radius.circular(4),
           topRight: const Radius.circular(4),
         );
-        canvas.drawRRect(
-            r, Paint()..color = i == hover ? color : color.withAlpha(185));
+        final on = i == hover || i == selected;
+        // With a selection, the other bars fade so the chosen one stands out.
+        final alpha = on ? 255 : (selected != null ? 90 : 185);
+        canvas.drawRRect(r, Paint()..color = color.withAlpha(alpha));
       }
     } else {
       final line = Path()..moveTo(g.x(0), g.y(points[0].value));
@@ -220,10 +259,11 @@ class _TrendPainter extends CustomPainter {
       if (n <= 62) {
         for (var i = 0; i < n; i++) {
           final o = Offset(g.x(i), g.y(points[i].value));
-          canvas.drawCircle(o, i == hover ? 6 : 4.2, Paint()..color = Colors.white);
+          final big = i == hover || i == selected;
+          canvas.drawCircle(o, big ? 6 : 4.2, Paint()..color = Colors.white);
           canvas.drawCircle(
               o,
-              i == hover ? 6 : 4.2,
+              big ? 6 : 4.2,
               Paint()
                 ..color = color
                 ..style = PaintingStyle.stroke
@@ -252,7 +292,31 @@ class _TrendPainter extends CustomPainter {
       }
     }
 
-    if (hover != null && hover! < n && !g.bars) {
+    final sel = selected;
+    if (sel != null && sel < n) {
+      // Selected point: a guide line down to the axis and a filled dot in a
+      // soft halo, on the line point or on top of the bar.
+      final sx = g.x(sel);
+      final sy = g.y(points[sel].value);
+      final guide = Paint()
+        ..color = color.withAlpha(140)
+        ..strokeWidth = 1.5;
+      for (var d = sy + 10; d < g.base; d += 7) {
+        canvas.drawLine(
+            Offset(sx, d), Offset(sx, math.min(d + 4, g.base)), guide);
+      }
+      canvas.drawCircle(Offset(sx, sy), 13, Paint()..color = color.withAlpha(46));
+      canvas.drawCircle(Offset(sx, sy), 7, Paint()..color = color);
+      canvas.drawCircle(
+          Offset(sx, sy),
+          7,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5);
+    }
+
+    if (hover != null && hover! < n && hover != sel && !g.bars) {
       final hx = g.x(hover!);
       canvas.drawLine(Offset(hx, _padT), Offset(hx, g.base),
           Paint()..color = const Color(0x4D0E2E1A));
@@ -312,6 +376,7 @@ class _TrendPainter extends CustomPainter {
   bool shouldRepaint(covariant _TrendPainter old) =>
       old.points != points ||
       old.hover != hover ||
+      old.selected != selected ||
       old.compare != compare ||
       old.color != color ||
       old.geo.bars != geo.bars ||

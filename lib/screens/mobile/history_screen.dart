@@ -13,6 +13,7 @@ import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../services/history_clock.dart';
+import '../../services/rate_timeline.dart';
 import '../../services/forecast_models.dart';
 import '../../utils/last_seen.dart';
 import '../../widgets/app_bottom_sheet.dart';
@@ -118,6 +119,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   int _tabIndex = 0; // 0 = Usage, 1 = Forecast
   bool _trendBars = false;
   int? _trendSelected;
+  int? _forecastSelected;
 
   /// 0/1/2 = Institutes/Rooms/Devices for a campus admin; an institute
   /// admin never sees "Institutes" (handoff §5), so their segmented control
@@ -148,6 +150,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Object? _rowsCacheSrc;
   Map<String, DeviceMeta>? _rowsCacheMeta;
   Set<String>? _rowsCacheDeleted;
+  Object? _rowsCacheRateLog;
+  double? _rowsCacheRate;
   List<UsageRow> _rowsCache = const [];
 
   /// Every parsed `history/daily` row (all dates, all devices), cached so
@@ -156,11 +160,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final src = _historyDailyRaw;
     if (!identical(src, _rowsCacheSrc) ||
         !identical(_meta, _rowsCacheMeta) ||
-        !identical(_deletedDaily, _rowsCacheDeleted)) {
+        !identical(_deletedDaily, _rowsCacheDeleted) ||
+        !identical(_rateLog.value, _rowsCacheRateLog) ||
+        _electricityRate != _rowsCacheRate) {
       _rowsCacheSrc = src;
       _rowsCacheMeta = _meta;
       _rowsCacheDeleted = _deletedDaily;
-      _rowsCache = parseDaily(src, _meta, deleted: _deletedDaily);
+      _rowsCacheRateLog = _rateLog.value;
+      _rowsCacheRate = _electricityRate;
+      _rowsCache = parseDaily(src, _meta,
+          rates: RateHistory.instance.timeline(_electricityRate),
+          deleted: _deletedDaily);
     }
     return _rowsCache;
   }
@@ -187,7 +197,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _hydrateSessionFromAuth();
     _listenAll();
     _listenPredictions();
+    _rateLog.addListener(_onRateLog);
     _startLoadTimeoutTimer();
+  }
+
+  /// Past rates, so records without a stored cost are priced at their own
+  /// day's rate rather than today's.
+  final ValueListenable<Object?> _rateLog = RateHistory.instance.log;
+  void _onRateLog() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -195,6 +213,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _combinedSub?.cancel();
     _predictionsSub?.cancel();
     _loadTimeoutTimer?.cancel();
+    _rateLog.removeListener(_onRateLog);
     super.dispose();
   }
 
@@ -441,8 +460,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   bool _isCost(AnalyticsFilter f) => f.metric == ValueMetric.cost;
 
-  String _val(double kwh, AnalyticsFilter f) =>
-      _isCost(f) ? '₱${_fmtNumber(kwh * _electricityRate, 0)}' : _fmtKwh(kwh);
+  /// Formats [v], already in the filter's metric (₱ or kWh). Costs come
+  /// from the stored per-record costs, never kWh x today's rate.
+  String _val(double v, AnalyticsFilter f) =>
+      _isCost(f) ? '₱${_fmtNumber(v, 0)}' : _fmtKwh(v);
+
+  double _metric(Iterable<UsageRow> rows, AnalyticsFilter f) =>
+      _isCost(f) ? sumCost(rows) : sumKwh(rows);
+
+  double _bucketValue(Bucket b, AnalyticsFilter f) =>
+      _isCost(f) ? b.cost : b.kwh;
+
+  /// "₱11.52 per kWh" -- the average of the rates [rows] were billed at,
+  /// which differs from today's rate when the range spans a rate change.
+  String _avgRateCaption(List<UsageRow> rows) {
+    final kwh = sumKwh(rows);
+    final rate = kwh > 0 ? sumCost(rows) / kwh : _electricityRate;
+    final same = (rate - _electricityRate).abs() < 0.005;
+    return '₱${rate.toStringAsFixed(2)} ${same ? 'per kWh' : 'avg per kWh'}';
+  }
 
   String _unit(AnalyticsFilter f) => _isCost(f) ? '' : 'kWh';
 
@@ -642,8 +678,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final rows = applyFilter(f, _allRows, span);
     final compareRows =
         compareSpan == null ? null : applyFilter(f, _allRows, compareSpan);
-    final total = sumKwh(rows);
-    final compareTotal = compareRows == null ? null : sumKwh(compareRows);
+    final total = _metric(rows, f);
+    final compareTotal = compareRows == null ? null : _metric(compareRows, f);
     final ds = _devicesInScope(f);
 
     final header = _buildHeader(
@@ -818,9 +854,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
           _statBox(
             cost ? 'Energy' : 'Cost',
             cost
-                ? '${_fmtKwh(total)} kWh'
-                : _fmtMoney(total * _electricityRate),
-            '₱${_electricityRate.toStringAsFixed(2)} per kWh',
+                ? '${_fmtKwh(sumKwh(rows))} kWh'
+                : _fmtMoney(sumCost(rows)),
+            _avgRateCaption(rows),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -898,17 +934,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final points = [
       for (final b in buckets)
         TrendPoint(
-            b.label, b.tooltipLabel, cost ? b.kwh * _electricityRate : b.kwh)
+            b.label,
+            '${b.tooltipLabel} · ${_val(_bucketValue(b, f), f)}${cost ? '' : ' kWh'}',
+            _bucketValue(b, f))
     ];
     final compareValues = compareBuckets == null
         ? null
         : [
             for (var i = 0; i < points.length; i++)
-              cost
-                  ? (i < compareBuckets.length
-                      ? compareBuckets[i].kwh * _electricityRate
-                      : 0.0)
-                  : (i < compareBuckets.length ? compareBuckets[i].kwh : 0.0)
+              i < compareBuckets.length
+                  ? _bucketValue(compareBuckets[i], f)
+                  : 0.0
           ];
     final sel = (_trendSelected != null && _trendSelected! < buckets.length)
         ? _trendSelected
@@ -941,36 +977,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ),
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapUp: (d) {
-              if (points.isEmpty) return;
-              final box = context.findRenderObject();
-              double width = 300;
-              if (box is RenderBox) width = box.size.width - 20;
-              const padL = 44.0, padR = 12.0;
-              final pw = width - padL - padR;
-              if (pw <= 0) return;
-              final n = points.length;
-              int i;
-              if (_trendBars) {
-                final slot = pw / n;
-                i = (((d.localPosition.dx) - padL) / slot).floor();
-              } else {
-                i = n < 2
-                    ? 0
-                    : (((d.localPosition.dx) - padL) / (pw / (n - 1))).round();
-              }
-              i = i.clamp(0, n - 1);
-              setState(() => _trendSelected = _trendSelected == i ? null : i);
-            },
-            child: WebTrendChart(
-              points: points,
-              bars: _trendBars,
-              color: _palette.mid,
-              height: 210,
-              compare: compareValues,
-            ),
+          WebTrendChart(
+            points: points,
+            bars: _trendBars,
+            color: _palette.mid,
+            height: 210,
+            compare: compareValues,
+            selected: sel,
+            onSelect: (i) => setState(() => _trendSelected = i),
           ),
           if (compareSpan != null) ...[
             const SizedBox(height: 4),
@@ -1050,7 +1064,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Text(b.tooltipLabel,
               style: AppTextStyles.captionSmall
                   .copyWith(color: AppColors.inkMuted)),
-          Text('${_val(b.kwh, f)} ${_unit(f)}',
+          Text('${_val(_bucketValue(b, f), f)} ${_unit(f)}',
               style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
         ]),
       ),
@@ -1064,12 +1078,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     : 'Previous',
                 style: AppTextStyles.captionSmall
                     .copyWith(color: AppColors.inkMuted)),
-            Text('${_val(cmp.kwh, f)} ${_unit(f)}',
+            Text('${_val(_bucketValue(cmp, f), f)} ${_unit(f)}',
                 style:
                     AppTextStyles.subtitle.copyWith(color: AppColors.inkMuted)),
           ]),
         ),
-        _deltaRow(b.kwh, cmp.kwh),
+        _deltaRow(_bucketValue(b, f), _bucketValue(cmp, f)),
       ],
     ]);
   }
@@ -1078,7 +1092,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       AnalyticsFilter f, List<UsageRow> rows, double total) {
     final cost = _isCost(f);
     final totals = <String, double>{
-      for (final u in kUtilities) u: sumKwh(rows.where((r) => r.utility == u)),
+      for (final u in kUtilities)
+        u: _metric(rows.where((r) => r.utility == u), f),
     };
     final parts =
         ['AC', 'Outlets', 'Lights'].where((u) => (totals[u] ?? 0) > 0).toList();
@@ -1151,7 +1166,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
     final scoped =
         segment == 0 ? rows : rows.where((r) => r.deviceId.isNotEmpty);
-    final grouped = groupSum(scoped, keyFn).take(5).toList();
+    final grouped = groupSum(scoped, keyFn, cost: _isCost(f)).take(5).toList();
     final tmax = grouped.isEmpty ? 1.0 : grouped.first.value;
 
     final segments = showInstitutes
@@ -1585,6 +1600,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ? compareValues
                   : null,
           compareColor: compare?.color ?? const Color(0xFF8A9A90),
+          selected: _forecastSelected,
+          onSelect: (i) => setState(() => _forecastSelected = i),
         ),
         const SizedBox(height: 10),
         Wrap(spacing: 16, runSpacing: 4, children: [
