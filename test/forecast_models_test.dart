@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_power_switch/services/forecast_models.dart';
 
@@ -16,6 +18,32 @@ void main() {
       // Day 56 is a weekday (56 % 7 == 0), day 61 a weekend day.
       expect(f[0], greaterThan(f[5] + 4));
       expect(f[0], closeTo(10 + 56 * 0.05, 0.6));
+    });
+
+    test('stays finite and bounded over a 90-day horizon', () {
+      // Explosive history (grows 30% a day) and irregular on/off usage:
+      // both used to make the 90-day forecast a year range asks for run
+      // away, which blanked the forecast chart.
+      final explosive = [for (var i = 0; i < 40; i++) math.pow(1.3, i) / 1e3];
+      final rnd = math.Random(7);
+      final irregular = [
+        for (var i = 0; i < 60; i++)
+          rnd.nextDouble() < 0.4 ? 0.0 : rnd.nextDouble() * 50,
+      ];
+      for (final y in [explosive, irregular, weekly]) {
+        final peak = y.reduce(math.max);
+        final f = arimaForecast(y, 90);
+        expect(f, hasLength(90));
+        expect(f.every((v) => v.isFinite && v >= 0 && v <= peak * 3 + 1),
+            isTrue);
+      }
+    });
+
+    test('seasonal naive repeats the weekly pattern', () {
+      final f = seasonalNaiveForecast(weekly, 14);
+      expect(f, hasLength(14));
+      expect(f[0], greaterThan(f[5] + 4)); // weekday vs weekend
+      expect(f[0], closeTo(f[7], 1e-9));
     });
 
     test('falls back to a straight line for short history', () {

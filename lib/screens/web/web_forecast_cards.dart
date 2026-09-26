@@ -216,7 +216,9 @@ class _ForecastComparisonState extends State<ForecastComparison> {
     final left = models['arima']!;
     final right = models[_compare]!;
 
-    final all = [...?left.values, ...?right.values];
+    final all = [...?left.values, ...?right.values]
+        .where((v) => v.isFinite)
+        .toList();
     final maxV = _niceMax(all.isEmpty ? 0 : all.reduce(math.max));
     final h = widget.horizon;
     final labels = List.generate(h, (i) {
@@ -434,7 +436,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
 }
 
 double _niceMax(double v) {
-  if (v <= 0) return 10;
+  if (!v.isFinite || v <= 0) return 10;
   final e = math.pow(10, (math.log(v) / math.ln10).floor()).toDouble();
   final f = v / e;
   final n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
@@ -611,7 +613,8 @@ class _ForecastPainter extends CustomPainter {
     final pw = size.width - l - r, ph = size.height - t - b, base = t + ph;
     final n = values.length;
     double x(int i) => l + (n < 2 ? pw / 2 : pw * i / (n - 1));
-    double y(double v) => t + ph * (1 - (v / maxV).clamp(0.0, 1.0));
+    double y(double v) =>
+        t + ph * (1 - (v.isFinite ? v / maxV : 0.0).clamp(0.0, 1.0));
 
     final grid = Paint()..color = const Color(0x244F6A58);
     for (var g = 0; g <= 4; g++) {

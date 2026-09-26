@@ -56,7 +56,7 @@ class WebTrendChart extends StatefulWidget {
 const _padL = 44.0, _padR = 12.0, _padT = 14.0, _padB = 30.0;
 
 double niceAxisMax(double v) {
-  if (v <= 0) return 10;
+  if (!v.isFinite || v <= 0) return 10;
   final e = math.pow(10, (math.log(v) / math.ln10).floor()).toDouble();
   final f = v / e;
   final n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
@@ -74,7 +74,10 @@ class _WebTrendChartState extends State<WebTrendChart> {
       child: LayoutBuilder(builder: (context, c) {
         final n = pts.length;
         final pw = c.maxWidth - _padL - _padR;
-        final all = [...pts.map((p) => p.value), ...?widget.compare];
+        // Non-finite values would turn the whole axis into NaN (blank chart).
+        final all = [...pts.map((p) => p.value), ...?widget.compare]
+            .where((v) => v.isFinite)
+            .toList();
         final maxV = niceAxisMax(all.isEmpty ? 0 : all.reduce(math.max));
         final geo = _Geo(n, pw, c.maxHeight, maxV, widget.bars);
         final sel = widget.selected != null && widget.selected! < n
@@ -171,7 +174,8 @@ class _Geo {
     return _padL + (n < 2 ? pw / 2 : pw * i / (n - 1));
   }
 
-  double y(double v) => _padT + ph * (1 - (v / maxV).clamp(0.0, 1.0));
+  double y(double v) =>
+      _padT + ph * (1 - (v.isFinite ? v / maxV : 0.0).clamp(0.0, 1.0));
 
   int indexAt(double dx) {
     final raw = bars

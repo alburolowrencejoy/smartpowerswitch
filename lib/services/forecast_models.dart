@@ -71,6 +71,11 @@ List<double> _solve(List<List<double>> a, List<double> b) {
 /// Seasonal ARIMA(p,0,0)(0,1,0)[m]: differences each day against the same
 /// weekday last week, fits AR(p) with an intercept on those differences by
 /// least squares, then rebuilds the forecast one day at a time.
+///
+/// A least-squares AR fit on short or irregular history can be explosive: it
+/// looks fine a week ahead but runs off to huge or infinite values over a
+/// 90-day horizon (the one a year-long range asks for), which left the
+/// forecast chart blank. Such fits fall back to [seasonalNaiveForecast].
 List<double> arimaForecast(List<double> y, int h, {int p = 2, int m = 7}) {
   if (y.length < m + p + 6) return linearForecast(y, h);
   final d = [for (var i = m; i < y.length; i++) y[i] - y[i - m]];
@@ -87,6 +92,14 @@ List<double> arimaForecast(List<double> y, int h, {int p = 2, int m = 7}) {
     }
   }
   final coef = _solve(ata, atb);
+  // AR part not stationary (sum of |phi| >= 1): its forecasts diverge.
+  var phiSum = 0.0;
+  for (var j = 1; j < k; j++) {
+    phiSum += coef[j].abs();
+  }
+  if (!coef.every((c) => c.isFinite) || phiSum >= 0.98) {
+    return seasonalNaiveForecast(y, h, m: m);
+  }
   final yy = [...y];
   final dd = [...d];
   for (var s = 0; s < h; s++) {
@@ -97,7 +110,33 @@ List<double> arimaForecast(List<double> y, int h, {int p = 2, int m = 7}) {
     dd.add(nd);
     yy.add(yy[yy.length - m] + nd);
   }
-  return [for (final v in yy.sublist(y.length)) math.max(0.0, v)];
+  final out = [for (final v in yy.sublist(y.length)) math.max(0.0, v)];
+  // Still runs away (the intercept compounds week over week on a long
+  // horizon): far outside anything in the history is not a usable forecast.
+  final peak = y.fold<double>(0, (a, v) => v.isFinite ? math.max(a, v) : a);
+  if (out.any((v) => !v.isFinite || v > peak * 3 + 1)) {
+    return seasonalNaiveForecast(y, h, m: m);
+  }
+  return out;
+}
+
+/// Repeats the weekly pattern: each future day is the average of the same
+/// weekday over the last (up to) four weeks. Always finite and stable.
+List<double> seasonalNaiveForecast(List<double> y, int h, {int m = 7}) {
+  if (y.length < m) return linearForecast(y, h);
+  final n = y.length;
+  return List.generate(h, (i) {
+    var sum = 0.0;
+    var count = 0;
+    // Same weekday as future day n + i, stepping back a week at a time.
+    for (var t = n - m + (i % m); t >= 0 && count < 4; t -= m) {
+      if (y[t].isFinite) {
+        sum += y[t];
+        count++;
+      }
+    }
+    return count == 0 ? 0.0 : math.max(0.0, sum / count);
+  });
 }
 
 /// Scores [fn] on the last [hold] days of [y]; null when there is too
