@@ -511,7 +511,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Center(
         child: Column(
@@ -555,7 +555,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Center(
         child: Column(

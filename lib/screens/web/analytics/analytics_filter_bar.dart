@@ -956,7 +956,7 @@ class _PanelHostState extends State<_PanelHost> {
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: p.pale.withAlpha(102),
+          color: WebColors.track,
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(children: [

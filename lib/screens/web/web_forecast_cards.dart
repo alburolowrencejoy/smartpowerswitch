@@ -348,7 +348,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: p.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -481,13 +481,12 @@ class _Box extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final p = context.institutePalette;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: p.pale.withAlpha(65),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: p.mid.withAlpha(28)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(label, style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),

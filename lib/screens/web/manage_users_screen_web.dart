@@ -840,7 +840,7 @@ class _Card extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: palette.mid.withAlpha(30)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: child,
     );

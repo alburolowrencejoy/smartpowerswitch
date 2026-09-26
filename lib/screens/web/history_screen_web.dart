@@ -1158,7 +1158,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1286,7 +1286,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-          color: _palette.pale.withAlpha(170),
+          color: WebColors.track,
           borderRadius: BorderRadius.circular(11)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         for (final e in options.entries)
@@ -1431,7 +1431,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _palette.mid.withAlpha(22)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Row(children: [
         Container(

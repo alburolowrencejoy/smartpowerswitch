@@ -462,7 +462,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         : _selectedIndex;
 
     // Plain white page, like mobile: cards separate from it by their
-    // hairline outline and soft shadow rather than a tinted page wash.
+    // 1px neutral outline rather than a tinted page wash.
     const pageBg = Colors.white;
 
     // Web typography (app font, readable muted text)
@@ -887,7 +887,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.hairline),
+          border: Border.all(color: WebColors.outline),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withAlpha(40),
@@ -1078,7 +1078,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
           decoration: BoxDecoration(
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: _palette.mid.withAlpha(26)),
+            border: Border.all(color: WebColors.outline),
           ),
           child: Center(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1127,6 +1127,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         decoration: BoxDecoration(
           color: AppColors.cardBg,
           borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: WebColors.outline),
         ),
         child: Text(text, style: const TextStyle(color: WebColors.muted)),
       );
@@ -1229,7 +1230,7 @@ class _WebBuildingCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           // `levelColor` below is the HIGH/MID/LOW severity indicator, a
           // semantic color, not brand chrome.
-          border: Border.all(color: palette.mid.withAlpha(20)),
+          border: Border.all(color: WebColors.outline),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

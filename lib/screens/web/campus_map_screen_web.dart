@@ -519,7 +519,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _p.mid.withAlpha(30)),
+        border: Border.all(color: WebColors.outline),
       ),
       padding: const EdgeInsets.all(14),
       child: Column(children: [
@@ -872,7 +872,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _p.mid.withAlpha(30)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: SingleChildScrollView(child: body),
     );

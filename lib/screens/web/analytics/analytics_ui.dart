@@ -1,16 +1,17 @@
 import 'package:flutter/material.dart';
 
 import '../../../theme/institute_colors.dart';
+import '../web_theme.dart';
 
 /// Colors from the Analytics design preview that aren't part of a palette.
 class AnalyticsUi {
   AnalyticsUi._();
 
   /// `--line`: hairline borders and dividers.
-  static const line = Color(0x212E9E52);
+  static const line = WebColors.outline;
 
   /// `--track`: empty part of a progress bar.
-  static const track = Color(0x73C2EDD0);
+  static const track = WebColors.track;
 
   static const high = Color(0xFFD64A4A);
   static const warn = Color(0xFFE8922A);
@@ -48,7 +49,7 @@ class AnalyticsUi {
   static BoxDecoration card(InstitutePalette p) => BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: p.mid.withAlpha(22)),
+        border: Border.all(color: WebColors.outline),
       );
 }
 

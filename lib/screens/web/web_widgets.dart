@@ -540,7 +540,7 @@ class WebTabs<T> extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-          color: p.pale.withAlpha(102),
+          color: WebColors.track,
           borderRadius: BorderRadius.circular(12)),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -573,7 +573,7 @@ class WebTabs<T> extends StatelessWidget {
   }
 }
 
-/// White rounded card with the preview's hairline border and soft shadow.
+/// White rounded card with a 1px neutral outline (no shadow).
 class WebCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -591,11 +591,7 @@ class WebCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.hairline),
-        boxShadow: const [
-          BoxShadow(
-              color: Color(0x0F000000), blurRadius: 16, offset: Offset(0, 4)),
-        ],
+        border: Border.all(color: WebColors.outline),
       ),
       child: child,
     );

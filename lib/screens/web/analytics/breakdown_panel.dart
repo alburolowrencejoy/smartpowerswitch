@@ -292,7 +292,7 @@ class BreakdownPanel extends StatelessWidget {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
-                      color: palette.pale.withAlpha(115),
+                      color: WebColors.track,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text.rich(note,

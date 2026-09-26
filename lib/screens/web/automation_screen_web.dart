@@ -1572,7 +1572,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1606,7 +1606,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       decoration: BoxDecoration(
         color: AppColors.cardBg,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _palette.mid.withAlpha(26)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1727,7 +1727,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         border: Border.all(
             color: s.enabled
                 ? AppColors.greenMid.withAlpha(60)
-                : AppColors.greenMid.withAlpha(20)),
+                : WebColors.outline),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [

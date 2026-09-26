@@ -370,7 +370,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
           Container(
             padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
             decoration: BoxDecoration(
-              color: p.pale.withAlpha(110),
+              color: WebColors.track,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
@@ -788,14 +788,7 @@ BoxDecoration _cardDecoration(InstitutePalette p, double radius) =>
     BoxDecoration(
       color: AppColors.cardBg,
       borderRadius: BorderRadius.circular(radius),
-      border: Border.all(color: p.mid.withAlpha(22)),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withAlpha(10),
-          blurRadius: 20,
-          offset: const Offset(0, 6),
-        ),
-      ],
+      border: Border.all(color: WebColors.outline),
     );
 
 class _StatCard extends StatelessWidget {
@@ -953,7 +946,7 @@ class _CountBox extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.mid.withAlpha(34)),
+        border: Border.all(color: WebColors.outline),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

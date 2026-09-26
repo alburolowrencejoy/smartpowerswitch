@@ -18,6 +18,13 @@ class WebColors {
   /// Captions, hints, axis labels, table headers. ~5.9:1 on white and
   /// ~4.7:1 on the pale green wash, so it stays readable at 12px.
   static const muted = Color(0xFF4F6A58);
+
+  /// 1px neutral outline around cards and panels on the white page.
+  static const outline = Color(0xFFDCE1DE);
+
+  /// Neutral fill for segmented-control tracks and inset strips, in place
+  /// of the old pale-green wash.
+  static const track = Color(0xFFF2F4F3);
 }
 
 /// The web shell's theme: the app font ([AppFonts.family]) everywhere, with
