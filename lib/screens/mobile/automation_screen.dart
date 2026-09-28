@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/schedule_filter.dart';
 import '../../services/schedule_windows.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
@@ -327,8 +328,6 @@ class _UpcomingItem {
   const _UpcomingItem(this.schedule, this.event);
 }
 
-enum _ScheduleFilter { all, active, paused }
-
 // ─── Device Picker Dialog ─────────────────────────────────────────────────────
 
 class _DevicePickerDialog extends StatefulWidget {
@@ -633,7 +632,8 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
         child: Center(
             child: Text(step,
                 style: TextStyle(
-                    fontSize: 11,
+                    fontFamily: AppFonts.family,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: widget.palette.dark))),
       ),
@@ -714,7 +714,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
   bool get _isLoading => _loading || _loadingBuildings;
   String? _errorText;
 
-  _ScheduleFilter _filter = _ScheduleFilter.all;
+  ScheduleFilter _filter = const ScheduleFilter();
 
   bool get isAdmin =>
       widget.role == 'admin' ||
@@ -1042,9 +1042,7 @@ class _AutomationScreenState extends State<AutomationScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(widget.role, _institute)],
-      ),
+      data: InstituteTheme.resolve(widget.role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         body: _errorText != null
@@ -1121,19 +1119,25 @@ class _AutomationScreenState extends State<AutomationScreen> {
       );
     }
 
-    final activeCount = scoped.where((s) => s.enabled).length;
-    final pausedCount = scoped.length - activeCount;
+    bool passes(AutomationSchedule s, ScheduleFilter f) {
+      final info = s.scope == 'device' ? _deviceIndex[s.target] : null;
+      return f.matches(
+        scope: s.scope,
+        target: s.target,
+        utility: s.utility,
+        enabled: s.enabled,
+        deviceBuilding: info?.building,
+        deviceUtility: info?.utility,
+      );
+    }
 
-    final shown = scoped.where((s) {
-      switch (_filter) {
-        case _ScheduleFilter.active:
-          return s.enabled;
-        case _ScheduleFilter.paused:
-          return !s.enabled;
-        case _ScheduleFilter.all:
-          return true;
-      }
-    }).toList();
+    // Counts on the status control follow the building/utility filters.
+    final placed = scoped
+        .where((s) => passes(s, _filter.withStatus(ScheduleStatus.all)))
+        .toList();
+    final activeCount = placed.where((s) => s.enabled).length;
+    final pausedCount = placed.length - activeCount;
+    final shown = placed.where((s) => passes(s, _filter)).toList();
 
     final upcoming = _computeUpcoming(scoped);
 
@@ -1170,17 +1174,23 @@ class _AutomationScreenState extends State<AutomationScreen> {
           AppSegmentedControl(
             palette: _palette,
             segments: [
-              AppSegment(label: 'All ${scoped.length}'),
+              AppSegment(label: 'All ${placed.length}'),
               AppSegment(label: 'Active $activeCount'),
               AppSegment(label: 'Paused $pausedCount'),
             ],
-            selectedIndex: _filter.index,
-            onChanged: (i) => setState(() => _filter = _ScheduleFilter.values[i]),
+            selectedIndex: _filter.status.index,
+            onChanged: (i) => setState(
+                () => _filter = _filter.withStatus(ScheduleStatus.values[i])),
           ),
+          const SizedBox(height: 10),
+          _placeFilters(),
           if (order.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 24),
-              child: Text('No ${_filter.name} schedules.',
+              child: Text(
+                  _filter.narrowsPlace
+                      ? 'No schedules match these filters.'
+                      : 'No ${_filter.status.name} schedules.',
                   style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
             )
           else
@@ -1188,6 +1198,94 @@ class _AutomationScreenState extends State<AutomationScreen> {
         ],
       ),
     );
+  }
+
+  /// Where (building) and which (utility) filters. Institute admins only
+  /// ever see their own institute's schedules, so they get no building
+  /// filter.
+  Widget _placeFilters() {
+    return Wrap(spacing: 8, runSpacing: 8, children: [
+      if (!_isInstituteAdmin)
+        AppFilterChip(
+          label: _filter.building ?? 'All buildings',
+          icon: Icons.apartment_outlined,
+          selected: _filter.building != null,
+          palette: _palette,
+          onTap: () => _pickOption(
+            title: 'Building',
+            allLabel: 'All buildings',
+            options: _buildings,
+            current: _filter.building,
+            onPick: (v) => _filter = _filter.withBuilding(v),
+          ),
+        ),
+      AppFilterChip(
+        label: _filter.utility ?? 'All utilities',
+        icon: Icons.bolt_outlined,
+        selected: _filter.utility != null,
+        palette: _palette,
+        onTap: () => _pickOption(
+          title: 'Utility',
+          allLabel: 'All utilities',
+          options: kScheduleUtilities,
+          current: _filter.utility,
+          onPick: (v) => _filter = _filter.withUtility(v),
+        ),
+      ),
+      if (_filter.narrowsPlace)
+        AppTextButton(
+          label: 'Clear',
+          palette: _palette,
+          onPressed: () => setState(() => _filter = _filter.clearPlace()),
+        ),
+    ]);
+  }
+
+  /// A sheet listing "All" plus [options]; applies the pick via [onPick]
+  /// (null = All).
+  Future<void> _pickOption({
+    required String title,
+    required String allLabel,
+    required List<String> options,
+    required String? current,
+    required void Function(String? value) onPick,
+  }) async {
+    Widget row(BuildContext ctx, String? value, String label) {
+      final selected = value == current;
+      return InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.pop(ctx, value ?? ''),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+          child: Row(children: [
+            Expanded(
+              child: Text(label,
+                  style: AppTextStyles.subtitle.copyWith(color: AppColors.ink)),
+            ),
+            Icon(
+                selected
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                size: 22,
+                color: selected ? _palette.dark : AppColors.inkMuted),
+          ]),
+        ),
+      );
+    }
+
+    final picked = await showAppBottomSheet<String>(
+      context,
+      builder: (ctx) => BottomSheetScaffold(
+        title: title,
+        palette: _palette,
+        body: Column(mainAxisSize: MainAxisSize.min, children: [
+          row(ctx, null, allLabel),
+          for (final o in options) row(ctx, o, o),
+        ]),
+      ),
+    );
+    if (picked == null || !mounted) return; // dismissed
+    setState(() => onPick(picked.isEmpty ? null : picked));
   }
 
   Widget _comingUpSection(List<_UpcomingItem> upcoming) {
@@ -1562,7 +1660,14 @@ class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
   // ── Actions section ─────────────────────────────────────────────────────
 
   Future<void> _pickTime(int index) async {
-    final picked = await showTimePicker(context: context, initialTime: _actions[index].time);
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _actions[index].time,
+      builder: (ctx, child) => Theme(
+        data: InstituteTheme(palette: _p).applyTo(Theme.of(ctx)),
+        child: child!,
+      ),
+    );
     if (picked != null) setState(() => _actions[index].time = picked);
   }
 
@@ -1858,7 +1963,7 @@ class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(extensions: [InstituteTheme(palette: _p)]),
+      data: InstituteTheme(palette: _p).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppTopBar(
@@ -1937,7 +2042,9 @@ class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
                 _summaryCard(),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+                  Text(_error!,
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: AppColors.errorText)),
                 ],
                 const SizedBox(height: 24),
                 if (!widget.readOnly)
@@ -2137,6 +2244,7 @@ class _ScheduleEditorPageState extends State<_ScheduleEditorPage> {
             initialEnd: _calEnd,
             disablePast: true,
             showInfoText: false,
+            palette: _p,
             onDaySelected: _onDaySelected,
             onRangeChanged: _onRangeChanged,
           ),

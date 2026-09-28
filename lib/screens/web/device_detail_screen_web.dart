@@ -74,38 +74,32 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   StreamSubscription? _combinedSub;
 
   // ── Institute theming ──────────────────────────────────────────────────
-  // `widget.role` is already passed in by the caller (see dashboard_web.dart's
-  // DeviceDetailScreenWeb(role: _role, ...)), but no institute is threaded
-  // through, so it's hydrated here directly from the signed-in user's own
-  // record, mirroring mobile device_detail_screen.dart's _hydrateInstitute.
-  // This is purely cosmetic (chrome colors) and never touches relay/readings
-  // state.
-  String? _institute;
+  // Colored by the building the device is in, not by the viewer's role, so
+  // a super admin who drills from an institute's building screen into one
+  // of its devices stays in that institute's colors (matches
+  // building_floor_screen*.dart, which also key off the building code).
+  InstitutePalette get _palette => InstituteColors.forCode(widget.building);
 
-  InstitutePalette get _palette =>
-      InstituteTheme.resolve(widget.role, _institute).palette;
+  /// Custom name given when the device was added to its room (stored on the
+  /// room's device entry, which only admins write). Empty = none.
+  String _customName = '';
 
-  Future<void> _hydrateInstitute() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+  Future<void> _loadCustomName() async {
     try {
-      final snap =
-          await FirebaseDatabase.instance.ref('users/${user.uid}').get();
-      final data = snap.value;
-      if (data is! Map) return;
-      final map = Map<String, dynamic>.from(data);
-      final institute = (map['institute'] as String?)?.trim();
-      if (!mounted) return;
-      setState(() => _institute = institute);
+      final snap = await FirebaseDatabase.instance
+          .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/name')
+          .get();
+      final name = (snap.value ?? '').toString().trim();
+      if (mounted && name.isNotEmpty) setState(() => _customName = name);
     } catch (_) {
-      // Keep the green default if institute hydration fails.
+      // No name shown; the device type is used instead.
     }
   }
 
   @override
   void initState() {
     super.initState();
-    _hydrateInstitute();
+    _loadCustomName();
     HomeWidgetService.saveDeviceSelection(
       deviceId: widget.deviceId,
       building: widget.building,
@@ -573,9 +567,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(widget.role, _institute)],
-      ),
+      data: InstituteTheme(palette: _palette).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
         isLoading: _isLoading,
         child: SingleChildScrollView(
@@ -639,7 +631,10 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           spacing: 12,
           runSpacing: 6,
           children: [
-            Text('${_utilityLabel(_utility)} · ${widget.room}',
+            Text(
+                _customName.isNotEmpty
+                    ? '$_customName · ${widget.room}'
+                    : '${_utilityLabel(_utility)} · ${widget.room}',
                 style: const TextStyle(
                     fontFamily: AppFonts.family,
                     fontSize: 26,
@@ -808,6 +803,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
                 text: _relay ? 'Turned ON' : 'Turned OFF', on: _relay)),
         Row(children: [
           WebSwitch(
+            palette: _palette,
             value: _relay,
             semanticLabel: 'Device switch',
             onChanged: _canToggle && _isOnline && !_toggling

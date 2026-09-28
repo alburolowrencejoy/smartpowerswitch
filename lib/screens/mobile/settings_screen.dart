@@ -10,9 +10,11 @@ import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
 import '../../services/download_open_service.dart';
 import '../../services/github_update_service.dart';
-import '../../services/davao_light_rate_monitor.dart';
+import '../../services/davao_light_service.dart';
 import '../../services/automation_scheduler_service.dart';
 import '../../widgets/app_button.dart';
+import '../../widgets/paste_advisory_dialog.dart';
+import '../../widgets/rate_proposal_card.dart';
 import '../../widgets/app_text_field.dart';
 import '../../widgets/app_top_bar.dart';
 import '../../widgets/outline_icon_box.dart';
@@ -58,7 +60,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   List<Map<String, dynamic>> _rateHistory = [];
 
-  late DavaoLightRateMonitor _rateMonitor;
+
+  /// Verified Davao Light advisory awaiting review (settings/rateProposal).
+  RateProposal? _proposal;
+  StreamSubscription<RateProposal?>? _proposalSub;
+  bool _applyingProposal = false;
+
+  /// Shown only while it's pending and differs from the current rate.
+  RateProposal? get _pendingProposal {
+    final p = _proposal;
+    if (p == null || p.status != 'pending') return null;
+    if ((p.rate - _currentRate).abs() < 0.0001) return null;
+    return p;
+  }
+
+  void _listenProposal() {
+    _proposalSub = DavaoLightService.proposal().listen(
+      (p) {
+        if (mounted) setState(() => _proposal = p);
+      },
+      onError: (Object e) => debugPrint('[Settings] rateProposal: $e'),
+    );
+  }
+
+  Future<void> _applyProposal(RateProposal p) async {
+    // A second click can land before the button rebuilds as disabled.
+    if (_applyingProposal) return;
+    setState(() => _applyingProposal = true);
+    try {
+      final applied = await DavaoLightService.apply(p, _currentRate);
+      if (!mounted) return;
+      if (applied) {
+        TopToast.success(context, 'Rate updated to ₱${p.rateText}/kWh.');
+      } else {
+        TopToast.show(context, 'This rate was already applied or dismissed.');
+      }
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Could not apply the rate: $e');
+    } finally {
+      if (mounted) setState(() => _applyingProposal = false);
+    }
+  }
+
+  Future<void> _dismissProposal() async {
+    try {
+      await DavaoLightService.dismiss();
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Could not dismiss: $e');
+    }
+  }
+
+  Widget _proposalCard() {
+    final p = _pendingProposal;
+    if (p == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: RateProposalCard(
+        proposal: p,
+        currentRate: _currentRate,
+        palette: _palette,
+        busy: _applyingProposal,
+        onApply: () => _applyProposal(p),
+        onDismiss: _dismissProposal,
+      ),
+    );
+  }
 
   StreamSubscription? _combinedSub;
   StreamSubscription<DatabaseEvent>? _deviceCountSub;
@@ -121,8 +187,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _hydrateSessionFromAuth();
-    _rateMonitor = DavaoLightRateMonitor();
     _listenAll();
+    _listenProposal();
     _listenDeviceCount();
     _loadAppVersion();
     _checkGithubRelease(silent: true);
@@ -135,6 +201,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _combinedSub?.cancel();
     _deviceCountSub?.cancel();
     _loadTimeoutTimer?.cancel();
+    _proposalSub?.cancel();
     super.dispose();
   }
 
@@ -270,6 +337,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveRate() async {
     if (_isInstituteAdmin) return; // Client-side guard; see class doc.
+    if (_saving) return; // ignore a double tap while saving
     final rate = double.tryParse(_rateController.text.trim());
     if (rate == null || rate <= 0) {
       setState(() {
@@ -410,22 +478,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_isInstituteAdmin) return; // Client-side guard; see class doc.
     setState(() => _fetchingLatestRate = true);
     try {
-      final result = await _rateMonitor.monitorAndUpdateRate();
+      // Server-side check (functions/davao_light_watch.js): reads official
+      // and news feeds, verifies any advisory, never changes the rate.
+      final result = await DavaoLightService.checkNow();
       if (!mounted) return;
       setState(() => _fetchingLatestRate = false);
-
-      if (result.hasChanged) {
-        TopToast.show(
-          context,
-          'Rate updated: ₱${result.oldRate.toStringAsFixed(2)} → ₱${result.newRate.toStringAsFixed(2)}/kWh',
-        );
-      } else {
-        TopToast.show(context, 'No rate changes detected.');
-      }
+      TopToast.show(context, DavaoLightService.summary(result));
     } catch (e) {
       if (!mounted) return;
       setState(() => _fetchingLatestRate = false);
-      TopToast.show(context, 'Failed to fetch rate: $e', isError: true);
+      TopToast.show(context, DavaoLightService.errorText(e), isError: true);
     }
   }
 
@@ -526,9 +588,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppTopBar(
@@ -673,11 +733,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               )
             else ...[
               AppOutlineButton(
-                label: _fetchingLatestRate ? 'Fetching...' : 'Fetch latest rate',
+                label: _fetchingLatestRate
+                    ? 'Checking Davao Light…'
+                    : 'Fetch latest rate',
                 icon: Icons.cloud_download_outlined,
                 onPressed: _fetchingLatestRate ? null : _fetchLatestRate,
                 expand: true,
               ),
+              // For advisories posted only on Facebook (see the dialog).
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppTextButton(
+                  label: 'Paste an advisory instead',
+                  palette: _palette,
+                  onPressed: () => showPasteAdvisoryDialog(context, _palette),
+                ),
+              ),
+              _proposalCard(),
               const SizedBox(height: 16),
               Text('Set manually',
                   style: AppTextStyles.label.copyWith(color: AppColors.ink)),

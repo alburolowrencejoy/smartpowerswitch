@@ -516,27 +516,64 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       TopToast.threshold(context, 'Device limit reached (24 max).');
       return;
     }
+    // Registered devices not yet in any room: the only ones that can be
+    // added, so they're offered as a list instead of a typed ID.
+    final List<String> unassigned;
+    try {
+      final snap =
+          await FirebaseDatabase.instance.ref('master_devices').get();
+      final raw = snap.value;
+      unassigned = [
+        if (raw is Map)
+          for (final e in raw.entries)
+            if ((e.value is Map ? (e.value as Map)['assignedTo'] ?? '' : '')
+                .toString()
+                .isEmpty)
+              e.key.toString(),
+      ]..sort();
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Could not load devices: $e');
+      return;
+    }
+    if (!mounted) return;
+    if (unassigned.isEmpty) {
+      TopToast.threshold(context,
+          'No unassigned devices. Register a device in Settings first.');
+      return;
+    }
     String? addedId;
     String? addedUtility;
     await showWebFormDialog(
       context: context,
       title: 'Add device',
       subtitle: '$room · Floor $_selectedFloor. '
-          'Type the Device ID from the sticker on the ESP32.',
+          'Pick one of the ${unassigned.length} unassigned '
+          '${unassigned.length == 1 ? 'device' : 'devices'}.',
       okLabel: 'Add',
-      fields: const [
+      fields: [
         WebField(
-            id: 'id', label: 'Device ID', hint: 'e.g. DEV-2024-A3F7', uppercase: true),
-        WebField(
+            id: 'id',
+            label: 'Device',
+            options: unassigned,
+            initial: unassigned.first),
+        const WebField(
             id: 'utility',
             label: 'Utility type',
             options: _utilityOptions,
             initial: 'Lights'),
+        const WebField(
+            id: 'name',
+            label: 'Name (optional)',
+            hint: 'e.g. Front lights'),
       ],
       onSubmit: (v) async {
-        final id = v['id']!.toUpperCase();
+        final id = v['id']!; // picked from the list, used as-is
         final utility = v['utility']!;
-        if (id.isEmpty) return {'id': 'Device ID is required.'};
+        final name = (v['name'] ?? '').trim();
+        if (id.isEmpty) return {'id': 'Choose a device.'};
+        if (name.length > 40) {
+          return {'name': 'Keep the name to 40 characters or fewer.'};
+        }
         if (_devices.containsKey(id)) {
           return {'id': 'That device is already on this floor.'};
         }
@@ -556,6 +593,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
           'status': 'offline',
           'relay': false,
           'room': room,
+          if (name.isNotEmpty) 'name': name,
         });
         await FirebaseDatabase.instance.ref('devices/$id').update({
           'building': widget.buildingCode,
@@ -574,7 +612,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
         await FirebaseDatabase.instance
             .ref('master_devices/$id/assignedTo')
             .set('${widget.buildingCode}/$_selectedFloor/$room');
-        addedId = id;
+        addedId = name.isNotEmpty ? '"$name"' : id;
         addedUtility = utility;
         return null;
       },
@@ -643,9 +681,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme(palette: _palette)],
-      ),
+      data: InstituteTheme(palette: _palette).applyTo(Theme.of(context)),
       child: Builder(builder: (context) {
         return ScreenSkeleton(
           isLoading: _isLoading,
@@ -682,8 +718,10 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                           onSelected: _switchFloor,
                         ),
                       ),
-                      const Spacer(),
-                      if (isAdmin)
+                      // Right beside the floor tabs: it adds a room to the
+                      // selected floor.
+                      if (isAdmin) ...[
+                        const SizedBox(width: 12),
                         WebIconButton(
                           icon: Icons.add_rounded,
                           tooltip: 'Add room',
@@ -691,6 +729,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
                           size: 38,
                           onPressed: _addRoom,
                         ),
+                      ],
                     ]),
                     const SizedBox(height: 18),
                     _buildRoomsGrid(),
@@ -897,6 +936,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       String room,
       {required bool first}) {
     final utility = (device['utility'] ?? '').toString();
+    final customName = (device['name'] ?? '').toString().trim();
     final relay = device['relay'] == true;
     final online = _deviceOnline(deviceId);
     final busy = _togglingDevices.contains(deviceId);
@@ -919,12 +959,17 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
         const SizedBox(width: 12),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(_utilityLabel(utility),
+            Text(customName.isNotEmpty ? customName : _utilityLabel(utility),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
-            Text(deviceId,
+            Text(
+                customName.isNotEmpty
+                    ? '${_utilityLabel(utility)} · $deviceId'
+                    : deviceId,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -942,8 +987,10 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
         ),
         const SizedBox(width: 10),
         WebSwitch(
+          palette: _palette,
           value: relay,
-          semanticLabel: '${_utilityLabel(utility)} $room switch',
+          semanticLabel:
+              '${customName.isNotEmpty ? customName : _utilityLabel(utility)} $room switch',
           onChanged: isAdmin && online && !busy
               ? (v) => _setDeviceRelay(deviceId, v)
               : null,

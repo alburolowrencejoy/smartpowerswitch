@@ -24,8 +24,16 @@ import '../../services/history_clock.dart';
 ///   `hotspots/{code}/devices/{deviceId}` (`x`, `y` as 0–1 of the zone), so
 ///   dots follow the zone when it moves and go away with it. Devices without
 ///   a saved position are spread evenly over the zone. Admins can drag dots.
+///
+/// An institute admin (with an institute assigned) gets the same scoped view
+/// as the phone app's campus map: the map is cropped to their building
+/// (its zone plus 6% of the image on each side), locked to the Precise view,
+/// and only their building's devices are shown.
 class CampusMapScreenWeb extends StatefulWidget {
   final String role;
+
+  /// The signed-in user's institute code; scopes an institute admin's map.
+  final String? institute;
   final void Function(String code, String name, int floors) onBuildingTap;
   final void Function(String deviceId, String utility, String building,
       String room, int floor) onDeviceTap;
@@ -33,6 +41,7 @@ class CampusMapScreenWeb extends StatefulWidget {
   const CampusMapScreenWeb({
     super.key,
     required this.role,
+    this.institute,
     required this.onBuildingTap,
     required this.onDeviceTap,
   });
@@ -115,7 +124,8 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
   List<_Device> _devices = [];
   Map<String, _Zone> _zones = {};
 
-  bool _precise = false;
+  bool _preciseChoice = false; // the Approximate/Precise toggle
+  bool get _precise => _lockCode != null || _preciseChoice;
   bool _editing = false;
   String? _selectedBuilding;
   String? _selectedDevice;
@@ -128,6 +138,81 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       }.contains(widget.role);
 
   InstitutePalette get _p => context.institutePalette;
+
+  // ── Institute scope (matches the phone app's campus_map_screen.dart) ───
+
+  /// Non-null only for an institute admin with an institute assigned: the
+  /// map is cropped to that building and shows only its devices.
+  String? get _lockCode {
+    if (widget.role != 'institute_admin') return null;
+    final code = widget.institute?.trim();
+    if (code == null || code.isEmpty) return null;
+    final upper = code.toUpperCase();
+    for (final k in [..._zones.keys, ..._buildings.keys]) {
+      if (k.toUpperCase() == upper) return k;
+    }
+    return upper;
+  }
+
+  /// Where each building sits when `hotspots/{code}` hasn't been placed yet
+  /// (same by-eye estimates as the phone app), so a scoped map still has
+  /// something to crop to.
+  static const _defaultZones = <String, List<double>>{
+    'IC': [.41, .29, .20, .10],
+    'ILEGG': [.68, .37, .31, .30],
+    'ITED': [.84, .07, .16, .27],
+    'IAAS': [.66, .85, .33, .10],
+    'ADMIN': [.12, .77, .46, .10],
+  };
+
+  /// The locked institute's zone: the saved hotspot, else its default.
+  _Zone? get _lockZone {
+    final lock = _lockCode;
+    if (lock == null) return null;
+    final saved = _zones[lock];
+    if (saved != null) return saved;
+    final d = _defaultZones[lock.toUpperCase()];
+    return d == null ? null : _Zone(lock, d[0], d[1], d[2], d[3], {});
+  }
+
+  /// Zones drawn on the map: just the locked building's, or all of them.
+  List<_Zone> get _visibleZones {
+    if (_lockCode == null) return _zones.values.toList();
+    final z = _lockZone;
+    return z == null ? const [] : [z];
+  }
+
+  /// Devices this viewer is scoped to.
+  List<_Device> get _scopedDevices {
+    final lock = _lockCode;
+    return lock == null
+        ? _devices
+        : _devices.where((d) => d.building == lock).toList();
+  }
+
+  /// Visible part of the image as 0-1 fractions (x, y, w, h): the whole
+  /// image, or the locked zone padded by 6% of the image on each side.
+  Rect get _viewBox {
+    final z = _lockZone;
+    if (z == null) return const Rect.fromLTWH(0, 0, 1, 1);
+    const pad = 0.06;
+    final l = math.max(0.0, z.x - pad), t = math.max(0.0, z.y - pad);
+    final r = math.min(1.0, z.x + z.w + pad),
+        b = math.min(1.0, z.y + z.h + pad);
+    final box = Rect.fromLTRB(l, t, r, b);
+    // A zone saved off the image (or with no size) would give an empty or
+    // inverted box, and a zero-height box makes the map's size NaN, which
+    // breaks layout. Show the whole campus instead.
+    if (!box.isFinite || box.width < 0.02 || box.height < 0.02) {
+      return const Rect.fromLTWH(0, 0, 1, 1);
+    }
+    return box;
+  }
+
+  /// Dot positions can only be saved onto a hotspot that exists; a scoped
+  /// map showing a default (unsaved) zone is read-only.
+  bool get _canEdit =>
+      _isAdmin && (_lockCode == null || _zones.containsKey(_lockCode));
 
   @override
   void initState() {
@@ -339,8 +424,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       message: 'The $code zone and its device positions will be removed from '
           'the map. The building and its devices stay.',
       okLabel: 'Remove',
-      onConfirm: () =>
-          FirebaseDatabase.instance.ref('hotspots/$code').remove(),
+      onConfirm: () => FirebaseDatabase.instance.ref('hotspots/$code').remove(),
     );
     if (ok && mounted) TopToast.show(context, 'Zone removed.');
   }
@@ -349,7 +433,8 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
   /// position, or an even grid over the zone for the rest.
   Map<String, Offset> _layout(_Zone z, Size map) {
     final devs = _devices.where((d) => d.building == z.code).toList();
-    final unplaced = devs.where((d) => !z.devicePositions.containsKey(d.id)).toList();
+    final unplaced =
+        devs.where((d) => !z.devicePositions.containsKey(d.id)).toList();
     final out = <String, Offset>{
       for (final d in devs)
         if (z.devicePositions.containsKey(d.id)) d.id: z.devicePositions[d.id]!,
@@ -427,47 +512,52 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
         spacing: 16,
         runSpacing: 12,
         children: [
-          const Column(
+          Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Campus Map',
+              const Text('Campus Map',
                   style: TextStyle(
                       fontFamily: AppFonts.family,
                       fontSize: 26,
                       fontWeight: FontWeight.w700,
                       color: WebColors.ink)),
-              SizedBox(height: 2),
-              Text('Buildings and devices by energy use',
-                  style: TextStyle(fontSize: 14, color: WebColors.muted)),
+              const SizedBox(height: 2),
+              Text(
+                  _lockCode != null
+                      ? '${_buildings[_lockCode]?['name'] ?? _lockCode} · '
+                          '$_lockCode devices by energy use'
+                      : 'Buildings and devices by energy use',
+                  style: const TextStyle(fontSize: 14, color: WebColors.muted)),
             ],
           ),
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(
-                  value: false,
-                  icon: Icon(Icons.crop_square_rounded, size: 18),
-                  label: Text('Approximate')),
-              ButtonSegment(
-                  value: true,
-                  icon: Icon(Icons.scatter_plot_outlined, size: 18),
-                  label: Text('Precise')),
-            ],
-            selected: {_precise},
-            showSelectedIcon: false,
-            style: SegmentedButton.styleFrom(
-              selectedBackgroundColor: p.dark,
-              selectedForegroundColor: Colors.white,
-              foregroundColor: p.dark,
-              side: BorderSide(color: p.mid.withAlpha(80)),
+          if (_lockCode == null)
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.crop_square_rounded, size: 18),
+                    label: Text('Approximate')),
+                ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.scatter_plot_outlined, size: 18),
+                    label: Text('Precise')),
+              ],
+              selected: {_precise},
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(
+                selectedBackgroundColor: p.dark,
+                selectedForegroundColor: Colors.white,
+                foregroundColor: p.dark,
+                side: BorderSide(color: p.mid.withAlpha(80)),
+              ),
+              onSelectionChanged: (s) => setState(() {
+                _preciseChoice = s.first;
+                _selectedBuilding = null;
+                _selectedDevice = null;
+              }),
             ),
-            onSelectionChanged: (s) => setState(() {
-              _precise = s.first;
-              _selectedBuilding = null;
-              _selectedDevice = null;
-            }),
-          ),
-          if (_isAdmin && !_editing)
+          if (_canEdit && !_editing)
             OutlinedButton.icon(
               onPressed: () => setState(() {
                 _editing = true;
@@ -495,8 +585,8 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
             ElevatedButton.icon(
               onPressed: () {
                 setState(() => _editing = false);
-                TopToast.show(context,
-                    _precise ? 'Positions saved.' : 'Zones saved.');
+                TopToast.show(
+                    context, _precise ? 'Positions saved.' : 'Zones saved.');
               },
               icon: const Icon(Icons.check_rounded, size: 18),
               label: const Text('Done'),
@@ -525,13 +615,23 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       child: Column(children: [
         Expanded(
           child: LayoutBuilder(builder: (context, c) {
+            // The visible box keeps the image's proportions; a scoped map
+            // shows only its building's box, scaled up to fill the card.
+            final box = _viewBox;
+            final aspect = _mapAspect * box.width / box.height;
             var w = c.maxWidth;
-            var h = w / _mapAspect;
+            var h = w / aspect;
             if (h > c.maxHeight) {
               h = c.maxHeight;
-              w = h * _mapAspect;
+              w = h * aspect;
             }
-            final size = Size(w, h);
+            if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) {
+              return const SizedBox.shrink();
+            }
+            // Size of the whole campus image at this zoom; zones and dots
+            // are laid out against it, then shifted so the box is in view.
+            final size = Size(w / box.width, h / box.height);
+            final cropped = box != const Rect.fromLTWH(0, 0, 1, 1);
             return Center(
               child: SizedBox(
                 width: w,
@@ -542,20 +642,32 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
                     _selectedBuilding = null;
                     _selectedDevice = null;
                   }),
-                  child: Stack(clipBehavior: Clip.none, children: [
-                    Positioned.fill(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.asset('assets/images/campus_map.png',
-                            fit: BoxFit.fill),
+                  child: ClipRRect(
+                    clipBehavior: cropped ? Clip.hardEdge : Clip.none,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Stack(clipBehavior: Clip.none, children: [
+                      Positioned(
+                        left: -box.left * size.width,
+                        top: -box.top * size.height,
+                        width: size.width,
+                        height: size.height,
+                        child: Stack(clipBehavior: Clip.none, children: [
+                          Positioned.fill(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.asset('assets/images/campus_map.png',
+                                  fit: BoxFit.fill),
+                            ),
+                          ),
+                          for (final z in _visibleZones)
+                            if (_precise)
+                              ..._preciseZone(z, size)
+                            else
+                              _approxZone(z, size),
+                        ]),
                       ),
-                    ),
-                    for (final z in _zones.values)
-                      if (_precise)
-                        ..._preciseZone(z, size)
-                      else
-                        _approxZone(z, size),
-                  ]),
+                    ]),
+                  ),
                 ),
               ),
             );
@@ -568,7 +680,9 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
   }
 
   Widget _legend() {
-    final hidden = _devices.where((d) => !_zones.containsKey(d.building)).length;
+    final hidden = _lockCode != null
+        ? 0
+        : _devices.where((d) => !_zones.containsKey(d.building)).length;
     final items = _precise
         ? const [_Level.low, _Level.mid, _Level.high, _Level.off]
         : const [_Level.low, _Level.mid, _Level.high];
@@ -603,7 +717,8 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
                 style: const TextStyle(fontSize: 13, color: WebColors.ink)),
           ]),
         if (_precise && hidden > 0)
-          Text('$hidden device${hidden == 1 ? '' : 's'} hidden: building has '
+          Text(
+              '$hidden device${hidden == 1 ? '' : 's'} hidden: building has '
               'no zone',
               style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
         if (_editing)
@@ -612,9 +727,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
                   ? 'Drag a dot to place the device inside its building.'
                   : 'Drag a zone to move it · drag a corner to resize · ✕ removes it',
               style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: _p.dark)),
+                  fontSize: 12.5, fontWeight: FontWeight.w600, color: _p.dark)),
       ],
     );
   }
@@ -627,11 +740,14 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
     final label = Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-          color: _editing ? _p.dark : color.withAlpha(220),
+          color: _editing ? _p.dark : AppColors.textOn(color),
           borderRadius: BorderRadius.circular(4)),
       child: Text(z.code,
           style: const TextStyle(
-              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+              fontFamily: AppFonts.family,
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w700)),
     );
 
     final box = Container(
@@ -681,8 +797,8 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
               : SystemMouseCursors.resizeUpRightDownLeft,
           child: GestureDetector(
             onPanStart: (_) => _dragging = true,
-            onPanUpdate: (d) => setState(() => onDrag(Offset(
-                d.delta.dx / map.width, d.delta.dy / map.height))),
+            onPanUpdate: (d) => setState(() => onDrag(
+                Offset(d.delta.dx / map.width, d.delta.dy / map.height))),
             onPanEnd: (_) => _saveZone(z),
             child: Container(
               width: hs,
@@ -789,9 +905,10 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
             padding: const EdgeInsets.all(2),
             child: Text(z.code,
                 style: TextStyle(
-                    fontSize: 10,
+                    fontFamily: AppFonts.family,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
-                    color: _p.dark.withAlpha(200))),
+                    color: _p.dark)),
           ),
         ),
       ),
@@ -896,9 +1013,10 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
               : 'Click a zone to see its energy use, rooms and devices.',
           style: const TextStyle(fontSize: 14, color: WebColors.muted)),
       const SizedBox(height: 18),
-      _stat('Buildings on map', '${_zones.length} of ${_buildings.length}'),
-      _stat('Devices assigned', '${_devices.length}'),
-      _stat('Online now', '${_devices.where((d) => d.online).length}'),
+      if (_lockCode == null)
+        _stat('Buildings on map', '${_zones.length} of ${_buildings.length}'),
+      _stat('Devices assigned', '${_scopedDevices.length}'),
+      _stat('Online now', '${_scopedDevices.where((d) => d.online).length}'),
     ]);
   }
 
@@ -916,19 +1034,27 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
         ]),
       );
 
+  // White pill with the status color as its ring and the status color's
+  // text-safe partner as its label (the raw fills are 2.5-3.4:1 on white).
   Widget _pill(String text, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
         decoration: BoxDecoration(
-          color: color.withAlpha(28),
+          color: Colors.white,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withAlpha(90)),
+          border: Border.all(color: color.withAlpha(150)),
         ),
         child: Text(text,
             style: TextStyle(
-                fontSize: 11.5, fontWeight: FontWeight.w700, color: color)),
+                fontFamily: AppFonts.family,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textOn(color))),
       );
 
   Widget _buildingCard(String code) {
+    // The card describes one building, so it wears that building's colors
+    // (a super admin's map chrome stays green around it).
+    final bp = InstituteColors.forCode(code);
     final info = _buildings[code] ?? const {};
     final name = (info['name'] ?? code).toString();
     final floors = (info['floors'] as int?) ?? 1;
@@ -974,7 +1100,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(children: [
-              Icon(Icons.meeting_room_outlined, size: 16, color: _p.mid),
+              Icon(Icons.meeting_room_outlined, size: 16, color: bp.dark),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(e.key,
@@ -998,7 +1124,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
         icon: const Icon(Icons.arrow_forward_rounded, size: 18),
         label: const Text('View building'),
         style: ElevatedButton.styleFrom(
-          backgroundColor: _p.dark,
+          backgroundColor: bp.dark,
           foregroundColor: Colors.white,
           elevation: 0,
           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -1010,6 +1136,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
   }
 
   Widget _deviceCard(_Device d) {
+    final bp = InstituteColors.forCode(d.building);
     final level = _deviceLevel(d);
     final icon = switch (d.utility.toLowerCase()) {
       'lights' => Icons.lightbulb_outline,
@@ -1023,12 +1150,15 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-              color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(10)),
-          child: Icon(icon, color: _p.dark, size: 20),
+              color: Colors.white,
+              border: Border.all(color: WebColors.outline),
+              borderRadius: BorderRadius.circular(10)),
+          child: Icon(icon, color: bp.dark, size: 20),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('${d.utility.isEmpty ? 'Device' : d.utility} · ${d.room}',
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -1066,7 +1196,7 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
         icon: const Icon(Icons.arrow_forward_rounded, size: 18),
         label: const Text('View device'),
         style: ElevatedButton.styleFrom(
-          backgroundColor: _p.dark,
+          backgroundColor: bp.dark,
           foregroundColor: Colors.white,
           elevation: 0,
           padding: const EdgeInsets.symmetric(vertical: 14),

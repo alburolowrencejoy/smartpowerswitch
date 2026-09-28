@@ -230,9 +230,7 @@ class _MoreScreenState extends State<MoreScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(

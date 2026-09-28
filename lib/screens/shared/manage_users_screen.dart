@@ -794,9 +794,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(widget.role, widget.institute)],
-      ),
+      data: InstituteTheme.resolve(widget.role, widget.institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppTopBar(

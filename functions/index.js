@@ -324,8 +324,12 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   return { success: true, message: 'Password updated successfully.' };
 });
 
-// ── Fetch Davao Light rates every 6 hours ───────────────────────
-require('./fetch_davao_light_rates');
+// ── Davao Light watcher: verified rate advisories + newsroom posts ──
+// (every 6 hours, and on demand from Settings > Fetch Latest Rate).
+const davaoLight = require('./davao_light_watch');
+exports.watchDavaoLight = davaoLight.watchDavaoLight;
+exports.checkDavaoLightNow = davaoLight.checkDavaoLightNow;
+exports.verifyAdvisoryText = davaoLight.verifyAdvisoryText;
 
 // ── Auto-write PZEM history when device kwh changes ─────────────
 const { writeHistoryForDevice } = require('./history_writer');

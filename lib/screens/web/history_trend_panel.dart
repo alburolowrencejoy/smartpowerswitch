@@ -212,7 +212,7 @@ class _HistoryTrendPanelState extends State<HistoryTrendPanel> {
           if (_failed)
             const _Note('Could not load history.')
           else if (!_loaded)
-            _Note('Loading…', color: p.mid)
+            _Note('Loading…', color: p.dark)
           else if (rows.isEmpty)
             const _Note('No history recorded yet.')
           else
@@ -327,7 +327,7 @@ class _TrendPill extends StatelessWidget {
       ),
       child: Text(label,
           style: TextStyle(
-              fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+              fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 }

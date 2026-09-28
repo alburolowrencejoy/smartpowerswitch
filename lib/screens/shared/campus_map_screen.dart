@@ -625,9 +625,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: widget.showAppBar
           ? Scaffold(
               backgroundColor: Colors.white,
@@ -866,7 +864,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       child: Text(code,
           style: const TextStyle(
               fontFamily: AppFonts.family,
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
               color: AppColors.ink)),
     );
@@ -996,7 +994,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           borderRadius: BorderRadius.circular(20)),
       child: Text(_levelLabel(level),
           style: TextStyle(
-              fontFamily: AppFonts.family, fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+              fontFamily: AppFonts.family, fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 
@@ -1010,7 +1008,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           borderRadius: BorderRadius.circular(20)),
       child: Text(on ? 'ON' : 'OFF',
           style: TextStyle(
-              fontFamily: AppFonts.family, fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+              fontFamily: AppFonts.family, fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 
@@ -1051,6 +1049,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     final devs = _devices.where((d) => d.building == code).toList();
     final rooms = <String>{for (final d in devs) d.room.isEmpty ? 'No room' : d.room};
     final online = devs.where((d) => d.online).length;
+    // This card is about one building, so it wears that building's colors.
+    final bp = InstituteColors.forCode(code);
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -1081,7 +1081,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         AppPrimaryButton(
           label: 'View building',
           icon: Icons.arrow_forward,
-          palette: _palette,
+          palette: bp,
           expand: true,
           onPressed: () => _openBuilding(code),
         ),
@@ -1093,13 +1093,14 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     final level = _deviceLevel(d.online, d.kwh);
     final label = _deviceLabel(d.utility);
     final on = d.relay && d.online;
+    final bp = InstituteColors.forCode(d.building);
 
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _panelDecoration,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          OutlineIconBox(icon: _utilityIcon(d.utility), palette: _palette),
+          OutlineIconBox(icon: _utilityIcon(d.utility), palette: bp),
           const SizedBox(width: 12),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1143,7 +1144,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
         AppPrimaryButton(
           label: 'View device',
           icon: Icons.arrow_forward,
-          palette: _palette,
+          palette: bp,
           expand: true,
           onPressed: () => _openDevice(d),
         ),

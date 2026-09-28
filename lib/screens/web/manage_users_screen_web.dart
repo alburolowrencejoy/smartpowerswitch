@@ -501,9 +501,7 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(widget.role, widget.institute)],
-      ),
+      data: InstituteTheme.resolve(widget.role, widget.institute).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
         isLoading: _isLoading,
         child: SingleChildScrollView(
@@ -864,7 +862,9 @@ class _Pill extends StatelessWidget {
       ),
       child: Text(text,
           style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textOn(color))),
     );
   }
 }

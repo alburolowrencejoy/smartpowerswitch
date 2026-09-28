@@ -263,7 +263,7 @@ class _AnalyticsFilterBarState extends State<AnalyticsFilterBar> {
                 children: [
                   Text(label,
                       style: const TextStyle(
-                          fontSize: 11.5,
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
                           color: WebColors.muted)),
                   ConstrainedBox(
@@ -898,7 +898,7 @@ class _PanelHostState extends State<_PanelHost> {
               height: 10,
               margin: const EdgeInsets.only(right: 8),
               decoration: BoxDecoration(
-                  color: AnalyticsUi.utilityColor(u),
+                  color: AnalyticsUi.utilityColor(u, p),
                   borderRadius: BorderRadius.circular(3)),
             ),
             Text(u, style: const TextStyle(fontSize: 14)),
@@ -1320,7 +1320,7 @@ class _RangeCalendarState extends State<_RangeCalendar> {
             child: Text(d,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 11.5,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: WebColors.muted)),
           ),

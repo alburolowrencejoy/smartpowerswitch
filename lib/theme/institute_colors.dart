@@ -179,6 +179,38 @@ class InstituteTheme extends ThemeExtension<InstituteTheme> {
     return const InstituteTheme(palette: InstituteColors.admin);
   }
 
+  /// [base] re-colored for this palette: registers this extension AND
+  /// points Material's own color scheme at the ramp, so stock widgets that
+  /// read `colorScheme.primary` (text-field focus ring, cursor and
+  /// selection handles, spinners, plain Text/Outlined buttons, checkboxes,
+  /// radios, dropdown highlights, time/date pickers) follow the institute
+  /// instead of the app's green seed. Screens should build their local
+  /// theme with this rather than `copyWith(extensions: ...)` alone.
+  ThemeData applyTo(ThemeData base) {
+    final p = palette;
+    return base.copyWith(
+      colorScheme: base.colorScheme.copyWith(
+        primary: p.dark,
+        onPrimary: Colors.white,
+        primaryContainer: p.pale,
+        onPrimaryContainer: p.shade900,
+        secondary: p.dark,
+        onSecondary: Colors.white,
+        secondaryContainer: p.pale,
+        onSecondaryContainer: p.shade900,
+        tertiary: p.mid,
+        surfaceTint: Colors.transparent,
+      ),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: p.dark,
+        selectionColor: p.pale,
+        selectionHandleColor: p.dark,
+      ),
+      progressIndicatorTheme: ProgressIndicatorThemeData(color: p.dark),
+      extensions: [this],
+    );
+  }
+
   @override
   InstituteTheme copyWith({InstitutePalette? palette}) {
     return InstituteTheme(palette: palette ?? this.palette);

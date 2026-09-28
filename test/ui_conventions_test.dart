@@ -2,13 +2,23 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:smart_power_switch/theme/app_colors.dart';
 import 'package:smart_power_switch/theme/app_fonts.dart';
+import 'package:smart_power_switch/theme/institute_colors.dart';
 import 'package:smart_power_switch/widgets/app_text_field.dart';
 
 /// App-wide UI rules that are easy to break by accident in new code:
 ///  * every text input shakes on error, so inputs must go through
 ///    AppTextField / AppTextFormField (lib/widgets/app_text_field.dart);
-///  * one typeface everywhere, so fonts must come from AppFonts.family.
+///  * one typeface everywhere, so fonts must come from AppFonts.family;
+///  * readable text: nothing under 12px, no low-contrast text colors;
+///  * institute theming reaches stock Material widgets too.
+double _contrast(Color a, Color b) {
+  final la = a.computeLuminance(), lb = b.computeLuminance();
+  final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 void main() {
   final sources = Directory('lib')
       .listSync(recursive: true)
@@ -42,6 +52,60 @@ void main() {
     expect([...literal, ...googleFonts], isEmpty,
         reason: 'Use fontFamily: AppFonts.family:\n'
             '${[...literal, ...googleFonts].join('\n')}');
+  });
+
+  // Unreferenced legacy widgets, kept out of the readability rules below.
+  const legacy = {
+    'lib/screens/mobile/room_devices_panel.dart',
+    'lib/screens/mobile/room_devices_screen.dart',
+    'lib/widgets/device_widgets.dart',
+    'lib/widgets/energy_list_widget.dart',
+    'lib/widgets/multi_month_range_picker.dart',
+  };
+
+  test('text is at least 12px', () {
+    final found = offenders(
+      RegExp(r'fontSize:\s*(\d|1[01])(\.\d+)?\b(?!.*badge glyph)'),
+      allow: legacy,
+    );
+    expect(found, isEmpty,
+        reason: 'Keep text at 12px or larger for readability (a glyph inside '
+            'a tiny badge may go smaller if its line says "badge glyph"):\n'
+            '${found.join('\n')}');
+  });
+
+  test('text does not use the old low-contrast textMuted', () {
+    final found = offenders(RegExp(r'AppColors\.textMuted\b'),
+        allow: {...legacy, 'lib/screens/web/web_theme.dart'});
+    expect(found, isEmpty,
+        reason: 'AppColors.textMuted is 2.6:1 on white; use AppColors.inkMuted '
+            '(mobile) or WebColors.muted (web):\n${found.join('\n')}');
+  });
+
+  test('status colors map to readable text colors', () {
+    const white = Colors.white;
+    for (final c in [
+      AppColors.error,
+      AppColors.warning,
+      AppColors.success,
+      AppColors.offline,
+    ]) {
+      final text = AppColors.textOn(c);
+      final ratio = _contrast(text, white);
+      expect(ratio, greaterThanOrEqualTo(4.5),
+          reason: 'textOn($c) = $text is only ${ratio.toStringAsFixed(2)}:1');
+    }
+  });
+
+  test('institute theme recolors Material widgets, not just the extension',
+      () {
+    final base = ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.greenDark));
+    final themed = const InstituteTheme(palette: InstituteColors.ic)
+        .applyTo(base);
+    expect(themed.colorScheme.primary, InstituteColors.ic.dark);
+    expect(themed.textSelectionTheme.cursorColor, InstituteColors.ic.dark);
+    expect(themed.extension<InstituteTheme>()?.palette, InstituteColors.ic);
   });
 
   testWidgets('AppTextField shakes when its error appears', (tester) async {

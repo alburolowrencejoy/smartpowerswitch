@@ -2,15 +2,15 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart';
 
-import '../../services/davao_light_rate_monitor.dart';
-import '../../services/web_version_service.dart';
+import '../../services/davao_light_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/paste_advisory_dialog.dart';
+import '../../widgets/rate_proposal_card.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
@@ -19,17 +19,15 @@ import 'web_widgets.dart';
 
 /// The website's Settings page, laid out like the design preview: a 2×2
 /// grid of panels -- Electricity Rate (manual update, fetch latest, change
-/// history), IoT Device Inventory (register + counts), Account, and App
-/// Info (with a check for a newer *website* deployment). The phone app's
-/// GitHub/APK updater lives only in the mobile [SettingsScreen].
+/// history), Device Registration (register form + device inventory),
+/// Account, and About
+/// (what the project is and who built it).
 class SettingsScreenWeb extends StatefulWidget {
   const SettingsScreenWeb({super.key});
 
   @override
   State<SettingsScreenWeb> createState() => _SettingsScreenWebState();
 }
-
-enum _ReleaseState { notChecked, checking, upToDate, available, failed }
 
 class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   final _rateController = TextEditingController();
@@ -47,17 +45,79 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   double _currentRate = 11.5;
   List<Map<String, dynamic>> _rateHistory = [];
 
-  // IoT inventory counts, from master_devices.
+  // Device inventory, from master_devices. Null until the first load.
   int? _registered;
-  int? _assigned;
+  /// Assigned devices as (id, where), where = "IC · Floor 1 · Room 101".
+  List<(String, String)>? _assignedDevices;
+  /// IDs of registered devices not assigned to any room.
+  List<String>? _unassignedDevices;
   StreamSubscription<DatabaseEvent>? _inventorySub;
 
-  // Website version check.
-  WebVersion? _runningVersion;
-  WebVersion? _deployedVersion;
-  _ReleaseState _release = _ReleaseState.notChecked;
 
-  late final DavaoLightRateMonitor _rateMonitor = DavaoLightRateMonitor();
+  /// Verified Davao Light advisory awaiting review (settings/rateProposal).
+  RateProposal? _proposal;
+  StreamSubscription<RateProposal?>? _proposalSub;
+  bool _applyingProposal = false;
+
+  /// Shown only while it's pending and differs from the current rate.
+  RateProposal? get _pendingProposal {
+    final p = _proposal;
+    if (p == null || p.status != 'pending') return null;
+    if ((p.rate - _currentRate).abs() < 0.0001) return null;
+    return p;
+  }
+
+  void _listenProposal() {
+    _proposalSub = DavaoLightService.proposal().listen(
+      (p) {
+        if (mounted) setState(() => _proposal = p);
+      },
+      onError: (Object e) => debugPrint('[Settings] rateProposal: $e'),
+    );
+  }
+
+  Future<void> _applyProposal(RateProposal p) async {
+    // A second click can land before the button rebuilds as disabled.
+    if (_applyingProposal) return;
+    setState(() => _applyingProposal = true);
+    try {
+      final applied = await DavaoLightService.apply(p, _currentRate);
+      if (!mounted) return;
+      if (applied) {
+        TopToast.success(context, 'Rate updated to ₱${p.rateText}/kWh.');
+      } else {
+        TopToast.show(context, 'This rate was already applied or dismissed.');
+      }
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Could not apply the rate: $e');
+    } finally {
+      if (mounted) setState(() => _applyingProposal = false);
+    }
+  }
+
+  Future<void> _dismissProposal() async {
+    try {
+      await DavaoLightService.dismiss();
+    } catch (e) {
+      if (mounted) TopToast.error(context, 'Could not dismiss: $e');
+    }
+  }
+
+  Widget _proposalCard() {
+    final p = _pendingProposal;
+    if (p == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: RateProposalCard(
+        proposal: p,
+        currentRate: _currentRate,
+        palette: _palette,
+        busy: _applyingProposal,
+        onApply: () => _applyProposal(p),
+        onDismiss: _dismissProposal,
+      ),
+    );
+  }
 
   /// True until the combined stream's first emission. Never reverts to
   /// true afterwards -- a fresh instance of this screen is the only
@@ -113,9 +173,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     _hydrateSessionFromAuth();
     _listenAll();
     _listenInventory();
-    WebVersionService.running().then((v) {
-      if (mounted) setState(() => _runningVersion = v);
-    }, onError: (_) {});
+    _listenProposal();
   }
 
   @override
@@ -125,6 +183,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     _timeoutTimer?.cancel();
     _combinedSub?.cancel();
     _inventorySub?.cancel();
+    _proposalSub?.cancel();
     super.dispose();
   }
 
@@ -184,25 +243,36 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     });
   }
 
-  /// Registered / assigned / unassigned counts for the IoT panel. Kept
+  /// Device inventory for the Device Registration panel: the registered
+  /// count plus which devices are assigned (and where) or free. Kept
   /// separate so a failure here never blocks the rest of the page.
   void _listenInventory() {
     _inventorySub =
         FirebaseDatabase.instance.ref('master_devices').onValue.listen((event) {
       final raw = event.snapshot.value;
-      var registered = 0, assigned = 0;
+      var registered = 0;
+      final assigned = <(String, String)>[];
+      final unassigned = <String>[];
       if (raw is Map) {
-        raw.forEach((_, v) {
+        raw.forEach((id, v) {
           registered++;
-          if (v is Map && (v['assignedTo'] ?? '').toString().isNotEmpty) {
-            assigned++;
+          final to = v is Map ? (v['assignedTo'] ?? '').toString() : '';
+          if (to.isEmpty) {
+            unassigned.add(id.toString());
+          } else {
+            assigned.add((id.toString(), _placeLabel(to)));
           }
         });
       }
+      assigned.sort((a, b) => a.$2 == b.$2
+          ? a.$1.compareTo(b.$1)
+          : a.$2.compareTo(b.$2));
+      unassigned.sort();
       if (mounted) {
         setState(() {
           _registered = registered;
-          _assigned = assigned;
+          _assignedDevices = assigned;
+          _unassignedDevices = unassigned;
         });
       }
     }, onError: (Object e) {
@@ -235,6 +305,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   // ── Actions ──────────────────────────────────────────────────────────
 
   Future<void> _saveRate() async {
+    if (_saving) return; // ignore a double click while saving
     final raw = _rateController.text.trim();
     final rate = double.tryParse(raw);
     String? err;
@@ -379,48 +450,16 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   Future<void> _fetchLatestRate() async {
     setState(() => _fetchingLatestRate = true);
     try {
-      final result = await _rateMonitor.monitorAndUpdateRate();
+      // Server-side check (functions/davao_light_watch.js): reads official
+      // and news feeds, verifies any advisory, never changes the rate.
+      final result = await DavaoLightService.checkNow();
       if (!mounted) return;
       setState(() => _fetchingLatestRate = false);
-      TopToast.show(
-        context,
-        result.hasChanged
-            ? 'Rate updated: ₱${result.oldRate.toStringAsFixed(2)} → '
-                '₱${result.newRate.toStringAsFixed(2)}/kWh'
-            : 'Latest Davao Light rate: '
-                '₱${result.newRate.toStringAsFixed(2)}/kWh (no change)',
-      );
+      TopToast.show(context, DavaoLightService.summary(result));
     } catch (e) {
       if (!mounted) return;
       setState(() => _fetchingLatestRate = false);
-      TopToast.show(context, 'Failed to fetch rate: $e', isError: true);
-    }
-  }
-
-  Future<void> _checkLatestRelease() async {
-    if (!kIsWeb) {
-      TopToast.show(
-          context,
-          'Website updates can only be checked in the '
-          'browser.');
-      return;
-    }
-    setState(() => _release = _ReleaseState.checking);
-    try {
-      final deployed = await WebVersionService.deployed();
-      final running = _runningVersion ?? await WebVersionService.running();
-      if (!mounted) return;
-      setState(() {
-        _runningVersion = running;
-        _deployedVersion = deployed;
-        _release = deployed == running
-            ? _ReleaseState.upToDate
-            : _ReleaseState.available;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _release = _ReleaseState.failed);
-      TopToast.show(context, 'Could not check for updates: $e', isError: true);
+      TopToast.show(context, DavaoLightService.errorText(e), isError: true);
     }
   }
 
@@ -429,9 +468,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
         isLoading: _isLoading,
         child: SingleChildScrollView(
@@ -467,7 +504,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
       _ratePanel(),
       _iotPanel(),
       _accountPanel(),
-      _appInfoPanel(),
+      _aboutPanel(),
     ];
     return LayoutBuilder(builder: (context, c) {
       const gap = 22.0;
@@ -555,10 +592,14 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         Wrap(spacing: 10, runSpacing: 10, children: [
           _primaryButton('Save', _saving ? null : _saveRate, loading: _saving),
           _ghostButton(
-            _fetchingLatestRate ? 'Fetching…' : 'Fetch Latest Rate',
+            _fetchingLatestRate ? 'Checking Davao Light…' : 'Fetch Latest Rate',
             _fetchingLatestRate ? null : _fetchLatestRate,
           ),
+          // For advisories posted only on Facebook (see the dialog).
+          _ghostButton('Paste advisory',
+              () => showPasteAdvisoryDialog(context, _palette)),
         ]),
+        _proposalCard(),
         const SizedBox(height: 22),
         const Text('Rate Change History',
             style: TextStyle(
@@ -586,12 +627,18 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     );
   }
 
+  /// "IC/1/Room 101" (master_devices assignedTo) -> "IC · Floor 1 · Room 101".
+  static String _placeLabel(String assignedTo) {
+    final parts = assignedTo.split('/');
+    if (parts.length < 3) return assignedTo;
+    return '${parts[0]} · Floor ${parts[1]} · ${parts.sublist(2).join('/')}';
+  }
+
   Widget _iotPanel() {
-    String count(int? n) => n == null ? '—' : '$n';
-    final registered = _registered;
-    final assigned = _assigned;
+    final assigned = _assignedDevices;
+    final unassigned = _unassignedDevices;
     return _panel(
-      title: 'IoT Device Inventory',
+      title: 'Device Registration',
       subtitle: 'Register a device ID burned into an ESP32',
       children: [
         _field(
@@ -618,18 +665,95 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
             loading: _registeringIot,
           ),
         ),
-        const SizedBox(height: 18),
-        _kvList([
-          ('Registered', count(registered)),
-          ('Assigned', count(assigned)),
-          (
-            'Unassigned',
-            registered == null || assigned == null
-                ? '—'
-                : '${registered - assigned}'
-          ),
-        ]),
+        const SizedBox(height: 24),
+        const Text('Device Inventory',
+            style: TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: WebColors.ink)),
+        const SizedBox(height: 2),
+        const Text('Hover Assigned or Unassigned to see the devices.',
+            style: TextStyle(fontSize: 13, color: WebColors.muted)),
+        const SizedBox(height: 6),
+        // Registered is just the total, so it has no list.
+        _kvList([('Registered', _registered == null ? '—' : '$_registered')]),
+        _inventoryRow(
+          'Assigned',
+          assigned?.length,
+          assigned == null
+              ? const []
+              : [for (final (id, where) in assigned) (id, where)],
+          empty: 'No devices are assigned to a room yet.',
+        ),
+        _inventoryRow(
+          'Unassigned',
+          unassigned?.length,
+          unassigned == null ? const [] : [for (final id in unassigned) (id, '')],
+          empty: 'Every registered device is assigned.',
+        ),
       ],
+    );
+  }
+
+  /// A key/value row whose value shows, on hover, the devices behind the
+  /// count: each device ID with its location (if any). Long lists are cut
+  /// off with an "and N more" line so the tooltip stays on screen.
+  Widget _inventoryRow(String label, int? count, List<(String, String)> items,
+      {required String empty}) {
+    const maxLines = 15;
+    final shown = items.take(maxLines).toList();
+    final more = items.length - shown.length;
+    final tip = TextSpan(children: [
+      TextSpan(
+          text: '$label devices\n',
+          style: const TextStyle(fontWeight: FontWeight.w700)),
+      if (items.isEmpty)
+        TextSpan(
+            text: empty,
+            style: const TextStyle(fontWeight: FontWeight.w500)),
+      for (var i = 0; i < shown.length; i++) ...[
+        TextSpan(
+            text: shown[i].$1,
+            style: const TextStyle(fontWeight: FontWeight.w700)),
+        if (shown[i].$2.isNotEmpty)
+          TextSpan(
+              text: '  ${shown[i].$2}',
+              style: const TextStyle(fontWeight: FontWeight.w400)),
+        if (i < shown.length - 1 || more > 0) const TextSpan(text: '\n'),
+      ],
+      if (more > 0)
+        TextSpan(
+            text: 'and $more more',
+            style: const TextStyle(fontWeight: FontWeight.w400)),
+    ]);
+    return Tooltip(
+      richMessage: tip,
+      preferBelow: false,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.help,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          decoration: BoxDecoration(
+            border:
+                Border(bottom: BorderSide(color: _palette.mid.withAlpha(33))),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: Text(label,
+                  style:
+                      const TextStyle(fontSize: 14, color: WebColors.muted)),
+            ),
+            Text(count == null ? '—' : '$count',
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.ink)),
+            const SizedBox(width: 6),
+            Icon(Icons.info_outline_rounded, size: 16, color: _palette.dark),
+          ]),
+        ),
+      ),
     );
   }
 
@@ -646,43 +770,37 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
     );
   }
 
-  Widget _appInfoPanel() {
-    final running = _runningVersion;
-    final latest = switch (_release) {
-      _ReleaseState.notChecked => 'Not checked yet',
-      _ReleaseState.checking => 'Checking…',
-      _ReleaseState.upToDate => 'Up to date',
-      _ReleaseState.available =>
-        '${_deployedVersion?.label ?? 'New version'} available',
-      _ReleaseState.failed => 'Could not check',
-    };
+  Widget _aboutPanel() {
     return _panel(
-      title: 'App Info',
+      title: 'About',
+      subtitle: 'SmartSwitch · Davao del Norte State College',
       children: [
+        const Text(
+          'SmartSwitch is a smart energy monitoring and control system for '
+          'the Davao del Norte State College campus. It measures the '
+          'lights, outlets and air conditioners in each room in real time, '
+          'so administrators can switch them on or off remotely, automate '
+          'schedules, and track energy use and cost across every building '
+          'and institute.',
+          style: TextStyle(
+              fontFamily: AppFonts.family,
+              fontSize: 14,
+              height: 1.5,
+              color: WebColors.mid),
+        ),
+        const SizedBox(height: 22),
+        const Text('Developed by',
+            style: TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: WebColors.ink)),
+        const SizedBox(height: 8),
         _kvList([
-          ('Institution', 'Davao del Norte State College'),
-          ('Location', 'Panabo City, Davao del Norte'),
-          ('Version', running?.label ?? '—'),
-          ('Latest release', latest),
+          ('Programmer', 'Lowrence Joy Alburo'),
+          ('System Analyst', 'Joren Naungayan'),
+          ('Documentarian', 'Rowelyn Mae Gimpao'),
         ]),
-        const SizedBox(height: 16),
-        Wrap(spacing: 10, runSpacing: 10, children: [
-          _ghostButton(
-            'Check Latest',
-            _release == _ReleaseState.checking ? null : _checkLatestRelease,
-          ),
-          if (_release == _ReleaseState.available)
-            _primaryButton('Reload to update', WebVersionService.reload,
-                icon: Icons.refresh),
-        ]),
-        if (_release == _ReleaseState.available) ...[
-          const SizedBox(height: 10),
-          const Text(
-            'A newer version of the website has been published. Reload the '
-            'page to start using it.',
-            style: TextStyle(fontSize: 12.5, color: WebColors.muted),
-          ),
-        ],
       ],
     );
   }
@@ -913,7 +1031,7 @@ class _ErrorLine extends StatelessWidget {
               color: Color(0xFFC43D3D), shape: BoxShape.circle),
           child: const Text('!',
               style: TextStyle(
-                  fontSize: 10.5,
+                  fontSize: 10.5, // badge glyph: "!" in a 15px dot
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
                   height: 1)),

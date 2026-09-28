@@ -339,7 +339,7 @@ class BreakdownPanel extends StatelessWidget {
           groupSum(mine, (r) => r.utility),
           total,
           label: (k) => Text(k),
-          color: (k, _) => AnalyticsUi.utilityColor(k),
+          color: (k, _) => AnalyticsUi.utilityColor(k, palette),
         ));
     }
     if (kind != BreakdownKind.room) {
@@ -461,7 +461,7 @@ class BreakdownPanel extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                     color: WebColors.ink)),
             Text('${total <= 0 ? 0 : (e.value / total * 100).round()}%',
-                style: const TextStyle(fontSize: 11.5, color: WebColors.muted)),
+                style: const TextStyle(fontSize: 12, color: WebColors.muted)),
           ]),
           const SizedBox(width: 8),
           Text('›',

@@ -149,20 +149,15 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     });
   }
 
-  // Fixed, non-institute-themed colors -- matches the convention already
-  // established by `AnalyticsUi.utilityColors` for these same three
-  // categories on the Analytics screen. This used to derive from
-  // `widget.palette.dark/mid/light`, but the OKLCH palette rebuild made
-  // `.light` equal to `.mid` for the four themed institutes (IC/ILEGG/ITED/
-  // IAAS), which collapsed the Outlets and AC donut slices/legend entries
-  // into the same color. Falling back to the fixed categorical ramp keeps
-  // all three slices distinct regardless of institute.
+  // Same institute-derived ramp as the Analytics screen
+  // (`AnalyticsUi.utilityColor`), which keeps Outlets and AC distinct even
+  // though the themed institutes have `light == mid`.
   Color _utilityColor(String key) {
     switch (key) {
       case 'Lights':
       case 'Outlets':
       case 'AC':
-        return AnalyticsUi.utilityColor(key);
+        return AnalyticsUi.utilityColor(key, widget.palette);
       default:
         return WebColors.muted.withAlpha(140);
     }
@@ -552,7 +547,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     final maxK = top.isEmpty ? 0.0 : top.first.monthKwh;
 
     const headStyle = TextStyle(
-      fontSize: 11.5,
+      fontSize: 12,
       fontWeight: FontWeight.w600,
       color: WebColors.muted,
       letterSpacing: 0.3,
@@ -1092,10 +1087,10 @@ class _LevelPill extends StatelessWidget {
       ),
       child: Text(level,
           style: TextStyle(
-              fontSize: 11.5,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
-              // Darkened so MID (orange) text stays readable on its tint.
-              color: Color.lerp(color, Colors.black, 0.3))),
+              // Text-safe partner so MID/LOW text stays readable on its tint.
+              color: AppColors.textOn(color))),
     );
   }
 }
@@ -1118,7 +1113,7 @@ class _LegendDot extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         Text(label,
-            style: const TextStyle(fontSize: 11.5, color: WebColors.muted)),
+            style: const TextStyle(fontSize: 12, color: WebColors.muted)),
       ],
     );
   }
@@ -1406,7 +1401,7 @@ class _AreaChartPainter extends CustomPainter {
     final tp = TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(fontSize: 11.5, color: WebColors.muted),
+        style: const TextStyle(fontSize: 12, color: WebColors.muted),
       ),
       textDirection: TextDirection.ltr,
     )..layout();

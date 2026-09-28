@@ -1336,9 +1336,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // self-locks their view to their own institute; see its `_lockCode`),
     // so there's no hidden-tab/safe-index fallback to compute here anymore.
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
@@ -1647,7 +1645,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Text(
             'Your account has no institute assigned yet.\nAsk your main admin to assign one.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textMuted),
+            style: TextStyle(color: AppColors.inkMuted),
           ),
         ),
       );
@@ -1938,7 +1936,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 8),
           Text(_errorText ?? 'Something went wrong.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+              style: const TextStyle(fontSize: 14, color: AppColors.inkMuted)),
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: _retryLoad,
@@ -2230,7 +2228,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SizedBox(width: 5),
         const Text('Live',
             style: TextStyle(
-                fontSize: 11,
+                fontFamily: AppFonts.family,
+                fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: Colors.white)),
       ]),
@@ -2264,9 +2263,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               TextSpan(
                   text: ' $unit',
                   style: TextStyle(
-                      fontSize: compact ? 10 : 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w500,
-                      color: Colors.white70)),
+                      color: Colors.white.withAlpha(230))),
           ]),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -2277,7 +2276,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               color: Colors.white)),
       const SizedBox(height: 2),
       Text(label,
-          style: TextStyle(fontSize: compact ? 10 : 11, color: Colors.white70)),
+          style: TextStyle(
+              fontFamily: AppFonts.family,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.white.withAlpha(230))),
     ]));
   }
 
@@ -2480,7 +2483,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   border: Border.all(color: color.withAlpha(77))),
               child: Text(level,
                   style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w700, color: color)),
+                      fontFamily: AppFonts.family,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textOn(color))),
             ),
           ]),
         ]),

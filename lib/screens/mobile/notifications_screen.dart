@@ -277,10 +277,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   _NotifFilter _categoryOf(Map<String, dynamic> notif) {
     final type = notif['type'] as String? ?? '';
     if (type == 'app_update') return _NotifFilter.updates;
-    if (type == 'rate_change' || type == 'rate_change_manual') {
+    if (type == 'rate_change' ||
+        type == 'rate_change_manual' ||
+        type == 'rate_proposal') {
       return _NotifFilter.rate;
     }
-    return _NotifFilter.alerts; // high_consumption, offline, unknown.
+    // high_consumption, offline, davao_light_news (e.g. power interruptions),
+    // unknown.
+    return _NotifFilter.alerts;
   }
 
   /// Rows an institute admin is allowed to see at all: their own
@@ -296,6 +300,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (!_isInstituteAdmin) return base;
     final code = _instituteCode;
     return base.where((n) {
+      // Only campus admins can apply a Davao Light rate, so the "review
+      // it" notice is theirs alone.
+      if (n['type'] == 'rate_proposal') return false;
       final building = (n['building'] as String? ?? '').trim().toUpperCase();
       return building.isEmpty || building == code;
     }).toList();
@@ -557,9 +564,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppTopBar(
@@ -751,6 +756,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final isHigh = type == 'high_consumption';
     final isUpdate = type == 'app_update';
     final isRateChange = type == 'rate_change' || type == 'rate_change_manual';
+    final isProposal = type == 'rate_proposal';
+    final isNews = type == 'davao_light_news';
+    final link = notif['link'] as String? ?? '';
     final unread = _isUnread(notif);
 
     late final IconData icon;
@@ -758,7 +766,19 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     late final Color iconBg;
     late final Color iconBorder;
     String title;
-    if (isRateChange) {
+    if (isProposal) {
+      icon = Icons.campaign_outlined;
+      iconColor = _palette.dark;
+      iconBg = Colors.white;
+      iconBorder = _palette.line;
+      title = 'New Davao Light rate';
+    } else if (isNews) {
+      icon = Icons.newspaper_outlined;
+      iconColor = _palette.dark;
+      iconBg = Colors.white;
+      iconBorder = _palette.line;
+      title = 'Davao Light';
+    } else if (isRateChange) {
       icon = Icons.receipt_long;
       iconColor = AppColors.successText;
       iconBg = Colors.white;
@@ -793,21 +813,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       final from = currentVersion.isEmpty ? 'current' : currentVersion;
       final to = latestVersion.isEmpty ? 'latest' : latestVersion;
       fallbackMessage = 'Version $from -> $to';
-    } else if (isRateChange) {
+    } else if (isRateChange || isProposal) {
       fallbackMessage = message;
+    } else if (isNews) {
+      fallbackMessage = notif['title'] as String? ?? 'New post';
     } else {
       fallbackMessage = '$building · $deviceId';
     }
-    final displayMessage = message.isNotEmpty ? message : fallbackMessage;
+    // News rows lead with the post's headline.
+    final displayMessage = isNews
+        ? fallbackMessage
+        : (message.isNotEmpty ? message : fallbackMessage);
 
     VoidCallback? onTap;
-    if (isUpdate) {
+    if (isNews && link.isNotEmpty) {
+      onTap = () => DownloadOpenService.openRemoteUrl(link);
+    } else if (isUpdate) {
       onTap = () => _showUpdateDetails(notif);
-    } else if (isRateChange) {
+    } else if (isRateChange || isProposal) {
       onTap = _openSettings;
     } else if (isHigh && building.isNotEmpty) {
       onTap = () => _openBuilding(building);
-    } else if (!isHigh && !isUpdate && !isRateChange && deviceId.isNotEmpty) {
+    } else if (!isHigh && !isUpdate && !isRateChange && !isProposal && !isNews &&
+        deviceId.isNotEmpty) {
       onTap = () => _openDevice(deviceId);
     }
 

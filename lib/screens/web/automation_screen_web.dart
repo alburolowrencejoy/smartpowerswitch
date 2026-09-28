@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../services/schedule_filter.dart';
 import '../../services/schedule_windows.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/delete_flow.dart';
@@ -566,7 +567,7 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
         child: Center(
             child: Text(step,
                 style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: widget.palette.dark))),
       ),
@@ -829,7 +830,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
     return Padding(
       padding: const EdgeInsets.only(top: 6, left: 4),
       child: Text(msg,
-          style: const TextStyle(fontSize: 12.5, color: AppColors.error)),
+          style: const TextStyle(fontSize: 13, color: AppColors.errorText)),
     );
   }
 
@@ -1047,10 +1048,13 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
       onTap: () async {
         final result = await showDialog<Map<String, String>>(
           context: context,
-          builder: (_) => _DevicePickerDialog(
-            buildingList: widget.buildings,
-            buildingFloors: widget.buildingFloors,
-            palette: _p,
+          builder: (_) => Theme(
+            data: InstituteTheme(palette: _p).applyTo(Theme.of(context)),
+            child: _DevicePickerDialog(
+              buildingList: widget.buildings,
+              buildingFloors: widget.buildingFloors,
+              palette: _p,
+            ),
           ),
         );
         if (result != null) {
@@ -1111,7 +1115,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
                     style: TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 13,
-                        color: AppColors.greenMid)),
+                        color: AppColors.successText)),
                 const SizedBox(width: 10),
                 _timeButton(
                     d.on,
@@ -1167,9 +1171,12 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
         final picked = await showTimePicker(
           context: context,
           initialTime: value ?? const TimeOfDay(hour: 8, minute: 0),
-          builder: (ctx, child) => MediaQuery(
-            data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
-            child: child!,
+          builder: (ctx, child) => Theme(
+            data: InstituteTheme(palette: _p).applyTo(Theme.of(context)),
+            child: MediaQuery(
+              data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+              child: child!,
+            ),
           ),
         );
         if (picked != null) onPicked(picked);
@@ -1224,6 +1231,7 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
           ),
         ),
         child: RangeCalendar(
+          palette: _p,
           initialStart: _range?.start ?? _day,
           initialEnd: _range?.end ?? _day,
           onDaySelected: (d) => setState(() {
@@ -1317,6 +1325,45 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
   List<String> _buildings = [];
   Map<String, int> _buildingFloors = {};
 
+  /// deviceId -> (building, room, utility), from the `buildings` subtree
+  /// this screen already listens to (no extra reads). Lets device schedules
+  /// be filtered by building/utility and labelled with their location.
+  final Map<String, ({String building, String room, String utility})>
+      _deviceIndex = {};
+
+  ScheduleFilter _filter = const ScheduleFilter();
+
+  bool get _isInstituteAdmin =>
+      widget.role.trim().toLowerCase() == 'institute_admin';
+
+  /// Institute admins see only their institute's schedules (same rule as
+  /// mobile automation_screen.dart): building schedules for it and device
+  /// schedules on its devices. Campus-wide ones aren't attributable to one
+  /// institute.
+  List<WebAutomationSchedule> _scoped(List<WebAutomationSchedule> all) {
+    final code = (_institute ?? '').trim().toUpperCase();
+    if (!_isInstituteAdmin || code.isEmpty) return all;
+    return all.where((s) {
+      if (s.scope == 'device') {
+        return (_deviceIndex[s.target]?.building ?? '').toUpperCase() == code;
+      }
+      if (s.scope == 'building') return s.target.trim().toUpperCase() == code;
+      return false;
+    }).toList();
+  }
+
+  bool _passes(WebAutomationSchedule s, ScheduleFilter f) {
+    final info = s.scope == 'device' ? _deviceIndex[s.target] : null;
+    return f.matches(
+      scope: s.scope,
+      target: s.target,
+      utility: s.utility,
+      enabled: s.enabled,
+      deviceBuilding: info?.building,
+      deviceUtility: info?.utility,
+    );
+  }
+
   // ── Institute theming ──────────────────────────────────────────────────
   // `widget.role` is already passed in by dashboard_web.dart (the only
   // caller -- see AutomationScreenWeb(role: _role) there), but no institute
@@ -1391,6 +1438,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     if (raw is Map) {
       final list = <String>[];
       final floors = <String, int>{};
+      final index = <String, ({String building, String room, String utility})>{};
       final map = Map<String, dynamic>.from(raw);
       for (final entry in map.entries) {
         final buildingCode = entry.key.toString();
@@ -1399,14 +1447,32 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
           final floorCount = (data['floors'] as num?)?.toInt() ?? 1;
           list.add(buildingCode);
           floors[buildingCode] = floorCount < 1 ? 1 : floorCount;
+          final floorData = data['floorData'];
+          if (floorData is Map) {
+            for (final floor in floorData.values) {
+              if (floor is! Map || floor['devices'] is! Map) continue;
+              (floor['devices'] as Map).forEach((id, d) {
+                if (d is! Map) return;
+                index[id.toString()] = (
+                  building: buildingCode,
+                  room: (d['room'] ?? '').toString(),
+                  utility: (d['utility'] ?? '').toString(),
+                );
+              });
+            }
+          }
         }
       }
       list.sort();
       _buildings = list;
       _buildingFloors = floors;
+      _deviceIndex
+        ..clear()
+        ..addAll(index);
     } else if (_isLoading) {
       _buildings = [];
       _buildingFloors = {};
+      _deviceIndex.clear();
     }
   }
 
@@ -1485,12 +1551,15 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
   Future<void> _openScheduleForm([WebAutomationSchedule? s]) async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (_) => _ScheduleFormDialog(
-        palette: _palette,
-        buildings: _buildings,
-        buildingFloors: _buildingFloors,
-        loadingBuildings: _loadingBuildings,
-        existing: s,
+      builder: (_) => Theme(
+        data: InstituteTheme(palette: _palette).applyTo(Theme.of(context)),
+        child: _ScheduleFormDialog(
+          palette: _palette,
+          buildings: _buildings,
+          buildingFloors: _buildingFloors,
+          loadingBuildings: _loadingBuildings,
+          existing: s,
+        ),
       ),
     );
     if (saved == true && mounted) {
@@ -1505,9 +1574,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
   Widget build(BuildContext context) {
     final schedulesLoading = _schedules.isEmpty && _isLoading;
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(widget.role, _institute)],
-      ),
+      data: InstituteTheme.resolve(widget.role, _institute).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
         isLoading: _isLoading,
         child: SingleChildScrollView(
@@ -1515,9 +1582,11 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // The add button sits right beside the title it belongs to,
+              // not across the page.
               Row(
                 children: [
-                  const Expanded(
+                  const Flexible(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -1534,29 +1603,27 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                       ],
                     ),
                   ),
-                  if (isAdmin)
-                    Padding(
-                      // Clear of the shell's floating role badge and bell.
-                      padding: const EdgeInsets.only(right: 180),
-                      child: WebIconButton(
-                        icon: Icons.add_rounded,
-                        tooltip: 'Add schedule',
-                        solid: true,
-                        size: 40,
-                        onPressed: _openScheduleForm,
-                      ),
+                  if (isAdmin) ...[
+                    const SizedBox(width: 16),
+                    WebIconButton(
+                      icon: Icons.add_rounded,
+                      tooltip: 'Add schedule',
+                      solid: true,
+                      size: 40,
+                      onPressed: _openScheduleForm,
                     ),
+                  ],
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               if (schedulesLoading)
                 _buildGroupedGrid(WebAutomationSchedule.placeholderList())
               else if (_errorText != null)
                 _buildError()
-              else if (_schedules.isEmpty)
+              else if (_scoped(_schedules).isEmpty)
                 _buildEmpty()
               else
-                _buildGroupedGrid(_schedules),
+                _buildFiltered(_scoped(_schedules)),
             ],
           ),
         ),
@@ -1634,6 +1701,135 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     );
   }
 
+  /// Filter bar (status, building, utility) over the grouped grid.
+  Widget _buildFiltered(List<WebAutomationSchedule> scoped) {
+    final placed = scoped
+        .where((s) => _passes(s, _filter.withStatus(ScheduleStatus.all)))
+        .toList();
+    final active = placed.where((s) => s.enabled).length;
+    final shown = placed.where((s) => _passes(s, _filter)).toList();
+    final p = _palette;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          SegmentedButton<ScheduleStatus>(
+            segments: [
+              ButtonSegment(
+                  value: ScheduleStatus.all,
+                  label: Text('All ${placed.length}')),
+              ButtonSegment(
+                  value: ScheduleStatus.active, label: Text('Active $active')),
+              ButtonSegment(
+                  value: ScheduleStatus.paused,
+                  label: Text('Paused ${placed.length - active}')),
+            ],
+            selected: {_filter.status},
+            showSelectedIcon: false,
+            style: SegmentedButton.styleFrom(
+              selectedBackgroundColor: p.dark,
+              selectedForegroundColor: Colors.white,
+              foregroundColor: p.dark,
+              side: const BorderSide(color: WebColors.outline),
+            ),
+            onSelectionChanged: (s) =>
+                setState(() => _filter = _filter.withStatus(s.first)),
+          ),
+          // Institute admins only see their own institute's schedules.
+          if (!_isInstituteAdmin)
+            _filterDropdown(
+              icon: Icons.apartment_outlined,
+              allLabel: 'All buildings',
+              value: _filter.building,
+              options: _buildings,
+              onChanged: (v) =>
+                  setState(() => _filter = _filter.withBuilding(v)),
+            ),
+          _filterDropdown(
+            icon: Icons.bolt_outlined,
+            allLabel: 'All utilities',
+            value: _filter.utility,
+            options: kScheduleUtilities,
+            onChanged: (v) => setState(() => _filter = _filter.withUtility(v)),
+          ),
+          if (_filter.narrowsPlace)
+            TextButton(
+              onPressed: () => setState(() => _filter = _filter.clearPlace()),
+              style: TextButton.styleFrom(foregroundColor: p.dark),
+              child: const Text('Clear filters'),
+            ),
+        ],
+      ),
+      if (_filter.building != null) ...[
+        const SizedBox(height: 8),
+        Text(
+            'Includes campus-wide schedules, which also run in '
+            '${_filter.building}.',
+            style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+      ],
+      const SizedBox(height: 20),
+      if (shown.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Text(
+              _filter.narrowsPlace
+                  ? 'No schedules match these filters.'
+                  : 'No ${_filter.status.name} schedules.',
+              style: const TextStyle(fontSize: 14, color: WebColors.muted)),
+        )
+      else
+        _buildGroupedGrid(shown),
+    ]);
+  }
+
+  /// Outlined dropdown: "All …" plus [options]; null = all.
+  Widget _filterDropdown({
+    required IconData icon,
+    required String allLabel,
+    required String? value,
+    required List<String> options,
+    required ValueChanged<String?> onChanged,
+  }) {
+    final p = _palette;
+    final on = value != null;
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.only(left: 12, right: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+            color: on ? p.dark : WebColors.outline, width: on ? 1.5 : 1),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 18, color: on ? p.dark : WebColors.mid),
+        const SizedBox(width: 6),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: value ?? '',
+            borderRadius: BorderRadius.circular(12),
+            dropdownColor: Colors.white,
+            icon: Icon(Icons.expand_more_rounded,
+                color: on ? p.dark : WebColors.mid),
+            style: TextStyle(
+                fontFamily: AppFonts.family,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: on ? p.dark : WebColors.ink),
+            items: [
+              DropdownMenuItem(value: '', child: Text(allLabel)),
+              for (final o in options)
+                DropdownMenuItem(value: o, child: Text(o)),
+            ],
+            onChanged: (v) => onChanged(v == null || v.isEmpty ? null : v),
+          ),
+        ),
+      ]),
+    );
+  }
+
   Widget _buildGroupedGrid(List<WebAutomationSchedule> schedules) {
     final global = schedules.where((s) => s.scope == 'global').toList();
     final building = schedules.where((s) => s.scope == 'building').toList();
@@ -1642,25 +1838,25 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       if (global.isNotEmpty) ...[
-        _sectionHeader('🌐 Global', global.length),
+        _sectionHeader(Icons.public, 'Global', global.length),
         const SizedBox(height: 12),
         _cardWrap(global),
         const SizedBox(height: 24)
       ],
       if (building.isNotEmpty) ...[
-        _sectionHeader('🏫 Building', building.length),
+        _sectionHeader(Icons.apartment_outlined, 'Building', building.length),
         const SizedBox(height: 12),
         _cardWrap(building),
         const SizedBox(height: 24)
       ],
       if (utility.isNotEmpty) ...[
-        _sectionHeader('⚡ Utility', utility.length),
+        _sectionHeader(Icons.bolt_outlined, 'Utility', utility.length),
         const SizedBox(height: 12),
         _cardWrap(utility),
         const SizedBox(height: 24)
       ],
       if (device.isNotEmpty) ...[
-        _sectionHeader('📟 Device', device.length),
+        _sectionHeader(Icons.memory_outlined, 'Device', device.length),
         const SizedBox(height: 12),
         _cardWrap(device),
         const SizedBox(height: 24)
@@ -1687,12 +1883,13 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
     );
   }
 
-  Widget _sectionHeader(String title, int count) {
+  Widget _sectionHeader(IconData icon, String title, int count) {
     return Wrap(
       crossAxisAlignment: WrapCrossAlignment.center,
       spacing: 8,
       runSpacing: 6,
       children: [
+        Icon(icon, size: 18, color: _palette.dark),
         Text(title,
             style: const TextStyle(
                 fontFamily: AppFonts.family,
@@ -1793,7 +1990,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
               child: _chip(Icons.power_settings_new,
                   'ON ${w.onLabel}–${w.untilLabel}', AppColors.greenMid),
             ),
-          _chip(Icons.electrical_services, s.utility, _palette.mid),
+          _chip(Icons.electrical_services, s.utility, _palette.dark),
         ]),
         const SizedBox(height: 8),
         if (s.isCalendarMode)
@@ -1814,7 +2011,7 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
                 ),
                 child: Text(d,
                     style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: active ? Colors.white : WebColors.muted)),
               );
@@ -1833,11 +2030,13 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
         border: Border.all(color: color.withAlpha(40)),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 12, color: color),
+        Icon(icon, size: 14, color: AppColors.textOn(color)),
         const SizedBox(width: 4),
         Text(label,
             style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textOn(color))),
       ]),
     );
   }
@@ -1859,7 +2058,11 @@ class _AutomationScreenWebState extends State<AutomationScreenWeb> {
       case 'utility':
         return 'Utility: ${s.target}';
       case 'device':
-        return 'Device: ${s.target}';
+        final info = _deviceIndex[s.target];
+        if (info == null) return 'Device: ${s.target}';
+        final room = info.room.isEmpty ? '' : ' · ${info.room}';
+        return '${info.utility.isEmpty ? 'Device' : info.utility} · '
+            '${info.building}$room';
       default:
         return s.scope;
     }

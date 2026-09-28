@@ -18,23 +18,30 @@ class AnalyticsUi {
   static const off = Color(0xFF9E9E9E);
   static const danger = Color(0xFFA83434);
 
-  /// Fixed utility colors (categorical, never institute-themed).
-  static const utilityColors = {
-    'Lights': Color(0xFF1A5C35),
-    'Outlets': Color(0xFF2E9E52),
-    'AC': Color(0xFF6ECB8A),
-  };
-  static Color utilityColor(String u) =>
-      utilityColors[u] ?? const Color(0xFFA7DDB9);
+  /// Utility colors, drawn from the viewer's institute ramp so an IC user
+  /// sees indigo series, ITED gold, and so on: Lights = 700, Outlets = 500,
+  /// AC = halfway from 500 to 200. The themed institutes have `light ==
+  /// mid`, so AC can't use [InstitutePalette.light] without merging into
+  /// Outlets; the blend keeps all three distinct. For the green admin ramp
+  /// this lands on (almost) the old fixed greens.
+  static Color utilityColor(String u,
+      [InstitutePalette p = InstituteColors.admin]) {
+    switch (u) {
+      case 'Lights':
+        return p.dark;
+      case 'Outlets':
+        return p.mid;
+      case 'AC':
+        return Color.lerp(p.mid, p.pale, 0.5)!;
+      default:
+        return Color.lerp(p.mid, p.pale, 0.8)!;
+    }
+  }
 
-  /// Categorical building colors for the utility breakdown.
-  static const buildingColors = {
-    'IC': Color(0xFF1A5C35),
-    'ILEGG': Color(0xFF2E9E52),
-    'ITED': Color(0xFF6ECB8A),
-    'IAAS': Color(0xFFE8922A),
-    'ADMIN': Color(0xFF2A78D6),
-  };
+  /// A building's color in breakdowns: each institute's own 500 tier
+  /// (IC indigo, ILEGG berry, ITED gold, IAAS blue, ADMIN green), falling
+  /// back to [shades] for buildings without a palette.
+  static const _paletteCodes = {'IC', 'ILEGG', 'ITED', 'IAAS', 'ADMIN'};
   static const shades = [
     Color(0xFF1A5C35),
     Color(0xFF2E9E52),
@@ -44,7 +51,9 @@ class AnalyticsUi {
     Color(0xFF8FB9A0),
   ];
   static Color buildingColor(String code, int i) =>
-      buildingColors[code] ?? shades[i % shades.length];
+      _paletteCodes.contains(code.trim().toUpperCase())
+          ? InstituteColors.forCode(code).mid
+          : shades[i % shades.length];
 
   static BoxDecoration card(InstitutePalette p) => BoxDecoration(
         color: Colors.white,

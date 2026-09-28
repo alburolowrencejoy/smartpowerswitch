@@ -10,6 +10,8 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
+import '../theme/app_fonts.dart';
+import '../theme/institute_colors.dart';
 
 class RangeCalendar extends StatefulWidget {
   final ValueChanged<DateTimeRange?>? onRangeChanged;
@@ -40,6 +42,12 @@ class RangeCalendar extends StatefulWidget {
   /// Defaults to true, unchanged for existing callers.
   final bool showInfoText;
 
+  /// Institute color ramp for the selection (range ends, in-range days,
+  /// pending day). Pass it explicitly when the calendar sits in a sheet or
+  /// dialog, whose route isn't under the screen's [InstituteTheme]; when
+  /// null it falls back to [InstituteThemeContext.institutePalette].
+  final InstitutePalette? palette;
+
   const RangeCalendar({
     super.key,
     this.onRangeChanged,
@@ -49,6 +57,7 @@ class RangeCalendar extends StatefulWidget {
     this.initialEnd,
     this.disablePast = false,
     this.showInfoText = true,
+    this.palette,
   });
 
   @override
@@ -237,6 +246,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
   @override
   Widget build(BuildContext context) {
     final days = _daysInGrid();
+    final palette = widget.palette ?? context.institutePalette;
     const dowLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
     return ConstrainedBox(
@@ -253,8 +263,11 @@ class _RangeCalendarState extends State<RangeCalendar> {
               ),
               Text(
                 _monthLabel(),
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                    fontFamily: AppFonts.family,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.ink),
               ),
               IconButton(
                 icon: const Icon(Icons.chevron_right),
@@ -268,8 +281,11 @@ class _RangeCalendarState extends State<RangeCalendar> {
                       child: Center(
                         child: Text(
                           l,
-                          style:
-                              const TextStyle(fontSize: 12, color: Colors.grey),
+                          style: const TextStyle(
+                              fontFamily: AppFonts.family,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.inkMuted),
                         ),
                       ),
                     ))
@@ -357,6 +373,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
                     if (day == null) return const SizedBox.shrink();
                     return _DayCell(
                       day: day,
+                      palette: palette,
                       isHovered:
                           _hoverDay != null && _isSameDay(_hoverDay!, day),
                       isSelectedSingle: !_isRange &&
@@ -385,7 +402,10 @@ class _RangeCalendarState extends State<RangeCalendar> {
             const SizedBox(height: 14),
             Text(
               _infoText(),
-              style: const TextStyle(fontSize: 13, color: Colors.black54),
+              style: const TextStyle(
+                  fontFamily: AppFonts.family,
+                  fontSize: 13,
+                  color: AppColors.inkMuted),
             ),
           ],
         ],
@@ -406,6 +426,7 @@ class _RangeCalendarState extends State<RangeCalendar> {
 
 class _DayCell extends StatelessWidget {
   final DateTime day;
+  final InstitutePalette palette;
   final bool isHovered;
   final bool isSelectedSingle;
   final bool isRangeEnd;
@@ -416,6 +437,7 @@ class _DayCell extends StatelessWidget {
 
   const _DayCell({
     required this.day,
+    required this.palette,
     required this.isHovered,
     required this.isSelectedSingle,
     required this.isRangeEnd,
@@ -425,14 +447,14 @@ class _DayCell extends StatelessWidget {
     required this.onHoverChanged,
   });
 
-  static const Color accent = AppColors.greenDark;
-  static const Color accentLight = AppColors.greenPale;
   static const Color hoverGrey = Color(0xFFF2F2F2);
 
   @override
   Widget build(BuildContext context) {
+    final accent = palette.dark;
+    final accentLight = palette.pale;
     Color? bg;
-    Color fg = Colors.black87;
+    Color fg = AppColors.ink;
     BoxBorder? border;
 
     if (isRangeEnd || isSelectedSingle) {
@@ -453,7 +475,7 @@ class _DayCell extends StatelessWidget {
       // selection styling above since a past day can't actually be selected.
       bg = null;
       border = null;
-      fg = Colors.black26;
+      fg = AppColors.disabledText;
     }
 
     // IgnorePointer: taps/long-presses are handled by the GestureDetector
@@ -472,7 +494,8 @@ class _DayCell extends StatelessWidget {
           alignment: Alignment.center,
           child: Text(
             '${day.day}',
-            style: TextStyle(fontSize: 14, color: fg),
+            style: TextStyle(
+                fontFamily: AppFonts.family, fontSize: 14, color: fg),
           ),
         ),
       ),

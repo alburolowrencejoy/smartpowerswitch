@@ -554,9 +554,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
@@ -1118,10 +1116,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final parts =
         ['AC', 'Outlets', 'Lights'].where((u) => (totals[u] ?? 0) > 0).toList();
     if (parts.isEmpty) return const SizedBox.shrink();
-    const colors = {
-      'Lights': Color(0xFF1A5C35),
-      'Outlets': Color(0xFF2E9E52),
-      'AC': Color(0xFF6ECB8A),
+    // Institute ramp (same mapping as the web's AnalyticsUi.utilityColor):
+    // Lights 700, Outlets 500, AC halfway to 200 so it stays distinct.
+    final colors = {
+      'Lights': _palette.dark,
+      'Outlets': _palette.mid,
+      'AC': Color.lerp(_palette.mid, _palette.pale, 0.5)!,
     };
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       _sectionHead('By utility', 'Share of ${cost ? 'cost' : 'energy'}'),
@@ -2583,6 +2583,7 @@ class _FilterSheetBodyState extends State<_FilterSheetBody> {
     final today = dateOnly(HistoryClock.instance.now());
     return Column(children: [
       RangeCalendar(
+        palette: widget.palette,
         initialStart: _draft.from,
         initialEnd: _draft.to,
         onRangeChanged: (r) {

@@ -260,7 +260,7 @@ class _WebFormDialogState extends State<_WebFormDialog> {
                 trigger: _shake,
                 child: Text(general,
                     style:
-                        const TextStyle(fontSize: 13, color: AppColors.error)),
+                        const TextStyle(fontSize: 13, color: AppColors.errorText)),
               ),
           ],
         ),
@@ -440,7 +440,7 @@ class WebLevelPill extends StatelessWidget {
       child: Text(level,
           textAlign: TextAlign.center,
           style: TextStyle(
-              fontSize: 11.5, fontWeight: FontWeight.w700, color: fg)),
+              fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 }
@@ -481,11 +481,15 @@ class WebSwitch extends StatelessWidget {
   final ValueChanged<bool>? onChanged;
   final String semanticLabel;
 
+  /// On-state color ramp; defaults to the ambient institute palette.
+  final InstitutePalette? palette;
+
   const WebSwitch({
     super.key,
     required this.value,
     required this.onChanged,
     required this.semanticLabel,
+    this.palette,
   });
 
   @override
@@ -509,8 +513,10 @@ class WebSwitch extends StatelessWidget {
               padding: const EdgeInsets.all(3),
               alignment: value ? Alignment.centerRight : Alignment.centerLeft,
               decoration: BoxDecoration(
-                color:
-                    value ? const Color(0xFF2E9E52) : const Color(0xFFCFD8D2),
+                // On = the institute's 700 tier, like mobile's AppSwitch.
+                color: value
+                    ? (palette ?? context.institutePalette).dark
+                    : const Color(0xFFCFD8D2),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Container(

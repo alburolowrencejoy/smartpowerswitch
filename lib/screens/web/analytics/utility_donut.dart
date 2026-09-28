@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../web_theme.dart';
 import 'analytics_ui.dart';
 import '../../../theme/app_fonts.dart';
+import '../../../theme/institute_colors.dart';
 
 /// The "Top Consuming Utilities" donut. Slices are hoverable and clickable.
 class UtilityDonut extends StatefulWidget {
@@ -75,7 +76,8 @@ class _UtilityDonutState extends State<UtilityDonut> {
               width: _size,
               height: _size,
               child: CustomPaint(
-                painter: _DonutPainter(widget.data, _hover),
+                painter: _DonutPainter(
+                    widget.data, _hover, context.institutePalette),
                 child: Center(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     Text(widget.centerValue,
@@ -101,7 +103,8 @@ class _UtilityDonutState extends State<UtilityDonut> {
 class _DonutPainter extends CustomPainter {
   final List<MapEntry<String, double>> data;
   final int? hover;
-  _DonutPainter(this.data, this.hover);
+  _DonutPainter(this.data, this.hover, this.palette);
+  final InstitutePalette palette;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -131,7 +134,7 @@ class _DonutPainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = i == hover ? _stroke + 4 : _stroke
-          ..color = AnalyticsUi.utilityColor(data[i].key),
+          ..color = AnalyticsUi.utilityColor(data[i].key, palette),
       );
       start += sweep;
     }
@@ -139,5 +142,5 @@ class _DonutPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DonutPainter old) =>
-      old.data != data || old.hover != hover;
+      old.data != data || old.hover != hover || old.palette != palette;
 }

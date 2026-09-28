@@ -14,6 +14,10 @@ Future<T?> showAppBottomSheet<T>(
   required WidgetBuilder builder,
   bool isDismissible = true,
 }) {
+  // The sheet's route sits on the root overlay, outside the calling
+  // screen's local Theme, so carry that theme (and its institute palette)
+  // across -- otherwise stock widgets in the sheet fall back to green.
+  final theme = Theme.of(context);
   return showModalBottomSheet<T>(
     context: context,
     isScrollControlled: true,
@@ -23,7 +27,8 @@ Future<T?> showAppBottomSheet<T>(
       maxWidth: double.infinity,
       maxHeight: MediaQuery.of(context).size.height * 0.88,
     ),
-    builder: builder,
+    builder: (sheetContext) =>
+        Theme(data: theme, child: Builder(builder: builder)),
   );
 }
 
@@ -62,61 +67,67 @@ class BottomSheetScaffold extends StatelessWidget {
   Widget build(BuildContext context) {
     final resolvedPalette = palette ?? context.institutePalette;
 
-    return SafeArea(
-      top: false,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 36,
-              height: 4,
-              margin: const EdgeInsets.only(top: 10, bottom: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFC6D6CB),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: resolvedPalette.line, width: 1),
+    // Re-apply the palette to Material's color scheme too, so stock widgets
+    // in the sheet (field focus ring, cursor, radios, spinners) match it.
+    return Theme(
+      data: InstituteTheme(palette: resolvedPalette).applyTo(Theme.of(context)),
+      child: SafeArea(
+        top: false,
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(top: 10, bottom: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFC6D6CB),
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink),
-                    ),
-                  ),
-                  if (headerAction != null) headerAction!,
-                ],
-              ),
-            ),
-            Flexible(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: SingleChildScrollView(child: body),
-              ),
-            ),
-            if (footer != null)
               Container(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 decoration: BoxDecoration(
                   border: Border(
-                    top: BorderSide(color: resolvedPalette.line, width: 1),
+                    bottom: BorderSide(color: resolvedPalette.line, width: 1),
                   ),
                 ),
-                child: footer!,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: AppTextStyles.sheetTitle
+                            .copyWith(color: AppColors.ink),
+                      ),
+                    ),
+                    if (headerAction != null) headerAction!,
+                  ],
+                ),
               ),
-          ],
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: SingleChildScrollView(child: body),
+                ),
+              ),
+              if (footer != null)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(color: resolvedPalette.line, width: 1),
+                    ),
+                  ),
+                  child: footer!,
+                ),
+            ],
+          ),
         ),
       ),
     );

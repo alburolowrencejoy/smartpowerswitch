@@ -472,9 +472,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
     // Web typography (app font, readable muted text)
     // plus the resolved InstituteTheme extension for descendants.
     return Theme(
-      data: webTheme(Theme.of(context)).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data: InstituteTheme.resolve(_role, _institute).applyTo(webTheme(Theme.of(context))),
       child: Scaffold(
         backgroundColor: pageBg,
         body: SafeArea(
@@ -537,8 +535,8 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         child: Text(
           text,
           style: TextStyle(
-            color: Colors.white.withAlpha(140),
-            fontSize: 11.5,
+            color: Colors.white.withAlpha(205),
+            fontSize: 12,
             fontWeight: FontWeight.w700,
             letterSpacing: 1.4,
           ),
@@ -710,6 +708,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         // 1 Map
         CampusMapScreenWeb(
           role: _role,
+          institute: _institute,
           onBuildingTap: _openBuilding,
           onDeviceTap: _openDevice,
         ),
@@ -885,7 +884,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 10,
+                        fontSize: 10, // badge glyph: unread count in a small dot
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -1284,7 +1283,7 @@ class _WebBuildingCard extends StatelessWidget {
                   child: Text(
                     levelLabel,
                     style: TextStyle(
-                      color: levelColor,
+                      color: AppColors.textOn(levelColor),
                       fontWeight: FontWeight.w700,
                       fontSize: 12,
                     ),

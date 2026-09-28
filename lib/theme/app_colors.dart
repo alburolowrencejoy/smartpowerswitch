@@ -40,6 +40,21 @@ class AppColors {
   static const success    = Color(0xFF2E9E52);
   static const successText = Color(0xFF1F7A40);
   static const offline    = Color(0xFF9E9E9E);
+  // Text-safe partner of [offline] (~5.7:1 on white; [offline] is 2.7:1).
+  static const offlineText = Color(0xFF5B6660);
+
+  /// The readable text color for a status fill. [warning], [success],
+  /// [offline] and [error] are dot/fill/icon colors and are too light for
+  /// text (2.5-4.3:1 on white); text drawn "in" one of them should use its
+  /// darker `*Text` partner instead. Any other color is returned unchanged.
+  static Color textOn(Color status) {
+    final v = status.toARGB32();
+    if (v == error.toARGB32()) return errorText;
+    if (v == warning.toARGB32()) return warningText;
+    if (v == success.toARGB32()) return successText;
+    if (v == offline.toARGB32()) return offlineText;
+    return status;
+  }
 
   // Surface
   static const surface    = Color(0xFFF4FBF6);

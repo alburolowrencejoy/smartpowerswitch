@@ -422,18 +422,24 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   // this deliberately mirrors; keep the two in sync if you touch either.) ─
   Future<void> _addDeviceToRoom(String room) async {
     var assignedInBuilding = 0;
+    // Registered devices not yet in any room: the only ones that can be
+    // added, so they're offered as a list instead of a typed ID.
+    final unassigned = <String>[];
     try {
       final capSnap =
           await FirebaseDatabase.instance.ref('master_devices').get();
       if (capSnap.value is Map) {
         (capSnap.value as Map).forEach((id, val) {
-          if (val is! Map) return;
-          final assignedTo = (val['assignedTo'] ?? '').toString();
-          if (assignedTo.startsWith('${widget.buildingCode}/')) {
+          final assignedTo =
+              val is Map ? (val['assignedTo'] ?? '').toString() : '';
+          if (assignedTo.isEmpty) {
+            unassigned.add(id.toString());
+          } else if (assignedTo.startsWith('${widget.buildingCode}/')) {
             assignedInBuilding++;
           }
         });
       }
+      unassigned.sort();
     } catch (e) {
       if (mounted) {
         TopToast.error(context, 'Could not check the device limit: $e');
@@ -445,24 +451,30 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       TopToast.threshold(context, 'Device limit reached (24 max).');
       return;
     }
+    if (unassigned.isEmpty) {
+      TopToast.threshold(context,
+          'No unassigned devices. Register a device in Settings first.');
+      return;
+    }
 
-    // One "Add device" sheet (utility + ID together) in the redesign's
+    // One "Add device" sheet (utility + device together) in the redesign's
     // sheet chrome, instead of two back-to-back dialogs.
-    final idController = TextEditingController();
+    String? pickedId;
     String? pickedUtility;
+    final nameController = TextEditingController();
     String? utilityError;
     String? idError;
     int idShake = 0;
     bool checking = false;
 
-    final picked = await showAppBottomSheet<(String, String)>(
+    final picked = await showAppBottomSheet<(String, String, String)>(
       context,
       builder: (sheetCtx) => StatefulBuilder(
         builder: (sheetCtx, setS) {
           Future<void> submit() async {
-            final id = idController.text.trim().toUpperCase();
+            final id = pickedId ?? '';
             String? ue = pickedUtility == null ? 'Choose a utility type' : null;
-            String? ie = id.isEmpty ? 'Please enter a Device ID' : null;
+            String? ie = id.isEmpty ? 'Choose a device' : null;
             if (ue != null || ie != null) {
               setS(() {
                 utilityError = ue;
@@ -505,7 +517,8 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               });
               return;
             }
-            Navigator.pop(sheetCtx, (pickedUtility!, id));
+            Navigator.pop(
+                sheetCtx, (pickedUtility!, id, nameController.text.trim()));
           }
 
           Widget option(String value, IconData icon, String label) {
@@ -576,29 +589,64 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                             .copyWith(color: AppColors.errorText)),
                   ),
                 const SizedBox(height: 10),
-                Text('Device ID',
+                Text('Device',
                     style: AppTextStyles.label.copyWith(color: AppColors.ink)),
                 const SizedBox(height: 4),
-                Text('The ID on the sticker of the ESP32 board.',
+                Text(
+                    '${unassigned.length} unassigned '
+                    '${unassigned.length == 1 ? 'device' : 'devices'} '
+                    'registered in Settings.',
+                    style: AppTextStyles.bodySm
+                        .copyWith(color: AppColors.inkMid)),
+                const SizedBox(height: 8),
+                ShakeOnError(
+                  error: idError,
+                  trigger: idShake,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: pickedId,
+                    isExpanded: true,
+                    menuMaxHeight: 320,
+                    borderRadius: BorderRadius.circular(12),
+                    dropdownColor: Colors.white,
+                    hint: Text('Choose a device',
+                        style: AppTextStyles.body
+                            .copyWith(color: AppColors.placeholder)),
+                    style: AppTextStyles.body.copyWith(color: AppColors.ink),
+                    decoration: InputDecoration(
+                      errorText: idError,
+                      prefixIcon: const Icon(Icons.memory_outlined,
+                          color: AppColors.inkMuted),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    items: [
+                      for (final id in unassigned)
+                        DropdownMenuItem(value: id, child: Text(id)),
+                    ],
+                    onChanged: (v) => setS(() {
+                      pickedId = v;
+                      idError = null;
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text('Name (optional)',
+                    style: AppTextStyles.label.copyWith(color: AppColors.ink)),
+                const SizedBox(height: 4),
+                Text('Shown instead of the device type, e.g. Front lights.',
                     style: AppTextStyles.bodySm
                         .copyWith(color: AppColors.inkMid)),
                 const SizedBox(height: 8),
                 AppTextField(
-                  controller: idController,
-                  shakeTrigger: idError == null ? 0 : idShake,
-                  textCapitalization: TextCapitalization.characters,
+                  controller: nameController,
+                  maxLength: 40,
+                  textCapitalization: TextCapitalization.sentences,
                   decoration: InputDecoration(
-                    hintText: 'e.g. ESP32-ROOM101-001',
-                    errorText: idError,
-                    prefixIcon:
-                        const Icon(Icons.qr_code, color: AppColors.inkMuted),
+                    hintText: 'e.g. Front lights',
+                    counterText: '',
                     border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12)),
                   ),
-                  onChanged: (_) {
-                    if (idError != null) setS(() => idError = null);
-                  },
-                  onSubmitted: (_) => submit(),
                 ),
               ],
             ),
@@ -613,7 +661,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       ),
     );
     if (picked == null || !mounted) return;
-    final (utility, deviceId) = picked;
+    final (utility, deviceId, name) = picked;
 
     try {
       await FirebaseDatabase.instance
@@ -624,6 +672,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         'status': 'offline',
         'relay': false,
         'room': room,
+        if (name.isNotEmpty) 'name': name,
       });
       await FirebaseDatabase.instance.ref('devices/$deviceId').update({
         'building': widget.buildingCode,
@@ -644,7 +693,11 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
           .set('${widget.buildingCode}/$_selectedFloor/$room');
 
       if (!mounted) return;
-      TopToast.success(context, '$deviceId added as $utility in $room.');
+      TopToast.success(
+          context,
+          name.isNotEmpty
+              ? '"$name" ($utility) added to $room.'
+              : '$deviceId added as $utility in $room.');
     } catch (e) {
       if (!mounted) return;
       TopToast.error(context, 'Failed to add device: $e');
@@ -736,9 +789,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme(palette: _palette)],
-      ),
+      data: InstituteTheme(palette: _palette).applyTo(Theme.of(context)),
       child: Scaffold(
         backgroundColor: Colors.white,
         body: SafeArea(
@@ -953,12 +1004,16 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
   Widget _deviceRow(
       String deviceId, Map<String, dynamic> floorDevice, String room) {
     final utility = (floorDevice['utility'] ?? '').toString();
+    final customName = (floorDevice['name'] ?? '').toString().trim();
     final online = _isDeviceOnline(deviceId);
     final relayOn = floorDevice['relay'] == true;
     final watts = (_liveFor(deviceId)?['power'] as num?)?.toDouble();
-    final statusText = online
-        ? 'Online${watts != null ? ' · ${watts.toStringAsFixed(0)} W' : ''}'
-        : 'Offline';
+    final statusText = (customName.isNotEmpty
+            ? '${_utilityLabel(utility)} · '
+            : '') +
+        (online
+            ? 'Online${watts != null ? ' · ${watts.toStringAsFixed(0)} W' : ''}'
+            : 'Offline');
     final dotColor = online ? AppColors.success : AppColors.offline;
     final toggling = _togglingDevices.contains(deviceId);
 
@@ -985,7 +1040,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_utilityLabel(utility),
+                  Text(customName.isNotEmpty ? customName : _utilityLabel(utility),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: AppTextStyles.subtitle
                           .copyWith(color: AppColors.ink)),
                   const SizedBox(height: 2),

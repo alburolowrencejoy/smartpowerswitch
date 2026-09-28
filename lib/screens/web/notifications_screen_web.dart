@@ -275,141 +275,146 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
     final notes =
         changelog.trim().isNotEmpty ? changelog.trim() : details.trim();
 
+    final theme = Theme.of(context);
     showDialog<void>(
       context: context,
-      builder: (ctx) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark,
+      builder: (ctx) => Theme(
+        data: theme,
+        child: Dialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textDark,
+                    ),
                   ),
-                ),
-                if (message.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(message,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textMid)),
-                ],
-                if (versionLine.isNotEmpty) ...[
-                  const SizedBox(height: 10),
+                  if (message.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(message,
+                        style: const TextStyle(
+                            fontSize: 13, color: WebColors.mid)),
+                  ],
+                  if (versionLine.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Icon(Icons.system_update_alt_outlined,
+                            size: 16, color: _palette.dark),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Version: $versionLine',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: _palette.dark),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (publishedAt != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Published: ${publishedAt.day}/${publishedAt.month}/${publishedAt.year}',
+                      style:
+                          const TextStyle(fontSize: 12, color: WebColors.muted),
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  const Text(
+                    'What\'s New',
+                    style: TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textDark,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    constraints: const BoxConstraints(maxHeight: 280),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: WebColors.outline),
+                    ),
+                    child: SingleChildScrollView(
+                      child: Text(
+                        notes.isEmpty
+                            ? 'No detailed release notes were provided for this version.'
+                            : notes,
+                        style: const TextStyle(
+                            fontSize: 13.5,
+                            height: 1.35,
+                            color: AppColors.textDark),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      Icon(Icons.system_update_alt_outlined,
-                          size: 16, color: _palette.dark),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Version: $versionLine',
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: _palette.dark),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        // Bug fix: no explicit style meant this fell back to
+                        // the app-wide seed-green ColorScheme.primary
+                        // (main.dart) instead of this viewer's resolved
+                        // institute theme -- WebColors.muted matches the
+                        // "Cancel"/neutral-dismiss convention used by every
+                        // other dialog button in this file.
+                        child: const Text('Close',
+                            style: TextStyle(color: WebColors.muted)),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: releaseUrl.isEmpty
+                            ? null
+                            : () => _openUrlExternal(releaseUrl),
+                        icon: const Icon(Icons.open_in_new, size: 16),
+                        label: const Text('Release Page'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _palette.dark,
+                          side: BorderSide(color: _palette.dark.withAlpha(80)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: assetUrl.isEmpty
+                            ? null
+                            : () => _downloadAndOpenFile(assetUrl, assetName),
+                        icon: const Icon(Icons.download_rounded,
+                            size: 16, color: Colors.white),
+                        label: Text(
+                          assetName.isNotEmpty ? 'Download & Open' : 'Download',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _palette.dark,
+                          disabledBackgroundColor:
+                              WebColors.muted.withAlpha(70),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
                       ),
                     ],
                   ),
                 ],
-                if (publishedAt != null) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    'Published: ${publishedAt.day}/${publishedAt.month}/${publishedAt.year}',
-                    style: const TextStyle(
-                        fontSize: 12, color: WebColors.muted),
-                  ),
-                ],
-                const SizedBox(height: 14),
-                const Text(
-                  'What\'s New',
-                  style: TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textDark,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  constraints: const BoxConstraints(maxHeight: 280),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: WebColors.outline),
-                  ),
-                  child: SingleChildScrollView(
-                    child: Text(
-                      notes.isEmpty
-                          ? 'No detailed release notes were provided for this version.'
-                          : notes,
-                      style: const TextStyle(
-                          fontSize: 13.5,
-                          height: 1.35,
-                          color: AppColors.textDark),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      // Bug fix: no explicit style meant this fell back to
-                      // the app-wide seed-green ColorScheme.primary
-                      // (main.dart) instead of this viewer's resolved
-                      // institute theme -- WebColors.muted matches the
-                      // "Cancel"/neutral-dismiss convention used by every
-                      // other dialog button in this file.
-                      child: const Text('Close',
-                          style: TextStyle(color: WebColors.muted)),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      onPressed: releaseUrl.isEmpty
-                          ? null
-                          : () => _openUrlExternal(releaseUrl),
-                      icon: const Icon(Icons.open_in_new, size: 16),
-                      label: const Text('Release Page'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: _palette.dark,
-                        side: BorderSide(color: _palette.dark.withAlpha(80)),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton.icon(
-                      onPressed: assetUrl.isEmpty
-                          ? null
-                          : () => _downloadAndOpenFile(assetUrl, assetName),
-                      icon: const Icon(Icons.download_rounded,
-                          size: 16, color: Colors.white),
-                      label: Text(
-                        assetName.isNotEmpty ? 'Download & Open' : 'Download',
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _palette.dark,
-                        disabledBackgroundColor:
-                            WebColors.muted.withAlpha(70),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -421,54 +426,53 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
   Widget build(BuildContext context) {
     final showLoadingPlaceholder = _loading && _notifications.isEmpty;
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data:
+          InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
-      isLoading: showLoadingPlaceholder,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_notifications.isNotEmpty || showLoadingPlaceholder) ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${_notifications.length} ${_notifications.length == 1 ? 'alert' : 'alerts'}',
-                      style: const TextStyle(
-                          fontSize: 13, color: WebColors.muted),
+        isLoading: showLoadingPlaceholder,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_notifications.isNotEmpty || showLoadingPlaceholder) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${_notifications.length} ${_notifications.length == 1 ? 'alert' : 'alerts'}',
+                        style: const TextStyle(
+                            fontSize: 13, color: WebColors.muted),
+                      ),
                     ),
-                  ),
-                  _iconToggle(
-                    icon: _newestFirst
-                        ? Icons.arrow_downward
-                        : Icons.arrow_upward,
-                    tooltip: _newestFirst ? 'Newest first' : 'Oldest first',
-                    onTap: () => setState(() => _newestFirst = !_newestFirst),
-                  ),
-                  const SizedBox(width: 6),
-                  _iconToggle(
-                    icon: Icons.clear_all,
-                    tooltip: 'Clear all',
-                    onTap: _clearAll,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
+                    _iconToggle(
+                      icon: _newestFirst
+                          ? Icons.arrow_downward
+                          : Icons.arrow_upward,
+                      tooltip: _newestFirst ? 'Newest first' : 'Oldest first',
+                      onTap: () => setState(() => _newestFirst = !_newestFirst),
+                    ),
+                    const SizedBox(width: 6),
+                    _iconToggle(
+                      icon: Icons.clear_all,
+                      tooltip: 'Clear all',
+                      onTap: _clearAll,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (showLoadingPlaceholder)
+                _buildList(placeholderNotificationList())
+              else if (_errorText != null)
+                _buildError()
+              else if (_notifications.isEmpty)
+                _buildEmpty()
+              else
+                _buildList(_sortedNotifications),
             ],
-            if (showLoadingPlaceholder)
-              _buildList(placeholderNotificationList())
-            else if (_errorText != null)
-              _buildError()
-            else if (_notifications.isEmpty)
-              _buildEmpty()
-            else
-              _buildList(_sortedNotifications),
-          ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -514,11 +518,12 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               width: 60,
               height: 60,
               decoration: BoxDecoration(
-                color: Colors.white, border: Border.all(color: WebColors.outline),
+                color: Colors.white,
+                border: Border.all(color: WebColors.outline),
                 borderRadius: BorderRadius.circular(18),
               ),
-              child: Icon(Icons.notifications_none,
-                  size: 30, color: _palette.mid),
+              child:
+                  Icon(Icons.notifications_none, size: 30, color: _palette.mid),
             ),
             const SizedBox(height: 14),
             const Text('No notifications',
@@ -558,7 +563,8 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               width: 60,
               height: 60,
               decoration: BoxDecoration(
-                color: Colors.white, border: Border.all(color: WebColors.outline),
+                color: Colors.white,
+                border: Border.all(color: WebColors.outline),
                 borderRadius: BorderRadius.circular(18),
               ),
               child: Icon(Icons.lock_outline, size: 28, color: _palette.mid),
@@ -573,8 +579,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
             const SizedBox(height: 8),
             Text(_errorText ?? 'Something went wrong.',
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 13, color: WebColors.muted)),
+                style: const TextStyle(fontSize: 13, color: WebColors.muted)),
           ],
         ),
       ),
@@ -611,23 +616,28 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
     final timestamp = notif['timestamp'] as int? ?? 0;
     final isHigh = type == 'high_consumption';
     final isUpdate = type == 'app_update';
-    final isRateChange = type == 'rate_change' ||
-        type == 'rate_change_manual' ||
-        type == 'rate_change_manual';
+    final isRateChange = type == 'rate_change' || type == 'rate_change_manual';
+    final isProposal = type == 'rate_proposal';
+    final isNews = type == 'davao_light_news';
+    final link = notif['link'] as String? ?? '';
 
     // Semantic: notification-type severity tier (rate-change/update = green
     // "info", high-consumption = warning, offline-device = error) -- not
     // brand chrome, so deliberately NOT retheme'd (matches mobile
     // notifications_screen.dart). Drives this card's icon, icon background,
     // and border below.
-    final color = isRateChange
+    final color = isRateChange || isProposal || isNews
         ? AppColors.greenMid
         : isUpdate
             ? AppColors.greenMid
             : isHigh
                 ? AppColors.warning
                 : AppColors.error;
-    final icon = isRateChange
+    final icon = isProposal
+        ? Icons.campaign_outlined
+        : isNews
+            ? Icons.newspaper_outlined
+            : isRateChange
         ? Icons.check_circle
         : isUpdate
             ? Icons.system_update_alt_outlined
@@ -643,15 +653,26 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
       final from = currentVersion.isEmpty ? 'current' : currentVersion;
       final to = latestVersion.isEmpty ? 'latest' : latestVersion;
       sourceLine = 'Version $from -> $to';
+    } else if (isProposal) {
+      sourceLine = 'Davao Light advisory · review it in Settings';
+    } else if (isNews) {
+      sourceLine = 'Davao Light newsroom · click to open the post';
+    } else if (isRateChange) {
+      sourceLine = 'Electricity rate';
     } else {
       sourceLine = '$building · $deviceId';
     }
+    final headline = isNews ? (notif['title'] as String? ?? message) : message;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: isUpdate ? () => _showUpdateDetails(notif) : null,
+        onTap: isUpdate
+            ? () => _showUpdateDetails(notif)
+            : (isNews || isProposal) && link.isNotEmpty
+                ? () => _openUrlExternal(link)
+                : null,
         child: Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -674,7 +695,7 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(message,
+                    Text(headline,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -694,13 +715,13 @@ class _NotificationsScreenWebState extends State<NotificationsScreenWeb> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 11.5, color: AppColors.textMid),
+                            fontSize: 12.5, color: WebColors.mid),
                       ),
                     ],
                     const SizedBox(height: 2),
                     Text(timeStr,
                         style: const TextStyle(
-                            fontSize: 11, color: WebColors.muted)),
+                            fontSize: 12, color: WebColors.muted)),
                   ]),
             ),
           ]),

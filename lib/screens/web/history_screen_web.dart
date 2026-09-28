@@ -226,8 +226,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   /// Building names and floor counts for the Scope panel and labels.
   void _listenBuildings() {
-    _buildingsSub = FirebaseDatabase.instance.ref('buildings').onValue.listen(
-        (e) {
+    _buildingsSub =
+        FirebaseDatabase.instance.ref('buildings').onValue.listen((e) {
       final raw = e.snapshot.value;
       final out = <String, BuildingInfo>{};
       if (raw is Map) {
@@ -1028,6 +1028,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   }
 
   bool get _asCost => _filter.metric == ValueMetric.cost;
+
   /// Past rates, so records without a stored cost are priced at their own
   /// day's rate rather than today's.
   RateTimeline get _rates => RateHistory.instance.timeline(_electricityRate);
@@ -1049,19 +1050,20 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final today = dateOnly(HistoryClock.instance.now());
     final span = f.span(today);
     final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
-    final rows =
-        applyFilter(f, parseDaily(_rangeRaw, _meta, rates: _rates, deleted: deleted), span);
+    final rows = applyFilter(
+        f, parseDaily(_rangeRaw, _meta, rates: _rates, deleted: deleted), span);
     final cmpSpan = f.compareSpan(today);
     final cmpRows = cmpSpan == null
         ? null
         : applyFilter(
-            f, parseDaily(_compareRaw, _meta, rates: _rates, deleted: deleted), cmpSpan);
+            f,
+            parseDaily(_compareRaw, _meta, rates: _rates, deleted: deleted),
+            cmpSpan);
     final empty = _rangeLoaded && rows.isEmpty;
 
     return Theme(
-      data: Theme.of(context).copyWith(
-        extensions: [InstituteTheme.resolve(_role, _institute)],
-      ),
+      data:
+          InstituteTheme.resolve(_role, _institute).applyTo(Theme.of(context)),
       child: ScreenSkeleton(
         isLoading: _isLoading,
         child: Builder(builder: (context) {
@@ -1190,7 +1192,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                  color: Colors.white, border: Border.all(color: WebColors.outline),
+                  color: Colors.white,
+                  border: Border.all(color: WebColors.outline),
                   borderRadius: BorderRadius.circular(20)),
               child: Icon(Icons.cloud_off_outlined,
                   size: 34, color: _palette.mid)),
@@ -1235,7 +1238,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           width: 64,
           height: 64,
           decoration: BoxDecoration(
-              color: Colors.white, border: Border.all(color: WebColors.outline),
+              color: Colors.white,
+              border: Border.all(color: WebColors.outline),
               borderRadius: BorderRadius.circular(18)),
           child: Icon(Icons.filter_alt_off_outlined,
               size: 30, color: _palette.dark),
@@ -1258,9 +1262,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         ),
         const SizedBox(height: 18),
         ElevatedButton(
-          onPressed: f.isDefault
-              ? null
-              : () => _setFilter(AnalyticsFilter.defaults),
+          onPressed:
+              f.isDefault ? null : () => _setFilter(AnalyticsFilter.defaults),
           style: ElevatedButton.styleFrom(
             backgroundColor: _palette.dark,
             foregroundColor: Colors.white,
@@ -1280,15 +1283,17 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   String _fmtNumber(double v, {int decimals = 0}) {
     final fixed = v.toStringAsFixed(decimals);
     final parts = fixed.split('.');
-    final whole = parts[0].replaceAllMapped(
-        RegExp(r'(\d)(?=(\d{3})+$)'), (m) => '${m[1]},');
+    final whole = parts[0]
+        .replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+$)'), (m) => '${m[1]},');
     return parts.length > 1 ? '$whole.${parts[1]}' : whole;
   }
 
   Widget _livePill() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-            color: Colors.white, border: Border.all(color: WebColors.outline), borderRadius: BorderRadius.circular(20)),
+            color: Colors.white,
+            border: Border.all(color: WebColors.outline),
+            borderRadius: BorderRadius.circular(20)),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(
               width: 7,
@@ -1305,13 +1310,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       );
 
   /// Segmented pill: a white "thumb" on the selected option.
-  Widget _segmented(
-      Map<String, String> options, String selected, ValueChanged<String> onTap) {
+  Widget _segmented(Map<String, String> options, String selected,
+      ValueChanged<String> onTap) {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-          color: WebColors.track,
-          borderRadius: BorderRadius.circular(11)),
+          color: WebColors.track, borderRadius: BorderRadius.circular(11)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         for (final e in options.entries)
           Material(
@@ -1331,9 +1335,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                         fontWeight: e.key == selected
                             ? FontWeight.w600
                             : FontWeight.w500,
-                        color: e.key == selected
-                            ? _palette.dark
-                            : WebColors.mid)),
+                        color:
+                            e.key == selected ? _palette.dark : WebColors.mid)),
               ),
             ),
           ),
@@ -1370,8 +1373,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  Widget _statGrid(List<UsageRow> rows, List<UsageRow>? cmp,
-      DateTimeRange span, DateTimeRange? cmpSpan) {
+  Widget _statGrid(List<UsageRow> rows, List<UsageRow>? cmp, DateTimeRange span,
+      DateTimeRange? cmpSpan) {
     final f = _filter;
     final total = sumKwh(rows);
     final days = _allowedDays(span);
@@ -1391,63 +1394,77 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         .length;
     final rep = reporting(rows);
 
-    final cards = [
-      _statCard(
-        icon: Icons.bolt_rounded,
-        value: _fmtNumber(total, decimals: 1),
-        unit: 'kWh',
-        label: 'Total energy',
-        caption: f.rangeName,
-        delta: _delta(total, cTotal),
-      ),
-      _statCard(
-        icon: Icons.payments_outlined,
-        value: '₱${_fmtNumber(cost)}',
-        label: 'Total cost',
-        caption: (avgRate - _electricityRate).abs() < 0.005
-            ? 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh'
-            : 'At rates recorded · ₱${avgRate.toStringAsFixed(2)} avg per kWh',
-        delta: _delta(cost, cCost),
-      ),
-      _statCard(
-        icon: Icons.show_chart_rounded,
-        value: _fmtNumber(avg, decimals: 1),
-        unit: 'kWh',
-        label: 'Daily average',
-        caption:
-            '$days ${f.dayType == DayType.all ? 'day' : f.dayType.label.toLowerCase().replaceAll('s', '')}${days == 1 ? '' : 's'}',
-        delta: _delta(avg, cAvg),
-      ),
-      _statCard(
-        icon: Icons.wifi_tethering_rounded,
-        value: '$online / ${scoped.length}',
-        label: 'Devices online',
-        caption: cmp == null ? 'Online now' : '$rep reported usage',
-        delta: cmp == null
-            ? null
-            : _delta(rep.toDouble(), reporting(cmp).toDouble(),
-                upIsBad: false),
-      ),
-    ];
+    // [compact] is decided here from the known card width, not by a
+    // LayoutBuilder inside each card: the cards sit in an IntrinsicHeight
+    // row (_equalRow), and a LayoutBuilder can't report intrinsic sizes.
+    List<Widget> cards(bool compact) => [
+          _statCard(
+            compact: compact,
+            icon: Icons.bolt_rounded,
+            value: _fmtNumber(total, decimals: 1),
+            unit: 'kWh',
+            label: 'Total energy',
+            caption: f.rangeName,
+            delta: _delta(total, cTotal),
+          ),
+          _statCard(
+            compact: compact,
+            icon: Icons.payments_outlined,
+            value: '₱${_fmtNumber(cost)}',
+            label: 'Total cost',
+            caption: (avgRate - _electricityRate).abs() < 0.005
+                ? 'At ₱${_electricityRate.toStringAsFixed(2)} per kWh'
+                : 'At rates recorded · ₱${avgRate.toStringAsFixed(2)} avg per kWh',
+            delta: _delta(cost, cCost),
+          ),
+          _statCard(
+            compact: compact,
+            icon: Icons.show_chart_rounded,
+            value: _fmtNumber(avg, decimals: 1),
+            unit: 'kWh',
+            label: 'Daily average',
+            caption:
+                '$days ${f.dayType == DayType.all ? 'day' : f.dayType.label.toLowerCase().replaceAll('s', '')}${days == 1 ? '' : 's'}',
+            delta: _delta(avg, cAvg),
+          ),
+          _statCard(
+            compact: compact,
+            icon: Icons.wifi_tethering_rounded,
+            value: '$online / ${scoped.length}',
+            label: 'Devices online',
+            caption: cmp == null ? 'Online now' : '$rep reported usage',
+            delta: cmp == null
+                ? null
+                : _delta(rep.toDouble(), reporting(cmp).toDouble(),
+                    upIsBad: false),
+          ),
+        ];
     return LayoutBuilder(builder: (context, c) {
-      if (c.maxWidth >= kWebWideContent) return _equalRow(cards);
+      // Narrow cards (4 in a row on a ~1150px window) get a smaller icon
+      // and number so the value still fits.
+      bool compactAt(int perRow) =>
+          (c.maxWidth - 16 * (perRow - 1)) / perRow < 250;
+      if (c.maxWidth >= kWebWideContent) return _equalRow(cards(compactAt(4)));
       if (c.maxWidth < 560) {
+        final list = cards(compactAt(1));
         return Column(children: [
-          for (var i = 0; i < cards.length; i++) ...[
+          for (var i = 0; i < list.length; i++) ...[
             if (i > 0) const SizedBox(height: 16),
-            cards[i],
+            list[i],
           ],
         ]);
       }
+      final list = cards(compactAt(2));
       return Column(children: [
-        _equalRow(cards.sublist(0, 2)),
+        _equalRow(list.sublist(0, 2)),
         const SizedBox(height: 16),
-        _equalRow(cards.sublist(2)),
+        _equalRow(list.sublist(2)),
       ]);
     });
   }
 
   Widget _statCard({
+    required bool compact,
     required IconData icon,
     required String value,
     String? unit,
@@ -1455,10 +1472,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     required String caption,
     Widget? delta,
   }) {
-    // Narrow cards (4 in a row on a ~1150px window) get a smaller icon and
-    // number so the value still fits.
-    return LayoutBuilder(builder: (context, c) {
-    final compact = c.maxWidth < 250;
     return Container(
       padding: EdgeInsets.all(compact ? 14 : 18),
       decoration: BoxDecoration(
@@ -1471,12 +1484,15 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           width: compact ? 40 : 52,
           height: compact ? 40 : 52,
           decoration: BoxDecoration(
-              color: Colors.white, border: Border.all(color: WebColors.outline), shape: BoxShape.circle),
+              color: Colors.white,
+              border: Border.all(color: WebColors.outline),
+              shape: BoxShape.circle),
           child: Icon(icon, color: _palette.dark, size: compact ? 20 : 24),
         ),
         SizedBox(width: compact ? 10 : 14),
         Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text.rich(
               TextSpan(children: [
                 TextSpan(
@@ -1514,7 +1530,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         ),
       ]),
     );
-    });
   }
 
   /// A card with the preview's panel header (title, subtitle, trailing).
@@ -1530,7 +1545,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(title,
                   style: const TextStyle(
                       fontFamily: AppFonts.family,
@@ -1607,11 +1623,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         if (cmpSpan != null) ...[
           const SizedBox(height: 14),
           Wrap(spacing: 16, runSpacing: 6, children: [
-            _legend(false, AppColors.greenMid,
-                'This period · ${spanText(span)}'),
             _legend(
-                true,
-                WebColors.muted,
+                false, AppColors.greenMid, 'This period · ${spanText(span)}'),
+            _legend(true, WebColors.muted,
                 '${f.compare == CompareMode.lastYear ? 'Last year' : 'Previous period'} · ${spanText(cmpSpan)}'),
           ]),
         ],
@@ -1631,7 +1645,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
             : Container(height: 2.5, color: color),
       ),
       const SizedBox(width: 6),
-      Text(text, style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
+      Text(text,
+          style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
     ]);
   }
 
@@ -1682,8 +1697,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   // ── Top Consuming cards + breakdown drawer ────────────────────────────
 
-  Widget _bottomRow(
-      BuildContext ctx, List<UsageRow> rows, DateTimeRange span) {
+  Widget _bottomRow(BuildContext ctx, List<UsageRow> rows, DateTimeRange span) {
     final a = _utilityCard(ctx, rows);
     final b = _topCard(ctx, rows, span);
     return LayoutBuilder(builder: (context, c) {
@@ -1748,7 +1762,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           color: hovered ? _palette.pale.withAlpha(89) : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Row(children: [
             Expanded(
               child: DefaultTextStyle.merge(
@@ -1821,15 +1836,15 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                   for (final g in groups)
                     _bdRow(
                       semantic: 'See breakdown for ${g.key}',
-                      onTap: () =>
-                          _openBreakdown(ctx, BreakdownKind.utility, g.key, rows),
+                      onTap: () => _openBreakdown(
+                          ctx, BreakdownKind.utility, g.key, rows),
                       label: Row(children: [
                         Container(
                           width: 10,
                           height: 10,
                           margin: const EdgeInsets.only(right: 8),
                           decoration: BoxDecoration(
-                              color: AnalyticsUi.utilityColor(g.key),
+                              color: AnalyticsUi.utilityColor(g.key, _palette),
                               borderRadius: BorderRadius.circular(3)),
                         ),
                         Flexible(
@@ -1840,7 +1855,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                       ]),
                       value: _fmtValue(g.value),
                       frac: total <= 0 ? 0 : g.value / total,
-                      color: AnalyticsUi.utilityColor(g.key),
+                      color: AnalyticsUi.utilityColor(g.key, _palette),
                     ),
                 ]),
               ),
@@ -1860,10 +1875,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final perDevice = rows.where((r) => r.deviceId.isNotEmpty);
     final groups = switch (mode) {
       _TopMode.institutes => groupSum(rows, (r) => r.building, cost: _asCost),
-      _TopMode.rooms =>
-        groupSum(perDevice, (r) => r.roomKey, cost: _asCost),
-      _TopMode.devices =>
-        groupSum(perDevice, (r) => r.deviceId, cost: _asCost),
+      _TopMode.rooms => groupSum(perDevice, (r) => r.roomKey, cost: _asCost),
+      _TopMode.devices => groupSum(perDevice, (r) => r.deviceId, cost: _asCost),
     }
         .where((e) => e.value > 0)
         .take(mode == _TopMode.institutes ? 50 : 10)
@@ -1933,7 +1946,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                         label: Text.rich(TextSpan(children: [
                           TextSpan(text: room),
                           TextSpan(
-                              text: '  · Floor ${parts.length > 1 ? parts[1] : '?'}',
+                              text:
+                                  '  · Floor ${parts.length > 1 ? parts[1] : '?'}',
                               style: const TextStyle(
                                   fontWeight: FontWeight.w400,
                                   color: WebColors.muted)),
@@ -1963,7 +1977,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                         ])),
                         value: _fmtValue(g.value),
                         frac: max <= 0 ? 0 : g.value / max,
-                        color: AnalyticsUi.utilityColor(m?.utility ?? ''),
+                        color: AnalyticsUi.utilityColor(
+                            m?.utility ?? '', _palette),
                       );
                     }(),
                 },

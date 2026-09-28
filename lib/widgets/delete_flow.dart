@@ -192,15 +192,19 @@ Future<bool> showDeleteFlow(
   VoidCallback? onRestore,
   Duration undoWindow = const Duration(seconds: 5),
 }) async {
+  final theme = Theme.of(context);
   final result = await showDialog<_DeleteDialogResult>(
     context: context,
     barrierColor: const Color(0x730E2E1A), // rgba(14,46,26,.45)
-    builder: (context) => _DeleteDialog(
-      title: title ?? DeleteFlowDefaults.titleFor(type),
-      icon: icon ?? DeleteFlowDefaults.iconFor(type),
-      itemName: itemName,
-      impact: impact ?? DeleteFlowDefaults.sampleImpactFor(type),
-      reasons: reasons ?? DeleteFlowDefaults.reasonsFor(type),
+    builder: (_) => Theme(
+      data: theme,
+      child: _DeleteDialog(
+        title: title ?? DeleteFlowDefaults.titleFor(type),
+        icon: icon ?? DeleteFlowDefaults.iconFor(type),
+        itemName: itemName,
+        impact: impact ?? DeleteFlowDefaults.sampleImpactFor(type),
+        reasons: reasons ?? DeleteFlowDefaults.reasonsFor(type),
+      ),
     ),
   );
 
@@ -285,7 +289,10 @@ class _DeleteDialogState extends State<_DeleteDialog> {
             children: [
               _StepIndicator(step: _step),
               const SizedBox(height: 14),
-              if (_step == 1) _buildStepOne(context) else _buildStepTwo(context),
+              if (_step == 1)
+                _buildStepOne(context)
+              else
+                _buildStepTwo(context),
             ],
           ),
         ),
@@ -309,7 +316,8 @@ class _DeleteDialogState extends State<_DeleteDialog> {
           child: Icon(widget.icon, color: AppColors.errorText),
         ),
         const SizedBox(height: 14),
-        Text(widget.title, style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
+        Text(widget.title,
+            style: AppTextStyles.sheetTitle.copyWith(color: AppColors.ink)),
         const SizedBox(height: 4),
         Text(
           widget.itemName,
@@ -340,11 +348,14 @@ class _DeleteDialogState extends State<_DeleteDialog> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('•  ', style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid)),
+                      Text('•  ',
+                          style: AppTextStyles.bodySm
+                              .copyWith(color: AppColors.inkMid)),
                       Expanded(
                         child: Text(
                           line,
-                          style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid),
+                          style: AppTextStyles.bodySm
+                              .copyWith(color: AppColors.inkMid),
                         ),
                       ),
                     ],
@@ -407,7 +418,8 @@ class _DeleteDialogState extends State<_DeleteDialog> {
               decoration: const InputDecoration(
                 hintText: 'Tell us briefly why',
                 isDense: true,
-                contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.all(Radius.circular(12)),
                 ),
@@ -469,7 +481,8 @@ class _StepIndicator extends StatelessWidget {
           color: done ? AppColors.errorText : Colors.transparent,
           border: active
               ? Border.all(color: AppColors.errorText, width: 1.5)
-              : Border.all(color: AppColors.disabledText.withAlpha(120), width: 1.5),
+              : Border.all(
+                  color: AppColors.disabledText.withAlpha(120), width: 1.5),
         ),
         child: Text(
           '$n',
@@ -487,12 +500,16 @@ class _StepIndicator extends StatelessWidget {
     return Row(
       children: [
         circle(1),
-        Container(width: 24, height: 1.5, color: AppColors.disabledText.withAlpha(120)),
+        Container(
+            width: 24,
+            height: 1.5,
+            color: AppColors.disabledText.withAlpha(120)),
         circle(2),
         const Spacer(),
         Text(
           'Step $step of 2',
-          style: AppTextStyles.caption.copyWith(color: AppColors.inkMid, fontWeight: FontWeight.w600),
+          style: AppTextStyles.caption
+              .copyWith(color: AppColors.inkMid, fontWeight: FontWeight.w600),
         ),
       ],
     );
@@ -500,7 +517,8 @@ class _StepIndicator extends StatelessWidget {
 }
 
 class _ReasonRow extends StatelessWidget {
-  const _ReasonRow({required this.label, required this.selected, required this.onTap});
+  const _ReasonRow(
+      {required this.label, required this.selected, required this.onTap});
 
   final String label;
   final bool selected;
@@ -515,7 +533,8 @@ class _ReasonRow extends StatelessWidget {
         constraints: const BoxConstraints(minHeight: 48),
         padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
         decoration: BoxDecoration(
-          border: Border(bottom: BorderSide(color: AppColors.disabledText.withAlpha(70))),
+          border: Border(
+              bottom: BorderSide(color: AppColors.disabledText.withAlpha(70))),
         ),
         child: Row(
           children: [
@@ -637,7 +656,10 @@ class _DeleteUndoBarContentState extends State<_DeleteUndoBarContent>
           decoration: BoxDecoration(
             color: AppColors.ink,
             boxShadow: [
-              BoxShadow(color: Colors.black.withAlpha(80), blurRadius: 30, offset: const Offset(0, 10)),
+              BoxShadow(
+                  color: Colors.black.withAlpha(80),
+                  blurRadius: 30,
+                  offset: const Offset(0, 10)),
             ],
           ),
           child: Stack(
@@ -649,7 +671,8 @@ class _DeleteUndoBarContentState extends State<_DeleteUndoBarContent>
                   Expanded(
                     child: Text(
                       widget.message,
-                      style: AppTextStyles.bodySm.copyWith(color: Colors.white, fontWeight: FontWeight.w500),
+                      style: AppTextStyles.bodySm.copyWith(
+                          color: Colors.white, fontWeight: FontWeight.w500),
                     ),
                   ),
                   TextButton(
@@ -660,7 +683,8 @@ class _DeleteUndoBarContentState extends State<_DeleteUndoBarContent>
                       padding: const EdgeInsets.symmetric(horizontal: 14),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
-                        side: const BorderSide(color: Colors.white54, width: 1.5),
+                        side:
+                            const BorderSide(color: Colors.white54, width: 1.5),
                       ),
                     ),
                     child: const Text(
