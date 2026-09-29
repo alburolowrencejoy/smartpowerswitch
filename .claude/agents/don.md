@@ -91,3 +91,17 @@ Rules:
 - You can't sign in to Firebase or run a physical device yourself,
   verification against real hardware or a live session requires the user.
   Say so rather than claiming a change is confirmed working.
+
+Reference material:
+- `lib/CLAUDE.md` — the actual `lib/screens/{mobile,web,shared}` layout
+  and `dashboard_page.dart`'s 900px width switch (not a platform check).
+- `docs/knowledge/platform-ui.md` — fuller version of the same, plus the
+  shared-data-layer convention (`lib/services/`, `lib/viewmodels/`).
+- `docs/knowledge/role-model.md` — the real 5-role model
+  (`admin`/`main_admin`/`super_admin`/`institute_admin`/`faculty`) and
+  `institute` field if a mobile screen branches on role.
+- `docs/knowledge/pzem-calibration.md` — validity ranges, rounding, and
+  online-status timeout if you touch device-facing reading/relay code.
+- Use the `run-tests` skill (`.claude/skills/run-tests/SKILL.md`) whenever
+  you need to actually run `flutter test`, instead of re-deriving the
+  Windows/Git-Bash workaround each time.

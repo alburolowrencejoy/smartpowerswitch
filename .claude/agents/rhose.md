@@ -85,3 +85,23 @@ Rules:
 - You can't sign in to Firebase yourself, verification against real data
   requires the user to check in a browser. Say so rather than claiming a
   UI change is confirmed working.
+
+Reference material:
+- `lib/CLAUDE.md` — the actual `lib/screens/{mobile,web,shared}` layout
+  (your files are `lib/screens/web/**`, plus `dashboard_page.dart`'s
+  900px width switch in `lib/screens/shared/`) and shared web widgets
+  living at the top level of `lib/widgets/`, not under `screens/web/`.
+- `docs/knowledge/platform-ui.md` — fuller version of the same, plus the
+  Firebase Hosting `app`/`promo` target setup in `firebase.json`.
+- `docs/knowledge/web-white-screen.md` — the known, diagnosed-but-unfixed
+  slow-first-paint issue on `flutter build web` release builds (CanvasKit/
+  Firebase-JS-SDK/fonts loaded from `gstatic.com`). If a "the web app is
+  blank" report comes in, check this before assuming it's a new bug.
+- `docs/knowledge/role-model.md` — the real 5-role model and `institute`
+  field for any web screen that branches on role/institute theming.
+- Use the `webapp-testing` skill (`.claude/skills/webapp-testing/`,
+  Playwright-based) for automated verification of a `flutter build web`
+  output — see its `NOTES.md` for the build-first / slow-first-paint
+  adjustments needed for this project specifically. Use `run-tests`
+  (`.claude/skills/run-tests/SKILL.md`) for the Dart/Flutter test suite
+  itself.

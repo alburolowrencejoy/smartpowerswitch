@@ -40,3 +40,30 @@ requires admin rights).
 - **Fonts:** one typeface app-wide: Roboto, bundled in `assets/fonts/`. Always write
   `fontFamily: AppFonts.family` (`lib/theme/app_fonts.dart`), never a string literal, and
   don't add `google_fonts`.
+
+## Project knowledge base and skills
+
+`docs/knowledge/` has concise, agent-oriented summaries of the root-level
+design/ops docs (role model, platform UI split, PZEM calibration, the
+Davao Light rate function, deployment/backup history, the known web
+white-screen issue) — start at
+[`docs/knowledge/README.md`](docs/knowledge/README.md) rather than reading
+every root `*.md` file cold. Several of those summaries flag places where
+a planning doc has drifted from what's actually deployed (e.g. the role
+model, and a history-writer fix that isn't actually wired up) — read the
+callouts, not just the happy path.
+
+Two scoped `CLAUDE.md` files narrow this further: [`lib/CLAUDE.md`](lib/CLAUDE.md)
+(the mobile/web/shared screen split, `dashboard_page.dart`'s width switch)
+and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) / [`functions/CLAUDE.md`](functions/CLAUDE.md)
+(where the PowerShell utility scripts vs. the Node Firebase Cloud
+Functions actually live — they're in different folders, easy to conflate).
+
+Three custom skills live in `.claude/skills/`:
+- `run-tests` — how to run `flutter test` on this machine without hitting
+  the crashes documented above.
+- `firebase-rules-check` — a review checklist for `database.rules.json`
+  changes.
+- `webapp-testing` — Playwright-based web app testing (from
+  `anthropics/skills`), with a project-specific note on pointing it at
+  `flutter build web` output.

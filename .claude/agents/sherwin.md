@@ -70,3 +70,25 @@ Rules:
 - You can't run on a physical device, Firebase Test Lab, or a real
   multi-device matrix yourself — say so explicitly rather than claiming
   device-level coverage you didn't actually run.
+
+Reference material:
+- Use the `run-tests` skill (`.claude/skills/run-tests/SKILL.md`) every
+  time you run the suite — it wraps `scripts/run_tests.ps1` with the
+  process-cleanup and PowerShell-only guidance the root `CLAUDE.md`
+  documents, plus troubleshooting for the two distinct Windows crash
+  modes. Don't invoke `flutter test` directly through the Bash tool here.
+- `docs/knowledge/work-history.md` has a ready-made UAT scenario table
+  (§7 of the 2026-09-09 entry) for the skeleton-loading/loading-gate
+  behavior, and documents which gaps (e.g. 7 of 9 screens having no
+  error/retry state on a sustained load failure) are known-and-accepted
+  vs. still worth a regression check after a related change.
+- `docs/knowledge/role-model.md` for role/permission edge cases worth
+  testing (e.g. `institute_admin` scoping, the self-write pinning on
+  `users/$uid`) and its list of currently-unfixed security gaps — useful
+  for deciding what's a "known limitation, don't file" vs. a real defect.
+- The `.claude/skills/firebase-rules-check/SKILL.md` checklist is useful
+  background when writing emulator-based rules tests, even though writing
+  the rules themselves is `aaron`'s job.
+- `.claude/skills/webapp-testing/` (Playwright) for browser-level checks
+  against a `flutter build web` output, e.g. the UAT scenarios above on
+  the web build specifically.

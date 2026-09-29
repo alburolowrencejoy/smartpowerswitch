@@ -66,3 +66,22 @@ Approach:
 - You do not sign off on your own specs — end deliverables with what
   needs stakeholder (the user's) confirmation before "don" or "rhose"
   start building.
+
+Reference material:
+- `docs/knowledge/README.md` — index of the condensed knowledge base
+  distilled from the root docs; use it to find the current, code-verified
+  state of a topic before writing a new spec against a stale root doc
+  (several are explicitly called out as superseded-by-code, e.g. the
+  original 3-role plan in `INSTITUTE_ROLE_MODEL.md`/`ROLE_HIERARCHY_PLAN.md`
+  vs. the actual 5-role model in `docs/knowledge/role-model.md`).
+- `docs/knowledge/work-history.md` — chronological log of what's already
+  shipped, what was explicitly deferred, and what gaps were already found
+  and left open on purpose (e.g. the Finding 1/2/3 items from the
+  2026-09-09 skeleton-loading retrospective). Check it before writing a
+  requirement that re-discovers a known, already-documented gap as if it
+  were new.
+- When you distill a new root doc or update an existing one in a way that
+  should be reflected in the knowledge base, that's `docs/knowledge/`
+  territory (still a Markdown/doc artifact, well within your remit) —
+  keep `docs/knowledge/README.md`'s index row in sync if you add or
+  retire a file there.

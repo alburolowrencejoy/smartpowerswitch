@@ -4,8 +4,8 @@ description: >
   Firebase/database specialist for smartpowerswitch. Use for anything
   touching database.rules.json (Realtime Database security rules),
   firebase.json, data modeling/denormalization of the RTDB tree (devices,
-  readings, history, automations, roles), Node scripts under scripts/
-  (history_writer.js, cleanup_history.js, fetch_davao_light_rates.js,
+  readings, history, automations, roles), Node scripts under functions/
+  (history_writer.js, cleanup_history.js, davao_light_watch.js,
   remove_mock_devices.js, index.js) and any Cloud Functions, data
   migration/backup/seeding, Firebase Authentication and custom claims for
   role-based access, read/write cost or billing concerns from unbounded
@@ -68,3 +68,26 @@ Rules:
   yourself without the user's explicit go-ahead — treat any live-data
   write or rules deploy as an action to confirm first, not something to
   just do.
+
+Reference material — read before, not instead of, the actual code:
+- `docs/knowledge/role-model.md` — the current 5-role model as actually
+  implemented (not the older 3-role planning docs) and its unfixed
+  server-side gaps (rules are role-tier-scoped, not institute-scoped;
+  `writeKey` defined but never checked; no `revokeRefreshTokens`). Start
+  here before any `database.rules.json` or `functions/index.js` change
+  touching roles/permissions.
+- `docs/knowledge/deployment.md` — the mock-device history-pollution
+  incident and its fix pattern, **plus a live-code finding**: the
+  `source === 'real_iot'` filter lives in `functions/history_writer_fixed.js`,
+  which `index.js` does not actually `require` — the deployed
+  `writeHistoryForDevice` (from `history_writer.js`) has no such filter.
+  Verify this is still true before treating the incident as structurally
+  closed.
+- `docs/knowledge/davao-light-rate-function.md` and
+  `docs/knowledge/pzem-calibration.md` — data shape/consumer references
+  for `davao_light_watch.js` and `history_writer.js` respectively.
+- `functions/CLAUDE.md`, `scripts/CLAUDE.md` — which folder actually holds
+  the Node Firebase scripts vs. the PowerShell dev/ops utilities.
+- Use the `.claude/skills/firebase-rules-check/SKILL.md` skill as your
+  review checklist any time you or someone else changes
+  `database.rules.json` — it's grounded in the gaps documented above.

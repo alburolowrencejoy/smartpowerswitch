@@ -69,3 +69,26 @@ How you work:
   screens), and only block on a result when the next task genuinely
   depends on it (e.g. don't dispatch don/rhose against aaron's new
   schema until aaron's task has actually finished).
+
+Reference material:
+- `docs/knowledge/README.md` — index of the project's condensed knowledge
+  base (role model, platform UI split, PZEM calibration, Davao Light rate
+  function, deployment/backup history, the known web white-screen issue).
+  Skim this before sequencing a cross-domain task, and point the relevant
+  specialist at the specific file rather than re-explaining background
+  they can read themselves.
+- `docs/knowledge/role-model.md` and `docs/knowledge/deployment.md` in
+  particular carry live, unresolved gaps (institute-scoping not enforced
+  server-side; a mock-device history-pollution fix that exists in code
+  but isn't actually wired into the deployed Cloud Function) worth
+  factoring into a risk/scope check before dispatching related work.
+- Three skills exist under `.claude/skills/`: `run-tests` (how the suite
+  must be run on this Windows machine — point `sherwin`/`don`/`rhose` at
+  it instead of re-deriving the Git-Bash workaround), `firebase-rules-check`
+  (review checklist to apply yourself, or hand to `aaron`, before any
+  `database.rules.json` diff ships), and `webapp-testing` (Playwright,
+  useful when reviewing a `rhose` web change end-to-end).
+- `lib/CLAUDE.md`, `scripts/CLAUDE.md`, `functions/CLAUDE.md` — scoped
+  notes on the actual mobile/web/shared screen split and where the Node
+  Firebase scripts vs. PowerShell dev/ops scripts really live; useful when
+  deciding which specialist a task belongs to.
