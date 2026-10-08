@@ -4,9 +4,11 @@ import 'dart:math' as math;
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/history_clock.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
+import '../../widgets/davao_light_updates_card.dart';
 import '../../widgets/responsive_center.dart';
 import '../../widgets/screen_skeleton.dart';
 import 'analytics/analytics_focus.dart';
@@ -44,6 +46,10 @@ class WebOverviewTab extends StatefulWidget {
   /// notification bell), so it scrolls with the header.
   final Widget? headerTrailing;
 
+  /// Campus admins can apply / dismiss a Davao Light rate advisory from the
+  /// dashboard card; everyone else sees it read-only.
+  final bool canApplyRate;
+
   const WebOverviewTab({
     super.key,
     required this.vm,
@@ -54,6 +60,7 @@ class WebOverviewTab extends StatefulWidget {
     this.instituteCode,
     this.userName,
     this.headerTrailing,
+    this.canApplyRate = false,
   });
 
   @override
@@ -76,8 +83,18 @@ class _BuildingStat {
   });
 }
 
+/// One room of the scoped institute, with the device ids installed in it.
+class _RoomInfo {
+  final int floor;
+  final String name;
+  final List<String> deviceIds = [];
+
+  _RoomInfo(this.floor, this.name);
+}
+
 class _WebOverviewTabState extends State<WebOverviewTab> {
   StreamSubscription<DatabaseEvent>? _devicesSub;
+  StreamSubscription<DatabaseEvent>? _historySub;
   int _online = 0;
   int _offline = 0;
   double _scopedKwh = 0;
@@ -87,22 +104,115 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     'AC': 0,
   };
 
+  /// Institute scope only: its rooms (sorted by floor, then name) and this
+  /// month's kWh per device, from `history/daily`.
+  List<_RoomInfo> _rooms = const [];
+  Map<String, double> _deviceMonthKwh = const {};
+
+  /// Institute scope only: the last 7 history days, this building's kWh
+  /// (`{label: yyyy-MM-dd, kwh}`, oldest first) for Recent Usage; the view
+  /// model's `historyData` is campus-wide.
+  StreamSubscription<DatabaseEvent>? _recentSub;
+  List<Map<String, Object>> _scopedRecent = const [];
+
   @override
   void initState() {
     super.initState();
     _listenDevices();
+    _listenMonthHistory();
+    _listenRecentUsage();
   }
 
   @override
   void didUpdateWidget(covariant WebOverviewTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.instituteCode != widget.instituteCode) _listenDevices();
+    if (oldWidget.instituteCode != widget.instituteCode) {
+      _listenDevices();
+      _listenMonthHistory();
+      _listenRecentUsage();
+    }
   }
 
   @override
   void dispose() {
     _devicesSub?.cancel();
+    _historySub?.cancel();
+    _recentSub?.cancel();
     super.dispose();
+  }
+
+  void _listenRecentUsage() {
+    _recentSub?.cancel();
+    _recentSub = null;
+    final code = widget.instituteCode;
+    if (code == null) {
+      _scopedRecent = const [];
+      return;
+    }
+    _recentSub = FirebaseDatabase.instance
+        .ref('history/daily')
+        .orderByKey()
+        .limitToLast(7)
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final days = <Map<String, Object>>[];
+      final raw = event.snapshot.value;
+      if (raw is Map) {
+        raw.forEach((key, day) {
+          if (day is! Map) return;
+          final b = day['buildings'];
+          final node = b is Map ? b[code] : null;
+          days.add({
+            'label': '$key',
+            'kwh': node is Map ? _toDouble(node['kwh']) : 0.0,
+          });
+        });
+      }
+      days.sort((a, b) => '${a['label']}'.compareTo('${b['label']}'));
+      setState(() => _scopedRecent = days);
+    }, onError: (Object e) {
+      debugPrint('[Overview] recent usage listen error: $e');
+    });
+  }
+
+  /// Institute scope only: this month's `history/daily` days, summed per
+  /// device so [_roomChartPanel] can total them by room.
+  void _listenMonthHistory() {
+    _historySub?.cancel();
+    _historySub = null;
+    if (widget.instituteCode == null) {
+      _deviceMonthKwh = const {};
+      return;
+    }
+    final now = HistoryClock.instance.now();
+    final monthStart =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-01';
+    _historySub = FirebaseDatabase.instance
+        .ref('history/daily')
+        .orderByKey()
+        .startAt(monthStart)
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final perDevice = <String, double>{};
+      final raw = event.snapshot.value;
+      if (raw is Map) {
+        raw.forEach((_, day) {
+          if (day is! Map) return;
+          final devices = day['devices'];
+          if (devices is! Map) return;
+          devices.forEach((id, d) {
+            if (d is! Map) return;
+            final k = _toDouble(d['kwh'] ?? d['total_kwh']);
+            perDevice['$id'] = (perDevice['$id'] ?? 0) + k;
+          });
+        });
+      }
+      setState(() => _deviceMonthKwh = perDevice);
+    }, onError: (Object e) {
+      debugPrint('[Overview] history listen error: $e');
+    });
   }
 
   /// One listener on `devices` for what the shared view model does not
@@ -120,12 +230,21 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       var offline = 0;
       var kwh = 0.0;
       final util = <String, double>{'Lights': 0, 'Outlets': 0, 'AC': 0};
+      final rooms = <String, _RoomInfo>{};
       if (raw is Map) {
-        raw.forEach((_, val) {
+        raw.forEach((id, val) {
           if (val is! Map) return;
           final d = Map<String, dynamic>.from(val);
           if (code != null && (d['building'] ?? '').toString() != code) {
             return;
+          }
+          final room = (d['room'] ?? '').toString().trim();
+          if (code != null && room.isNotEmpty) {
+            final floor = int.tryParse('${d['floor'] ?? 1}') ?? 1;
+            rooms
+                .putIfAbsent('$floor|$room', () => _RoomInfo(floor, room))
+                .deviceIds
+                .add('$id');
           }
           final k = _toDouble(d['kwh']);
           kwh += k;
@@ -143,6 +262,10 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
         _offline = offline;
         _scopedKwh = kwh;
         _utilityKwh = util;
+        _rooms = rooms.values.toList()
+          ..sort((a, b) => a.floor != b.floor
+              ? a.floor.compareTo(b.floor)
+              : a.name.compareTo(b.name));
       });
     }, onError: (Object e) {
       debugPrint('[Overview] devices listen error: $e');
@@ -253,13 +376,18 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                       const SizedBox(height: 22),
                       _pair(
                         wide,
+                        // Unassigned devices belong to no institute, so an
+                        // institute admin sees its room count instead.
                         _deviceStatusPanel(
-                          vm.unassignedDevices,
+                          scoped ? _rooms.length : vm.unassignedDevices,
+                          scoped ? 'Rooms' : 'Unassigned',
                           scoped
                               ? _utilityKwh
                               : _normalizeUtilities(vm.utilityTotals),
                         ),
-                        _buildingChartPanel(rows),
+                        scoped
+                            ? _roomChartPanel(code)
+                            : _buildingChartPanel(rows),
                         5,
                         6,
                       ),
@@ -267,11 +395,22 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                       _pair(
                         wide,
                         _buildingTablePanel(rows),
-                        _recentUsagePanel(vm.historyData),
+                        _recentUsagePanel(
+                            scoped ? _scopedRecent : vm.historyData),
                         6,
                         4,
                       ),
                       const SizedBox(height: 22),
+                      DavaoLightUpdatesCard(
+                        palette: p,
+                        canApply: widget.canApplyRate,
+                        currentRate: rate,
+                        scopeLabel: code,
+                        scopeMonthKwh: scoped
+                            ? rows.fold<double>(0, (a, r) => a + r.monthKwh)
+                            : null,
+                        bottomGap: 22,
+                      ),
                       HistoryTrendPanel(
                         palette: p,
                         instituteCode: code,
@@ -295,6 +434,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
   Widget _header() {
     final first = (widget.userName ?? '').trim().split(' ').first;
+    final scope = widget.instituteCode ?? 'campus';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -318,8 +458,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
         const SizedBox(height: 4),
         Text(
           first.isEmpty
-              ? 'Live overview of campus energy usage'
-              : 'Welcome back, $first — here is your campus energy at a glance',
+              ? 'Live overview of $scope energy usage'
+              : 'Welcome back, $first — here is your $scope energy at a glance',
           style: const TextStyle(fontSize: 14, color: WebColors.muted),
         ),
         const HistoryFallbackNotice(padding: EdgeInsets.only(top: 10)),
@@ -362,7 +502,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
   // ── Panels ────────────────────────────────────────────────────────────
 
-  Widget _deviceStatusPanel(int unassigned, Map<String, double> util) {
+  Widget _deviceStatusPanel(
+      int thirdCount, String thirdLabel, Map<String, double> util) {
     final p = widget.palette;
     final entries = util.entries.toList();
     final total = entries.fold<double>(0, (a, e) => a + e.value);
@@ -443,7 +584,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
               const SizedBox(width: 12),
               Expanded(
                   child: _CountBox(
-                      palette: p, value: unassigned, label: 'Unassigned')),
+                      palette: p, value: thirdCount, label: thirdLabel)),
             ],
           ),
           const SizedBox(height: 22),
@@ -533,6 +674,35 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
         child: _AreaChart(
           values: [for (final r in rows) r.monthKwh],
           labels: [for (final r in rows) r.code],
+          line: p.mid,
+          highlight: p.dark,
+        ),
+      ),
+    );
+  }
+
+  /// Institute scope: this month's kWh per room of [code].
+  Widget _roomChartPanel(String code) {
+    final p = widget.palette;
+    final n = _rooms.length;
+    return _Panel(
+      palette: p,
+      title: 'Consumption by Room',
+      subtitle: 'kWh this month, per room in $code',
+      trailing: _SoftChip(palette: p, text: '$n ${n == 1 ? 'room' : 'rooms'}'),
+      child: SizedBox(
+        height: 250,
+        child: _AreaChart(
+          values: [
+            for (final r in _rooms)
+              r.deviceIds.fold<double>(
+                  0, (a, id) => a + (_deviceMonthKwh[id] ?? 0)),
+          ],
+          // "Room 101" -> "101" so 15+ x-axis labels still fit.
+          labels: [
+            for (final r in _rooms)
+              r.name.replaceFirst(RegExp(r'^room\s*', caseSensitive: false), ''),
+          ],
           line: p.mid,
           highlight: p.dark,
         ),
@@ -690,7 +860,9 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       title: 'Recent Usage',
       subtitle: values.isEmpty
           ? 'No history yet'
-          : 'Last ${values.length} history entries (kWh)',
+          : widget.instituteCode != null
+              ? 'Last ${values.length} days in ${widget.instituteCode} (kWh)'
+              : 'Last ${values.length} history entries (kWh)',
       trailing: widget.onOpenAnalytics == null
           ? null
           : IconButton(

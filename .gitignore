@@ -52,3 +52,7 @@ functions/serviceAccountKey.json
 serviceAccountKey.json
 # Local database backups (may contain user data)
 backups/
+# Playwright e2e: local env, browsers and output (recreate with e2e/README.md)
+e2e/.venv/
+e2e/.browsers/
+e2e/screenshots/

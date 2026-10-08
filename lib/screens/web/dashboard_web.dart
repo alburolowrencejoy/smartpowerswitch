@@ -774,6 +774,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
             const SizedBox(width: 12),
             _buildNotificationBell(_palette),
           ]),
+          canApplyRate: _isSuperAdmin,
           onOpenDevices: () => _selectTab(_tabDevices),
           onOpenAnalytics:
               _isInstituteAdmin ? null : _openAnalytics,

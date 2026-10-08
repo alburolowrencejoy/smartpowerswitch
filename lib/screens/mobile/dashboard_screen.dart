@@ -15,6 +15,7 @@ import '../../widgets/app_button.dart';
 import '../../widgets/app_chip.dart';
 import '../../widgets/app_segmented_control.dart';
 import '../../widgets/app_top_bar.dart';
+import '../../widgets/davao_light_updates_card.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../widgets/outline_icon_box.dart';
@@ -1699,6 +1700,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _buildLast7DaysCard(
                 _last7DaysKwh(buildingCode: code), _last7DaysLabels),
             SizedBox(height: isCompact ? 18 : 24),
+            DavaoLightUpdatesCard(
+              palette: _palette,
+              canApply: false,
+              currentRate: _electricityRate,
+              scopeLabel: code,
+              scopeMonthKwh: _buildingEnergy[code],
+              compact: true,
+              bottomGap: isCompact ? 18 : 24,
+            ),
             HistoryTrendPanel(
               palette: _palette,
               instituteCode: code,
@@ -2072,6 +2082,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             SizedBox(height: isCompact ? 10 : 12),
             _buildLast7DaysCard(_last7DaysKwh(), _last7DaysLabels),
             SizedBox(height: isCompact ? 18 : 24),
+            DavaoLightUpdatesCard(
+              palette: _palette,
+              canApply: _isSuperAdmin,
+              currentRate: _electricityRate,
+              compact: true,
+              bottomGap: isCompact ? 18 : 24,
+            ),
             HistoryTrendPanel(
               palette: _palette,
               days: 5,

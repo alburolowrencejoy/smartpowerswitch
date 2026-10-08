@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
@@ -8,6 +9,12 @@ class UpdateNotificationService {
 
   static Future<void> checkAndNotifyIfNewRelease() async {
     try {
+      // Called at start-up, before sign-in; the `settings` lock and the
+      // notification below are only writable once someone is signed in.
+      await FirebaseAuth.instance
+          .authStateChanges()
+          .firstWhere((user) => user != null);
+
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = packageInfo.version.isEmpty ? '0.0.0' : packageInfo.version;
 

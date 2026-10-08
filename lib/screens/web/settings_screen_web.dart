@@ -143,9 +143,20 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
   String _role = 'faculty';
   String? _institute;
   bool _coAdmin = false;
+  bool _isMainAdmin = false;
 
   InstitutePalette get _palette =>
       InstituteTheme.resolve(_role, _institute).palette;
+
+  /// The electricity rate is campus-wide, so only campus admins change it
+  /// (the same roles `database.rules.json` lets write it). Until the role
+  /// loads this is false, so the controls never flash for an institute
+  /// admin.
+  bool get _canEditRate =>
+      _isMainAdmin ||
+      _role == 'admin' ||
+      _role == 'main_admin' ||
+      _role == 'super_admin';
 
   Future<void> _hydrateSessionFromAuth() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -161,6 +172,7 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
         _role = (map['role'] as String?) ?? 'faculty';
         _institute = (map['institute'] as String?)?.trim();
         _coAdmin = map['coAdmin'] == true;
+        _isMainAdmin = map['isMainAdmin'] == true;
       });
     } catch (_) {
       // Keep existing role defaults if role hydration fails.
@@ -574,32 +586,54 @@ class _SettingsScreenWebState extends State<SettingsScreenWeb> {
       subtitle: 'Used for every cost on the dashboard',
       trailing: _softChip('₱${_currentRate.toStringAsFixed(2)} / kWh'),
       children: [
-        _field(
-          label: 'Manual Update (₱ per kWh)',
-          error: _rateError,
-          child: AppTextField(
-            controller: _rateController,
-            shakeTrigger: _rateShake,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            style: _inputStyle,
-            decoration: _inputDeco(error: _rateError),
-            onChanged: (_) {
-              if (_rateError != null) setState(() => _rateError = null);
-            },
-            onSubmitted: (_) => _saveRate(),
+        if (!_canEditRate)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: WebColors.outline),
+            ),
+            child: const Row(children: [
+              Icon(Icons.lock_outline, size: 18, color: WebColors.mid),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text('Set by the campus admin.',
+                    style: TextStyle(fontSize: 14, color: WebColors.mid)),
+              ),
+            ]),
+          )
+        else ...[
+          _field(
+            label: 'Manual Update (₱ per kWh)',
+            error: _rateError,
+            child: AppTextField(
+              controller: _rateController,
+              shakeTrigger: _rateShake,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              style: _inputStyle,
+              decoration: _inputDeco(error: _rateError),
+              onChanged: (_) {
+                if (_rateError != null) setState(() => _rateError = null);
+              },
+              onSubmitted: (_) => _saveRate(),
+            ),
           ),
-        ),
-        Wrap(spacing: 10, runSpacing: 10, children: [
-          _primaryButton('Save', _saving ? null : _saveRate, loading: _saving),
-          _ghostButton(
-            _fetchingLatestRate ? 'Checking Davao Light…' : 'Fetch Latest Rate',
-            _fetchingLatestRate ? null : _fetchLatestRate,
-          ),
-          // For advisories posted only on Facebook (see the dialog).
-          _ghostButton('Paste advisory',
-              () => showPasteAdvisoryDialog(context, _palette)),
-        ]),
-        _proposalCard(),
+          Wrap(spacing: 10, runSpacing: 10, children: [
+            _primaryButton('Save', _saving ? null : _saveRate,
+                loading: _saving),
+            _ghostButton(
+              _fetchingLatestRate
+                  ? 'Checking Davao Light…'
+                  : 'Fetch Latest Rate',
+              _fetchingLatestRate ? null : _fetchLatestRate,
+            ),
+            // For advisories posted only on Facebook (see the dialog).
+            _ghostButton('Paste advisory',
+                () => showPasteAdvisoryDialog(context, _palette)),
+          ]),
+          _proposalCard(),
+        ],
         const SizedBox(height: 22),
         const Text('Rate Change History',
             style: TextStyle(
