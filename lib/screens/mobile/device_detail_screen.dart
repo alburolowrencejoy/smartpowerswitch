@@ -13,6 +13,8 @@ import '../../widgets/top_toast.dart';
 import '../../widgets/app_top_bar.dart';
 import '../../widgets/outline_icon_box.dart';
 import '../../widgets/app_switch.dart';
+import '../../widgets/app_bottom_sheet.dart';
+import '../../widgets/app_button.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../services/readings_service.dart';
@@ -96,6 +98,15 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool _postLoadErrorNotified = false;
 
   StreamSubscription? _combinedSub;
+
+  // WiFi the ESP32 reports (`wifi_ssid` / `wifi_rssi`) and whether a
+  // disconnect is waiting for it (`wifiReset`). Read on every emission, not
+  // behind the last_seen de-dupe above: the device clears these right before
+  // it reboots into setup mode, without sending a new last_seen.
+  String? _wifiSsid;
+  int? _wifiRssi;
+  bool _wifiResetPending = false;
+  bool _wifiBusy = false;
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -274,6 +285,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       }
 
       setState(() {
+        if (raw is Map) {
+          final ssid = (raw['wifi_ssid'] ?? '').toString().trim();
+          _wifiSsid = ssid.isEmpty ? null : ssid;
+          _wifiRssi = (raw['wifi_rssi'] as num?)?.toInt();
+          _wifiResetPending = raw['wifiReset'] == true;
+        }
         if (parsedDevice != null) {
           _deviceData = parsedDevice;
           _hasPzemReadings = computedHasPzem!;
@@ -661,6 +678,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                                 _buildWeeklyBarsSection(),
                                 const SizedBox(height: 20),
                                 _buildScheduleRow(),
+                                const SizedBox(height: 20),
+                                _buildNetworkRow(),
                                 const SizedBox(height: 16),
                                 _buildDeviceIdRow(),
                               ],
@@ -1024,6 +1043,164 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final period = h >= 12 ? 'PM' : 'AM';
     final h12 = h % 12 == 0 ? 12 : h % 12;
     return '$h12:${m.toString().padLeft(2, '0')} $period';
+  }
+
+  // ── Network row: WiFi the device is on + disconnect ──────────────────
+  String _signalLabel(int? rssi) {
+    if (rssi == null) return '';
+    if (rssi >= -60) return 'Strong signal';
+    if (rssi >= -70) return 'Good signal';
+    if (rssi >= -80) return 'Fair signal';
+    return 'Weak signal';
+  }
+
+  Widget _buildNetworkRow() {
+    final ssid = _wifiSsid;
+    final String title;
+    final String subtitle;
+    if (_wifiResetPending) {
+      title = ssid ?? 'Disconnect pending';
+      subtitle = _isOnline
+          ? 'Disconnecting…'
+          : 'Will disconnect when the device comes back online';
+    } else if (ssid == null) {
+      title = 'Not connected';
+      subtitle = 'Join the device\'s "SmartSwitch-…" hotspot to set up WiFi';
+    } else {
+      title = ssid;
+      final signal = _signalLabel(_wifiRssi);
+      subtitle = _isOnline
+          ? (signal.isEmpty ? 'WiFi network' : 'WiFi network · $signal')
+          : 'Last known network';
+    }
+
+    Widget? action;
+    if (_canControl && _wifiBusy) {
+      action = const Padding(
+        padding: EdgeInsets.all(12),
+        child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    } else if (_canControl && _wifiResetPending) {
+      action = AppTextButton(
+        label: 'Cancel',
+        palette: _palette,
+        onPressed: () => _setWifiReset(false),
+      );
+    } else if (_canControl && ssid != null) {
+      action = TextButton(
+        onPressed: _confirmDisconnectWifi,
+        style: TextButton.styleFrom(
+          foregroundColor: AppColors.errorText,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          minimumSize: const Size(0, 48),
+        ),
+        child: Text('Disconnect',
+            style: AppTextStyles.label.copyWith(color: AppColors.errorText)),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Network',
+            style: AppTextStyles.title.copyWith(color: AppColors.ink)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _palette.line),
+          ),
+          child: Row(children: [
+            OutlineIconBox(
+                icon: ssid == null || _wifiResetPending
+                    ? Icons.wifi_off_rounded
+                    : Icons.wifi_rounded,
+                palette: _palette),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppTextStyles.subtitle
+                          .copyWith(color: AppColors.ink)),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: AppTextStyles.bodySm
+                          .copyWith(color: AppColors.inkMuted)),
+                ],
+              ),
+            ),
+            if (action != null) action,
+          ]),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmDisconnectWifi() async {
+    final ssid = _wifiSsid ?? 'its network';
+    final confirmed = await showAppBottomSheet<bool>(
+      context,
+      builder: (sheetContext) => BottomSheetScaffold(
+        title: 'Disconnect from WiFi?',
+        palette: _palette,
+        body: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            '${widget.deviceId} will forget "$ssid" and restart with its relay '
+            'OFF. It stays offline until someone joins its "SmartSwitch-…" '
+            'hotspot and picks a network.',
+            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMid),
+          ),
+        ),
+        footer: Row(children: [
+          Expanded(
+            child: AppOutlineButton(
+              label: 'Cancel',
+              palette: _palette,
+              expand: true,
+              onPressed: () => Navigator.pop(sheetContext, false),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: AppDangerButton(
+              label: 'Disconnect',
+              expand: true,
+              onPressed: () => Navigator.pop(sheetContext, true),
+            ),
+          ),
+        ]),
+      ),
+    );
+    if (confirmed == true) await _setWifiReset(true);
+  }
+
+  /// Sets (or cancels) `devices/<id>/wifiReset`. The ESP32 picks it up on
+  /// its next poll, clears it, erases its saved WiFi and reboots into setup.
+  Future<void> _setWifiReset(bool reset) async {
+    setState(() => _wifiBusy = true);
+    try {
+      await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/wifiReset')
+          .set(reset ? true : null);
+      if (!mounted) return;
+      TopToast.success(context,
+          reset ? 'Disconnect sent to the device' : 'Disconnect cancelled');
+    } catch (e) {
+      if (!mounted) return;
+      TopToast.error(context, 'Could not reach the device. Try again.');
+    } finally {
+      if (mounted) setState(() => _wifiBusy = false);
+    }
   }
 
   // ── Device ID row with copy (handoff §4.5) ───────────────────────────

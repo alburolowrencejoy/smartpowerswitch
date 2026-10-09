@@ -73,6 +73,15 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
 
   StreamSubscription? _combinedSub;
 
+  // WiFi the ESP32 reports (`wifi_ssid` / `wifi_rssi`) and whether a
+  // disconnect is waiting for it (`wifiReset`). Read before the last_seen
+  // de-dupe in [_applyDevice]: the device clears these right before it
+  // reboots into setup mode, without sending a new last_seen.
+  String? _wifiSsid;
+  int? _wifiRssi;
+  bool _wifiResetPending = false;
+  bool _wifiBusy = false;
+
   // ── Institute theming ──────────────────────────────────────────────────
   // Colored by the building the device is in, not by the viewer's role, so
   // a super admin who drills from an institute's building screen into one
@@ -181,6 +190,11 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     }
     final data = Map<String, dynamic>.from(raw as Map);
     final lastSeen = (data['last_seen'] as num?)?.toInt();
+
+    final ssid = (data['wifi_ssid'] ?? '').toString().trim();
+    _wifiSsid = ssid.isEmpty ? null : ssid;
+    _wifiRssi = (data['wifi_rssi'] as num?)?.toInt();
+    _wifiResetPending = data['wifiReset'] == true;
 
     if (lastSeen != null && lastSeen == _lastRecordedSeen) {
       return;
@@ -856,8 +870,129 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
             month == null ? '—' : '${month.toStringAsFixed(1)} kWh this month'),
         _kvRow('PZEM reading', _hasPzemReadings ? 'Detected' : 'Not detected'),
         _kvRow('Last seen', _lastSeenText(), last: true),
+        const SizedBox(height: 18),
+        _buildNetworkPanel(),
       ]),
     );
+  }
+
+  // ── Network: WiFi the device is on + disconnect ───────────────────────
+  String _signalLabel(int? rssi) {
+    if (rssi == null) return '';
+    if (rssi >= -60) return 'Strong signal';
+    if (rssi >= -70) return 'Good signal';
+    if (rssi >= -80) return 'Fair signal';
+    return 'Weak signal';
+  }
+
+  Widget _buildNetworkPanel() {
+    final ssid = _wifiSsid;
+    final String title;
+    final String subtitle;
+    if (_wifiResetPending) {
+      title = ssid ?? 'Disconnect pending';
+      subtitle = _isOnline
+          ? 'Disconnecting…'
+          : 'Will disconnect when the device comes back online';
+    } else if (ssid == null) {
+      title = 'Not connected';
+      subtitle = 'Join the device\'s "SmartSwitch-…" hotspot to set up WiFi';
+    } else {
+      title = ssid;
+      final signal = _signalLabel(_wifiRssi);
+      subtitle = _isOnline
+          ? (signal.isEmpty ? 'WiFi network' : 'WiFi network · $signal')
+          : 'Last known network';
+    }
+
+    Widget? action;
+    if (_canToggle && _wifiBusy) {
+      action = SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2, color: _palette.mid),
+      );
+    } else if (_canToggle && _wifiResetPending) {
+      action = TextButton(
+        onPressed: () => _setWifiReset(false),
+        style: TextButton.styleFrom(foregroundColor: _palette.dark),
+        child: const Text('Cancel'),
+      );
+    } else if (_canToggle && ssid != null) {
+      action = TextButton.icon(
+        onPressed: _confirmDisconnectWifi,
+        icon: const Icon(Icons.wifi_off_rounded, size: 18),
+        label: const Text('Disconnect'),
+        style: TextButton.styleFrom(foregroundColor: const Color(0xFFA83434)),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: WebColors.outline),
+      ),
+      child: Row(children: [
+        Icon(
+            ssid == null || _wifiResetPending
+                ? Icons.wifi_off_rounded
+                : Icons.wifi_rounded,
+            size: 22,
+            color: _palette.dark),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontFamily: AppFonts.family,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.ink)),
+            const SizedBox(height: 2),
+            Text(subtitle,
+                style: const TextStyle(fontSize: 13, color: WebColors.muted)),
+          ]),
+        ),
+        if (action != null) ...[const SizedBox(width: 8), action],
+      ]),
+    );
+  }
+
+  Future<void> _confirmDisconnectWifi() async {
+    final ssid = _wifiSsid ?? 'its network';
+    await showWebConfirmDialog(
+      context: context,
+      title: 'Disconnect from WiFi?',
+      message: '${widget.deviceId} will forget "$ssid" and restart with its '
+          'relay OFF. It stays offline until someone joins its '
+          '"SmartSwitch-…" hotspot and picks a network.',
+      okLabel: 'Disconnect',
+      onConfirm: () => _setWifiReset(true),
+    );
+  }
+
+  /// Sets (or cancels) `devices/<id>/wifiReset`. The ESP32 picks it up on
+  /// its next poll, clears it, erases its saved WiFi and reboots into setup.
+  Future<void> _setWifiReset(bool reset) async {
+    setState(() => _wifiBusy = true);
+    try {
+      await FirebaseDatabase.instance
+          .ref('devices/${widget.deviceId}/wifiReset')
+          .set(reset ? true : null);
+      if (!mounted) return;
+      TopToast.success(context,
+          reset ? 'Disconnect sent to the device' : 'Disconnect cancelled');
+    } catch (e) {
+      if (mounted) {
+        TopToast.error(context, 'Could not reach the device. Try again.');
+      }
+      if (reset) rethrow; // keeps the confirm dialog open with the error
+    } finally {
+      if (mounted) setState(() => _wifiBusy = false);
+    }
   }
 
   Widget _kvRow(String label, String value, {bool last = false}) {
