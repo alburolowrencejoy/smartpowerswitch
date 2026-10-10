@@ -100,6 +100,12 @@
       }
     }
   },
+  "emulators": {
+    "database": { "port": 9000 },
+    "functions": { "port": 5001 },
+    "ui": { "enabled": true },
+    "singleProjectMode": true
+  },
   "functions": [
     {
       "source": "functions",
@@ -110,7 +116,10 @@
         ".git",
         "firebase-debug.log",
         "firebase-debug.*.log",
-        "*.local"
+        "*.local",
+        "serviceAccountKey.json",
+        "*.test.js",
+        "*.emulator.js"
       ]
     }
   ]

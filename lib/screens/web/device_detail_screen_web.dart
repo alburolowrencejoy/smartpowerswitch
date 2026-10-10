@@ -10,7 +10,6 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../widgets/top_toast.dart';
-import '../../services/readings_service.dart';
 import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
@@ -56,8 +55,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   bool _isOnline = false;
   bool _toggling = false;
   double _ratePhp = 11.5;
-  double _lastValidEnergy = 0.0;
-  double _lastReportedMeterKwh = -1.0;
   int? _lastRecordedSeen;
   DateTime? _lastToggleTime;
 
@@ -114,7 +111,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       building: widget.building,
       room: widget.room,
     );
-    _loadPersistedReading();
     _listenAll();
     _listenHistory();
   }
@@ -200,37 +196,13 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       return;
     }
 
-    final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+    // Energy history is written only by the server (rollupEnergy); this
+    // screen just displays the live reading.
     final relay = (data['relay'] as bool?) ?? false;
 
     final now = DateTime.now();
     final ignoreRelayUpdate = _lastToggleTime != null &&
         now.difference(_lastToggleTime!).inMilliseconds < 3000;
-
-    double kwhDelta = 0.0;
-    if (_lastReportedMeterKwh >= 0.0) {
-      kwhDelta = meterKwh - _lastReportedMeterKwh;
-      if (kwhDelta < 0.0) {
-        kwhDelta = meterKwh;
-      }
-    }
-
-    // Only record if delta is significant (avoid noise). History itself is
-    // written once, globally, by GlobalReadingsListener -- this screen
-    // never duplicates that write.
-    if (kwhDelta >= 0.000001) {
-      _lastValidEnergy = meterKwh;
-
-      ReadingsService.recordReading(
-        deviceId: widget.deviceId,
-        building: widget.building,
-        room: widget.room,
-        kwh: _lastValidEnergy,
-        relay: relay,
-      );
-
-      _lastReportedMeterKwh = meterKwh;
-    }
 
     _deviceData = data;
     _hasPzemReadings = _checkHasPzemReadings(data);
@@ -252,27 +224,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     _ratePhp = rate;
   }
 
-  Future<void> _loadPersistedReading() async {
-    try {
-      final snap = await FirebaseDatabase.instance
-          .ref('readings/${widget.building}/${widget.room}/${widget.deviceId}')
-          .get();
-
-      if (!mounted || snap.value == null || snap.value is! Map) return;
-
-      final data = Map<String, dynamic>.from(snap.value as Map);
-      final cumulative = (data['cumulative_kwh'] as num?)?.toDouble();
-      if (cumulative == null) return;
-
-      setState(() {
-        _lastValidEnergy = cumulative;
-        _lastReportedMeterKwh = cumulative;
-        _hasPzemReadings = true;
-      });
-    } catch (e) {
-      debugPrint('[DeviceDetailWeb] Failed to load persisted reading: $e');
-    }
-  }
 
   bool _checkOnline(Map<String, dynamic> data) {
     final lastSeen = data['last_seen'];

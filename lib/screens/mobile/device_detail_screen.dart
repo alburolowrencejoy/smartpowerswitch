@@ -17,7 +17,6 @@ import '../../widgets/app_bottom_sheet.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
-import '../../services/readings_service.dart';
 import '../../utils/last_seen.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
@@ -52,17 +51,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool _isOnline = false;
   bool _toggling = false;
   double _ratePhp = 11.5;
-  double _lastValidEnergy = 0.0; // Persists last valid reading
-  double _lastReportedMeterKwh = -1.0; // Track PZEM meter kWh to detect deltas
   int? _lastRecordedSeen; // Track last telemetry update to avoid duplicates
   DateTime?
       _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
   // Today's accumulated energy for this device, read live from
   // `history/daily/{today}/devices/{deviceId}/kwh` (written by
-  // HistoryService whenever a meaningful PZEM delta is recorded) --
-  // deliberately NOT the same number as `_lastValidEnergy` above, which is
-  // the PZEM's lifetime cumulative meter reading. The redesign's "Energy
+  // the server's rollupEnergy function) -- deliberately NOT the device's
+  // `kwh`, which is the PZEM's lifetime cumulative meter reading. The redesign's "Energy
   // today" / "Cost today" readings need the daily figure, not lifetime.
   double _energyTodayKwh = 0.0;
   late String _todayKey = _dailyKey(DateTime.now());
@@ -153,7 +149,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       building: widget.building,
       room: widget.room,
     );
-    _loadPersistedReading();
     _listenAll();
     _loadWeeklyHistory();
   }
@@ -228,10 +223,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         final lastSeen = (data['last_seen'] as num?)?.toInt();
 
         if (lastSeen == null || lastSeen != _lastRecordedSeen) {
-          // ✅ Use PZEM meter kWh delta (not calculated from power)
-          // The PZEM module reports cumulative energy since last reset.
-          // We track deltas and write only significant changes to history.
-          final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+          // Energy history is written only by the server (rollupEnergy);
+          // this screen just displays the live reading.
           final relay = (data['relay'] as bool?) ?? false;
 
           // Don't override relay state if we just toggled it (give ESP32
@@ -239,36 +232,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           final now = DateTime.now();
           final ignoreRelayUpdate = _lastToggleTime != null &&
               now.difference(_lastToggleTime!).inMilliseconds < 3000;
-
-          // Calculate delta from PZEM meter reading
-          double kwhDelta = 0.0;
-          if (_lastReportedMeterKwh >= 0.0) {
-            kwhDelta = meterKwh - _lastReportedMeterKwh;
-            // If meter reset detected (new reading < old), use new reading
-            // as delta.
-            if (kwhDelta < 0.0) {
-              kwhDelta = meterKwh;
-            }
-          }
-
-          // Only record if delta is significant (avoid noise). History
-          // itself is written once, globally, by GlobalReadingsListener --
-          // this screen no longer duplicates that write, which used to
-          // double-count energy/cost for a device whenever its detail
-          // screen happened to be open.
-          if (kwhDelta >= 0.000001) {
-            _lastValidEnergy = meterKwh; // Running total = meter reading
-
-            ReadingsService.recordReading(
-              deviceId: widget.deviceId,
-              building: widget.building,
-              room: widget.room,
-              kwh: _lastValidEnergy,
-              relay: relay,
-            );
-
-            _lastReportedMeterKwh = meterKwh; // Track this meter reading
-          }
 
           parsedDevice = data;
           computedHasPzem = _checkHasPzemReadings(data);
@@ -371,28 +334,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       }
     }
     return null;
-  }
-
-  Future<void> _loadPersistedReading() async {
-    try {
-      final snap = await FirebaseDatabase.instance
-          .ref('readings/${widget.building}/${widget.room}/${widget.deviceId}')
-          .get();
-
-      if (!mounted || snap.value == null || snap.value is! Map) return;
-
-      final data = Map<String, dynamic>.from(snap.value as Map);
-      final cumulative = (data['cumulative_kwh'] as num?)?.toDouble();
-      if (cumulative == null) return;
-
-      setState(() {
-        _lastValidEnergy = cumulative;
-        _lastReportedMeterKwh = cumulative;
-        _hasPzemReadings = true;
-      });
-    } catch (e) {
-      debugPrint('[DeviceDetail] Failed to load persisted reading: $e');
-    }
   }
 
   // ── Last 7 days (one-shot; see field doc) ────────────────────────────

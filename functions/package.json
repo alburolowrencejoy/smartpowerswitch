@@ -6,7 +6,9 @@
     "shell": "firebase functions:shell",
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "test": "node --test",
+    "test:emulator": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 energy_rollup.emulator.js\""
   },
   "engines": {
     "node": "22"

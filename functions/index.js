@@ -331,53 +331,10 @@ exports.watchDavaoLight = davaoLight.watchDavaoLight;
 exports.checkDavaoLightNow = davaoLight.checkDavaoLightNow;
 exports.verifyAdvisoryText = davaoLight.verifyAdvisoryText;
 
-// ── Auto-write PZEM history when device kwh changes ─────────────
-const { writeHistoryForDevice } = require('./history_writer');
-
-exports.onDeviceKwhChange = functions.database
-  .ref('devices/{deviceId}/kwh')
-  .onWrite(async (change, context) => {
-    const deviceId = context.params.deviceId;
-    const oldKwh = change.before.val();
-    const newKwh = change.after.val();
-
-    // Only process if new kwh value exists and is valid
-    if (typeof newKwh !== 'number' || newKwh < 0) {
-      return;
-    }
-
-    // Skip if this is the first write (oldKwh is null/undefined) or value hasn't changed
-    // This prevents duplicate history entries from re-listens or reconnects
-    if (oldKwh === null || oldKwh === undefined || oldKwh === newKwh) {
-      return;
-    }
-
-    try {
-      // Get device building info and relay status
-      const deviceSnap = await admin.database().ref(`devices/${deviceId}`).get();
-      const device = deviceSnap.val();
-
-      if (!device || !device.building) {
-        return;
-      }
-
-      // ⚠️ CRITICAL: Only write history if relay is ON (device actively consuming power)
-      // This prevents history logging when device UI is opened but device is powered off
-      const relayOn = device.relay === true;
-      if (!relayOn) {
-        console.log(`[onDeviceKwhChange] Skipping ${deviceId}: relay is OFF`);
-        return;
-      }
-
-      const building = String(device.building).trim();
-      const kwh = parseFloat(newKwh);
-
-      // Write the kwh change to history only if device is actively running
-      await writeHistoryForDevice(deviceId, building, kwh);
-    } catch (error) {
-      console.error(`[onDeviceKwhChange] Error processing ${deviceId}: ${error.message}`);
-    }
-  });
+// ── Energy history: once-a-minute rollup (the only history writer) ──
+// Replaces onDeviceKwhChange, which added the meter's lifetime total on
+// every reading. See energy_rollup.js / energy_math.js.
+exports.rollupEnergy = require('./energy_rollup').rollupEnergy;
 
 // ── Run automation scheduler every minute ─────────────────────────
 exports.runAutomationScheduler = onSchedule('* * * * *', runAutomationSchedules);

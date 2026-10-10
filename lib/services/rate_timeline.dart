@@ -16,7 +16,7 @@ class RateChange {
 /// Which electricity rate applied at a given moment.
 ///
 /// History records store the cost at the rate in force when each reading
-/// was written (`history_writer.js` / `HistoryService`), so saved costs never
+/// was counted (the `rollupEnergy` Cloud Function), so saved costs never
 /// change when the rate does. This is the fallback for records that have no
 /// stored cost: they are priced at the rate of *their own* date, taken from
 /// the `rate_changes` log, never at today's rate -- so a new rate only ever

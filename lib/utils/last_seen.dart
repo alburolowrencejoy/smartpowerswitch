@@ -7,9 +7,8 @@
 /// `lastSeen as int` on it. Firebase Realtime Database is JSON-based and
 /// doesn't strictly distinguish `int` from `double` on the wire -- a
 /// timestamp that happens to come back from the Dart SDK as a `double`
-/// (which does happen in practice; `device_service.dart`'s own
-/// `_processReadings`/`_checkOnline`-equivalent code already guards against
-/// exactly this with `(data['last_seen'] as num?)?.toInt()`) made `as int`
+/// (which does happen in practice, hence the usual
+/// `(data['last_seen'] as num?)?.toInt()` guard elsewhere) made `as int`
 /// throw a `TypeError` instead of returning a sensible answer. Inside a
 /// `setState(() { ... })` closure feeding a `StreamSubscription.listen`
 /// callback (not a stream `onError`), that throw is never caught by the
