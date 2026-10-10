@@ -12,6 +12,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
@@ -261,6 +262,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref(EnergyHistory.path('daily')).onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -291,8 +293,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final data = Map<String, dynamic>.from(devicesRaw);
       _meta = DeviceMeta.parseAll(data);
       int online = 0, offline = 0;
+      final registry = events[4].snapshot.value;
       data.forEach((id, val) {
-        if (val is! Map) return;
+        if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) return;
         final isOnline = isRecentlySeen(val['last_seen']);
         isOnline ? online++ : offline++;
       });

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/device_registry.dart';
 import '../../services/schedule_filter.dart';
 import '../../services/schedule_windows.dart';
 import '../../theme/app_colors.dart';
@@ -437,24 +438,18 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
   Future<void> _loadDevices(String building, int floor, String room) async {
     setState(() => _loadingDevices = true);
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('buildings/$building/floorData/$floor/devices')
-          .get();
-      final Map<String, String> devices = {};
-      if (snap.exists && snap.value is Map) {
-        final raw = Map<String, dynamic>.from(snap.value as Map);
-        raw.forEach((deviceId, val) {
-          if (val is Map) {
-            final d = Map<String, dynamic>.from(val);
-            final deviceRoom =
-                (d['room'] ?? '').toString().trim().toLowerCase();
-            if (deviceRoom == room.trim().toLowerCase()) {
-              final utility = (d['utility'] ?? 'Unknown').toString();
-              devices[deviceId] = '$deviceId · $utility';
-            }
-          }
-        });
-      }
+      // The room's devices from the registry (master_devices).
+      final snaps = await Future.wait([
+        FirebaseDatabase.instance.ref('master_devices').get(),
+        FirebaseDatabase.instance.ref('devices').get(),
+      ]);
+      final Map<String, String> devices = {
+        for (final d in DeviceRegistry.parse(snaps[0].value, snaps[1].value))
+          if (d.building == building.trim().toUpperCase() &&
+              d.floor == floor &&
+              d.room.toLowerCase() == room.trim().toLowerCase())
+            d.id: '${d.displayName} · ${d.utility.isEmpty ? 'Unknown' : d.utility}',
+      };
       if (mounted) {
         setState(() {
           _devices = devices;
@@ -810,10 +805,11 @@ class _AutomationScreenState extends State<AutomationScreen> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
-        // ── buildings (+ nested device index) ─────────────────────────
+        // ── buildings (+ device index from master_devices) ────────────
         final buildingsRaw = events[0].snapshot.value;
         if (buildingsRaw is Map) {
           final list = <String>[];
@@ -827,30 +823,17 @@ class _AutomationScreenState extends State<AutomationScreen> {
               final floorCount = (data['floors'] as num?)?.toInt() ?? 1;
               list.add(buildingCode);
               floors[buildingCode] = floorCount < 1 ? 1 : floorCount;
-
-              // `ref('buildings').onValue` already downloads the whole
-              // subtree (Realtime DB has no partial-fetch by default), so
-              // floorData/devices are already here -- no extra reads.
-              final floorData = data['floorData'];
-              if (floorData is Map) {
-                for (final floorEntry in floorData.entries) {
-                  final floorVal = floorEntry.value;
-                  if (floorVal is! Map) continue;
-                  final devices = floorVal['devices'];
-                  if (devices is! Map) continue;
-                  for (final deviceEntry in devices.entries) {
-                    final deviceVal = deviceEntry.value;
-                    if (deviceVal is! Map) continue;
-                    final d = Map<String, dynamic>.from(deviceVal);
-                    deviceIndex[deviceEntry.key.toString()] = _DeviceInfo(
-                      building: buildingCode,
-                      room: (d['room'] ?? '').toString(),
-                      utility: (d['utility'] ?? 'Unknown').toString(),
-                    );
-                  }
-                }
-              }
             }
+          }
+          // Device index from the registry (master_devices), not the old
+          // per-floor copies under buildings/.
+          for (final d in DeviceRegistry.parse(events[2].snapshot.value, null)) {
+            if (!d.isAssigned) continue;
+            deviceIndex[d.id] = _DeviceInfo(
+              building: d.building,
+              room: d.room,
+              utility: d.utility.isEmpty ? 'Unknown' : d.utility,
+            );
           }
           list.sort();
           _buildings = list;

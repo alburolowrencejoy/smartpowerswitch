@@ -15,6 +15,7 @@ import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
@@ -89,14 +90,14 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   // building_floor_screen*.dart, which also key off the building code).
   InstitutePalette get _palette => InstituteColors.forCode(widget.building);
 
-  /// Custom name given when the device was added to its room (stored on the
-  /// room's device entry, which only admins write). Empty = none.
+  /// Custom name given when the device was added to its room (stored in the
+  /// registry, `master_devices/{id}/name`). Empty = none.
   String _customName = '';
 
   Future<void> _loadCustomName() async {
     try {
       final snap = await FirebaseDatabase.instance
-          .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/name')
+          .ref('master_devices/${widget.deviceId}/name')
           .get();
       final name = (snap.value ?? '').toString().trim();
       if (mounted && name.isNotEmpty) setState(() => _customName = name);
@@ -284,11 +285,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
             .set(newRelay)
             .timeout(const Duration(milliseconds: 1200));
 
-        unawaited(db
-            .child(
-                'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
-            .set(newRelay));
-
         success = true;
       } catch (e) {
         lastError = e;
@@ -407,9 +403,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   late String _utility = widget.utility;
   static const _utilityOptions = ['Lights', 'Outlets', 'AC'];
 
-  String get _deviceRefPath =>
-      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}';
-
   /// Changes the device's utility type (Lights / Outlets / AC).
   Future<void> _editDevice() async {
     final current = _utilityOptions.firstWhere(
@@ -430,8 +423,9 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       onSubmit: (v) async {
         final next = v['utility']!;
         if (next == current) return null;
+        // Registry + the transition copy on the live record.
         await FirebaseDatabase.instance.ref().update({
-          '$_deviceRefPath/utility': next,
+          'master_devices/${widget.deviceId}/utility': next,
           'devices/${widget.deviceId}/utility': next,
         });
         saved = next;
@@ -475,12 +469,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         final logRef = db.child('deletion_log').push();
         try {
           await db.update({
-            _deviceRefPath: null,
-            'master_devices/${widget.deviceId}/assignedTo': '',
-            'devices/${widget.deviceId}/building': '',
-            'devices/${widget.deviceId}/floor': '',
-            'devices/${widget.deviceId}/room': '',
-            'devices/${widget.deviceId}/status': 'offline',
+            ...DeviceRegistry.unassignmentUpdate(widget.deviceId),
             'deletion_log/${logRef.key}': {
               'type': 'device',
               'deviceId': widget.deviceId,

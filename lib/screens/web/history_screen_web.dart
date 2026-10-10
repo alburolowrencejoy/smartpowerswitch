@@ -25,6 +25,7 @@ import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
@@ -321,13 +322,14 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
       setState(() {
         _applyRate(events[0].snapshot.value);
-        _applyDevices(events[1].snapshot.value);
+        _applyDevices(events[1].snapshot.value, events[3].snapshot.value);
         _applyHistory(events[2].snapshot.value);
         _hasLoadedOnce = true;
         _isLoading = false;
@@ -356,21 +358,24 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _electricityRate = rate;
   }
 
-  void _applyDevices(Object? raw) {
+  /// Online/offline counts (registered devices only, [registry] =
+  /// `master_devices`) and per-device metadata from the live records.
+  void _applyDevices(Object? raw, Object? registry) {
     if (raw is! Map) return;
 
     final data = Map<String, dynamic>.from(raw);
     int online = 0, offline = 0;
 
     data.forEach((id, val) {
-      if (val is! Map) return;
+      if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) return;
       final device = Map<String, dynamic>.from(val);
       final lastSeen = device['last_seen'];
-      final isOnline = lastSeen != null &&
+      // `num`, not `int`: the SDK can hand back a whole-number double.
+      final isOnline = lastSeen is num &&
           lastSeen != 0 &&
           DateTime.now()
                   .difference(
-                      DateTime.fromMillisecondsSinceEpoch(lastSeen as int))
+                      DateTime.fromMillisecondsSinceEpoch(lastSeen.toInt()))
                   .inMinutes <
               2;
 

@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import '../../theme/app_colors.dart';
+import '../../services/device_registry.dart';
 import '../../services/schedule_filter.dart';
 import '../../services/schedule_windows.dart';
 import '../../theme/institute_colors.dart';
@@ -375,24 +376,18 @@ class _DevicePickerDialogState extends State<_DevicePickerDialog> {
   Future<void> _loadDevices(String building, int floor, String room) async {
     setState(() => _loadingDevices = true);
     try {
-      final snap = await FirebaseDatabase.instance
-          .ref('buildings/$building/floorData/$floor/devices')
-          .get();
-      final Map<String, String> devices = {};
-      if (snap.exists && snap.value is Map) {
-        final raw = Map<String, dynamic>.from(snap.value as Map);
-        raw.forEach((deviceId, val) {
-          if (val is Map) {
-            final d = Map<String, dynamic>.from(val);
-            final deviceRoom =
-                (d['room'] ?? '').toString().trim().toLowerCase();
-            if (deviceRoom == room.trim().toLowerCase()) {
-              final utility = (d['utility'] ?? 'Unknown').toString();
-              devices[deviceId] = '$deviceId · $utility';
-            }
-          }
-        });
-      }
+      // The room's devices from the registry (master_devices).
+      final snaps = await Future.wait([
+        FirebaseDatabase.instance.ref('master_devices').get(),
+        FirebaseDatabase.instance.ref('devices').get(),
+      ]);
+      final Map<String, String> devices = {
+        for (final d in DeviceRegistry.parse(snaps[0].value, snaps[1].value))
+          if (d.building == building.trim().toUpperCase() &&
+              d.floor == floor &&
+              d.room.toLowerCase() == room.trim().toLowerCase())
+            d.id: '${d.displayName} · ${d.utility.isEmpty ? 'Unknown' : d.utility}',
+      };
       if (mounted) {
         setState(() {
           _devices = devices;

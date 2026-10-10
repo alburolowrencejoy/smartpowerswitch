@@ -29,6 +29,7 @@ import '../shared/campus_map_screen.dart';
 import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
@@ -468,8 +469,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Map<String, int> buildingOnline = {};
           Map<String, int> buildingOffline = {};
           Map<String, int> buildingOnCounts = {};
+          final registry = events[1].snapshot.value;
           data.forEach((id, val) {
-            if (val is! Map) return;
+            if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) {
+              return;
+            }
             final device = Map<String, dynamic>.from(val);
             final building = (device['building'] ?? '').toString();
             final lastSeen = device['last_seen'];
@@ -631,8 +635,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           double kwh = 0;
           int online = 0;
           final rooms = <String, _RoomLoad>{};
+          final registry = events[1].snapshot.value;
           data.forEach((id, val) {
-            if (val is! Map) return;
+            if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) {
+              return;
+            }
             final device = Map<String, dynamic>.from(val);
             final building = (device['building'] ?? '').toString();
             if (building != code) return;
@@ -1151,33 +1158,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// delete would touch, for the delete dialog's impact list (handoff §7.2
   /// "adapt the actual counts to the real building's data").
   Future<_BuildingDeleteImpact> _loadBuildingDeleteImpact(String code) async {
-    final assignedDeviceIds = <String>{};
-
-    final devicesSnap = await FirebaseDatabase.instance.ref('devices').get();
-    if (devicesSnap.value is Map) {
-      final devices = Map<String, dynamic>.from(devicesSnap.value as Map);
-      devices.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        if ((device['building'] ?? '').toString() == code) {
-          assignedDeviceIds.add(id.toString());
-        }
-      });
-    }
-
+    // Devices assigned to this building, from the registry (the one list).
     final masterSnap =
         await FirebaseDatabase.instance.ref('master_devices').get();
-    if (masterSnap.value is Map) {
-      final masters = Map<String, dynamic>.from(masterSnap.value as Map);
-      masters.forEach((id, val) {
-        if (val is! Map) return;
-        final master = Map<String, dynamic>.from(val);
-        final assignedTo = (master['assignedTo'] ?? '').toString();
-        if (assignedTo.startsWith('$code/')) {
-          assignedDeviceIds.add(id.toString());
-        }
-      });
-    }
+    final assignedDeviceIds = {
+      for (final d in DeviceRegistry.inPlace(
+          DeviceRegistry.parse(masterSnap.value, null),
+          building: code))
+        d.id,
+    };
 
     var roomCount = 0;
     var floorCount = 0;
@@ -1270,11 +1259,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'hotspots/$code': null,
         };
         for (final deviceId in impact!.assignedDeviceIds) {
-          updates['master_devices/$deviceId/assignedTo'] = '';
-          updates['devices/$deviceId/building'] = '';
-          updates['devices/$deviceId/floor'] = '';
-          updates['devices/$deviceId/room'] = '';
-          updates['devices/$deviceId/status'] = 'offline';
+          updates.addAll(DeviceRegistry.unassignmentUpdate(deviceId));
         }
         final logRef = FirebaseDatabase.instance.ref('deletion_log').push();
         updates['deletion_log/${logRef.key}'] = {

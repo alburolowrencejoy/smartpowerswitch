@@ -18,6 +18,7 @@ import '../../widgets/app_button.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../utils/last_seen.dart';
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
@@ -127,14 +128,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   // building_floor_screen*.dart, which also key off the building code).
   InstitutePalette get _palette => InstituteColors.forCode(widget.building);
 
-  /// Custom name given when the device was added to its room (stored on the
-  /// room's device entry, which only admins write). Empty = none.
+  /// Custom name given when the device was added to its room (stored in the
+  /// registry, `master_devices/{id}/name`). Empty = none.
   String _customName = '';
 
   Future<void> _loadCustomName() async {
     try {
       final snap = await FirebaseDatabase.instance
-          .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/name')
+          .ref('master_devices/${widget.deviceId}/name')
           .get();
       final name = (snap.value ?? '').toString().trim();
       if (mounted && name.isNotEmpty) setState(() => _customName = name);
@@ -429,18 +430,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
     for (var attempt = 0; attempt < 2 && !success; attempt++) {
       try {
-        // Update the live device node first so the ESP32 and the relay card
-        // react immediately, then mirror to the building copy in the background.
+        // The live device node is the only relay state; the ESP32 and every
+        // screen read it there (no building copy any more).
         await db
             .child('devices/${widget.deviceId}/relay')
             .set(newRelay)
             .timeout(const Duration(milliseconds: 1200));
-
-        // Best-effort mirror for the building/floor screens.
-        unawaited(db
-            .child(
-                'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
-            .set(newRelay));
 
         success = true;
       } catch (e) {
@@ -540,13 +535,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final logRef = db.child('deletion_log').push();
 
     final updates = <String, Object?>{
-      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}':
-          null,
-      'master_devices/${widget.deviceId}/assignedTo': '',
-      'devices/${widget.deviceId}/building': '',
-      'devices/${widget.deviceId}/floor': '',
-      'devices/${widget.deviceId}/room': '',
-      'devices/${widget.deviceId}/status': 'offline',
+      ...DeviceRegistry.unassignmentUpdate(widget.deviceId),
       'deletion_log/${logRef.key}': {
         'type': 'device',
         'deviceId': widget.deviceId,

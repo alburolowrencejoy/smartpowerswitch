@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:firebase_database/firebase_database.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
@@ -96,7 +98,7 @@ class _RoomInfo {
 }
 
 class _WebOverviewTabState extends State<WebOverviewTab> {
-  StreamSubscription<DatabaseEvent>? _devicesSub;
+  StreamSubscription<List<DatabaseEvent>>? _devicesSub;
   StreamSubscription<DatabaseEvent>? _historySub;
   StreamSubscription<DatabaseEvent>? _todaySub;
   Map<dynamic, dynamic>? _todayNode;
@@ -259,38 +261,34 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   void _listenDevices() {
     _devicesSub?.cancel();
     final code = widget.instituteCode;
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+    // The registry (master_devices) is the device list; live readings only
+    // say whether each registered board is online.
+    _devicesSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('devices').onValue,
+    ]).listen((events) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
       var online = 0;
       var offline = 0;
       final utilityById = <String, String>{};
       final rooms = <String, _RoomInfo>{};
-      if (raw is Map) {
-        raw.forEach((id, val) {
-          if (val is! Map) return;
-          final d = Map<String, dynamic>.from(val);
-          if (code != null && (d['building'] ?? '').toString() != code) {
-            return;
-          }
-          final room = (d['room'] ?? '').toString().trim();
-          if (code != null && room.isNotEmpty) {
-            final floor = int.tryParse('${d['floor'] ?? 1}') ?? 1;
-            rooms
-                .putIfAbsent('$floor|$room', () => _RoomInfo(floor, room))
-                .deviceIds
-                .add('$id');
-          }
-          // `kwh` here is the meter's lifetime total, so energy comes from
-          // today's summary instead; this only records each utility.
-          utilityById['$id'] = _utilityOf(d);
-          if (_isOnline(d['last_seen'])) {
-            online++;
-          } else {
-            offline++;
-          }
-        });
+      for (final d in DeviceRegistry.parse(
+          events[0].snapshot.value, events[1].snapshot.value)) {
+        if (code != null && d.building != code) continue;
+        if (code != null && d.room.isNotEmpty) {
+          final floor = d.floor == 0 ? 1 : d.floor;
+          rooms
+              .putIfAbsent('$floor|${d.room}', () => _RoomInfo(floor, d.room))
+              .deviceIds
+              .add(d.id);
+        }
+        // Energy comes from today's summary; this only records the utility.
+        utilityById[d.id] = _utilityOf({'utility': d.utility});
+        if (_isOnline(d.live['last_seen'])) {
+          online++;
+        } else {
+          offline++;
+        }
       }
       setState(() {
         _online = online;

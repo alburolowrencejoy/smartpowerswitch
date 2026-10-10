@@ -12,15 +12,6 @@ admin.initializeApp();
 // windows all run on the server).
 const { planRelayChanges } = require('./schedule_logic');
 
-async function mirrorRelay(deviceId, building, floor, relay) {
-  if (!building || !floor) return;
-
-  await admin
-    .database()
-    .ref(`buildings/${building}/floorData/${floor}/devices/${deviceId}/relay`)
-    .set(relay);
-}
-
 async function runAutomationSchedules() {
   const [timezoneSnap, automationSnap, deviceSnap] = await Promise.all([
     admin.database().ref('settings/timezone').get(),
@@ -35,9 +26,9 @@ async function runAutomationSchedules() {
     timeZone: String(timezoneSnap.val() ?? 'Asia/Manila'),
   });
 
-  for (const { deviceId, relay, building, floor } of changes) {
+  // The live record is the only relay state (no copy under buildings/).
+  for (const { deviceId, relay } of changes) {
     await admin.database().ref(`devices/${deviceId}/relay`).set(relay);
-    await mirrorRelay(deviceId, building, floor, relay);
     console.log(`[AutomationScheduler] ${deviceId} -> ${relay ? 'ON' : 'OFF'}`);
   }
 }

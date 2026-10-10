@@ -5,6 +5,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/automation_scheduler_service.dart';
+import '../../services/device_registry.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../utils/placeholder_data.dart';
@@ -280,24 +281,14 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
 
   Future<void> _deleteBuilding(BuildContext ctx, String code, String name) async {
     final db = FirebaseDatabase.instance;
-    final assigned = <String>{};
-    final devicesSnap = await db.ref('devices').get();
-    if (devicesSnap.value is Map) {
-      (devicesSnap.value as Map).forEach((id, val) {
-        if (val is Map && (val['building'] ?? '').toString() == code) {
-          assigned.add(id.toString());
-        }
-      });
-    }
+    // Devices assigned to this building, from the registry (the one list).
     final masterSnap = await db.ref('master_devices').get();
-    if (masterSnap.value is Map) {
-      (masterSnap.value as Map).forEach((id, val) {
-        if (val is Map &&
-            (val['assignedTo'] ?? '').toString().startsWith('$code/')) {
-          assigned.add(id.toString());
-        }
-      });
-    }
+    final assigned = {
+      for (final d in DeviceRegistry.inPlace(
+          DeviceRegistry.parse(masterSnap.value, null),
+          building: code))
+        d.id,
+    };
     if (!ctx.mounted) return;
     final n = assigned.length;
     await showDeleteFlow(
@@ -321,13 +312,7 @@ class _DesktopDashboardScreenState extends State<DesktopDashboardScreen> {
         final updates = <String, dynamic>{
           'buildings/$code': null,
           'hotspots/$code': null,
-          for (final id in assigned) ...{
-            'master_devices/$id/assignedTo': '',
-            'devices/$id/building': '',
-            'devices/$id/floor': '',
-            'devices/$id/room': '',
-            'devices/$id/status': 'offline',
-          },
+          for (final id in assigned) ...DeviceRegistry.unassignmentUpdate(id),
           'deletion_log/${logRef.key}': {
             'type': 'building',
             'buildingCode': code,

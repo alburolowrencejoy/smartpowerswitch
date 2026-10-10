@@ -197,21 +197,10 @@ class AutomationSchedulerService {
     bool desiredRelay,
   ) async {
     final deviceId = device.key;
-    final deviceData = device.value;
 
     try {
+      // The live record is the only relay state (no building copy).
       await _root.child('devices/$deviceId/relay').set(desiredRelay);
-
-      final building = (deviceData['building'] ?? '').toString().trim();
-      final floor = (deviceData['floor'] ?? '').toString().trim();
-      if (building.isNotEmpty && floor.isNotEmpty) {
-        unawaited(
-          _root
-              .child(
-                  'buildings/$building/floorData/$floor/devices/$deviceId/relay')
-              .set(desiredRelay),
-        );
-      }
 
       debugPrint(
         '[AutomationScheduler] $deviceId -> ${desiredRelay ? 'ON' : 'OFF'}',

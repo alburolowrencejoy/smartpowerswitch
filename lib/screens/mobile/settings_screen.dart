@@ -435,7 +435,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         TopToast.show(context, '$id is already unassigned and ready to add.');
         return;
       }
-
+      // Registry entry + the transition copy only. No placeholder readings:
+      // a placeholder kwh of 0 would become the energy rollup's baseline, and
+      // the board's real (lifetime) meter value would then look like an
+      // impossible jump and freeze its history.
       await db.update({
         'master_devices/$id': {
           'assignedTo': '',
@@ -443,21 +446,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'source': 'real_iot',
           'createdAt': ServerValue.timestamp,
         },
-        'devices/$id': {
-          'building': '',
-          'floor': '',
-          'room': '',
-          'utility': 'Unassigned',
-          'relay': false,
-          'status': 'offline',
-          'kwh': 0,
-          'voltage': 0,
-          'current': 0,
-          'power': 0,
-          'powerFactor': 0,
-          'last_seen': 0,
-          'last_updated': ServerValue.timestamp,
-        },
+        'devices/$id/building': '',
+        'devices/$id/floor': '',
+        'devices/$id/room': '',
+        'devices/$id/utility': 'Unassigned',
       });
 
       if (!mounted) return;
