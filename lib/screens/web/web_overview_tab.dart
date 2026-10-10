@@ -4,7 +4,9 @@ import 'dart:math' as math;
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
@@ -95,6 +97,9 @@ class _RoomInfo {
 class _WebOverviewTabState extends State<WebOverviewTab> {
   StreamSubscription<DatabaseEvent>? _devicesSub;
   StreamSubscription<DatabaseEvent>? _historySub;
+  StreamSubscription<DatabaseEvent>? _todaySub;
+  Map<dynamic, dynamic>? _todayNode;
+  Map<String, String> _utilityById = const {};
   int _online = 0;
   int _offline = 0;
   double _scopedKwh = 0;
@@ -105,7 +110,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   };
 
   /// Institute scope only: its rooms (sorted by floor, then name) and this
-  /// month's kWh per device, from `history/daily`.
+  /// month's kWh per device, from the monthly summary.
   List<_RoomInfo> _rooms = const [];
   Map<String, double> _deviceMonthKwh = const {};
 
@@ -137,6 +142,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   void dispose() {
     _devicesSub?.cancel();
     _historySub?.cancel();
+    _todaySub?.cancel();
     _recentSub?.cancel();
     super.dispose();
   }
@@ -150,7 +156,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       return;
     }
     _recentSub = FirebaseDatabase.instance
-        .ref('history/daily')
+        .ref(EnergyHistory.path('daily'))
         .orderByKey()
         .limitToLast(7)
         .onValue
@@ -176,43 +182,73 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     });
   }
 
-  /// Institute scope only: this month's `history/daily` days, summed per
-  /// device so [_roomChartPanel] can total them by room.
+  /// Institute scope only: this month's per-device kWh (from the monthly
+  /// summary) so [_roomChartPanel] can total them by room, and today's
+  /// summary for the scoped "today" figures.
   void _listenMonthHistory() {
     _historySub?.cancel();
     _historySub = null;
+    _todaySub?.cancel();
+    _todaySub = null;
     if (widget.instituteCode == null) {
       _deviceMonthKwh = const {};
+      _todayNode = null;
       return;
     }
-    final now = HistoryClock.instance.now();
-    final monthStart =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-01';
+    final keys = HistoryKeys.of(HistoryClock.instance.now());
     _historySub = FirebaseDatabase.instance
-        .ref('history/daily')
-        .orderByKey()
-        .startAt(monthStart)
+        .ref('${EnergyHistory.path('monthly', keys.monthly)}/devices')
         .onValue
         .listen((event) {
       if (!mounted) return;
       final perDevice = <String, double>{};
       final raw = event.snapshot.value;
       if (raw is Map) {
-        raw.forEach((_, day) {
-          if (day is! Map) return;
-          final devices = day['devices'];
-          if (devices is! Map) return;
-          devices.forEach((id, d) {
-            if (d is! Map) return;
-            final k = _toDouble(d['kwh'] ?? d['total_kwh']);
-            perDevice['$id'] = (perDevice['$id'] ?? 0) + k;
-          });
+        raw.forEach((id, d) {
+          if (d is Map) perDevice['$id'] = _toDouble(d['kwh']);
         });
       }
       setState(() => _deviceMonthKwh = perDevice);
     }, onError: (Object e) {
       debugPrint('[Overview] history listen error: $e');
     });
+    _todaySub = FirebaseDatabase.instance
+        .ref(EnergyHistory.path('daily', keys.daily))
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final raw = event.snapshot.value;
+      setState(() {
+        _todayNode = raw is Map ? raw : null;
+        _recomputeScopedToday();
+      });
+    }, onError: (Object e) {
+      debugPrint('[Overview] today listen error: $e');
+    });
+  }
+
+  /// Institute scope only: today's kWh for the building and its split by
+  /// utility, from today's summary joined with each device's utility.
+  void _recomputeScopedToday() {
+    final code = widget.instituteCode;
+    final util = <String, double>{'Lights': 0, 'Outlets': 0, 'AC': 0};
+    var kwh = 0.0;
+    final today = _todayNode;
+    if (code != null && today != null) {
+      final b = today['buildings'];
+      final node = b is Map ? b[code] : null;
+      kwh = node is Map ? _toDouble(node['kwh']) : 0.0;
+      final devices = today['devices'];
+      if (devices is Map) {
+        devices.forEach((id, d) {
+          if (d is! Map || '${d['building']}' != code) return;
+          final u = _utilityById['$id'];
+          if (u != null) util[u] = (util[u] ?? 0) + _toDouble(d['kwh']);
+        });
+      }
+    }
+    _scopedKwh = kwh;
+    _utilityKwh = util;
   }
 
   /// One listener on `devices` for what the shared view model does not
@@ -228,8 +264,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       final raw = event.snapshot.value;
       var online = 0;
       var offline = 0;
-      var kwh = 0.0;
-      final util = <String, double>{'Lights': 0, 'Outlets': 0, 'AC': 0};
+      final utilityById = <String, String>{};
       final rooms = <String, _RoomInfo>{};
       if (raw is Map) {
         raw.forEach((id, val) {
@@ -246,10 +281,9 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
                 .deviceIds
                 .add('$id');
           }
-          final k = _toDouble(d['kwh']);
-          kwh += k;
-          final u = _utilityOf(d);
-          util[u] = (util[u] ?? 0) + k;
+          // `kwh` here is the meter's lifetime total, so energy comes from
+          // today's summary instead; this only records each utility.
+          utilityById['$id'] = _utilityOf(d);
           if (_isOnline(d['last_seen'])) {
             online++;
           } else {
@@ -260,8 +294,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       setState(() {
         _online = online;
         _offline = offline;
-        _scopedKwh = kwh;
-        _utilityKwh = util;
+        _utilityById = utilityById;
+        _recomputeScopedToday();
         _rooms = rooms.values.toList()
           ..sort((a, b) => a.floor != b.floor
               ? a.floor.compareTo(b.floor)

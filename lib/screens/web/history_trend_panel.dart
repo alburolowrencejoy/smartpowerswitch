@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/energy_history.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/institute_colors.dart';
 import 'web_theme.dart';
@@ -12,7 +13,7 @@ import 'web_widgets.dart';
 /// trend versus the day before. Shown on the web Dashboard (linking into
 /// Analytics) and at the bottom of Analytics.
 ///
-/// Loads only the newest `days + 1` keys of `history/daily` (the extra day
+/// Loads only the newest `days + 1` keys of `energy_summaries/daily` (the extra day
 /// gives the oldest row something to compare against), so it always shows
 /// the most recent data even when that is weeks old.
 class HistoryTrendPanel extends StatefulWidget {
@@ -59,14 +60,14 @@ class _HistoryTrendPanelState extends State<HistoryTrendPanel> {
   void initState() {
     super.initState();
     _daysSub = FirebaseDatabase.instance
-        .ref('history/daily')
+        .ref(EnergyHistory.path('daily'))
         .orderByKey()
         .limitToLast(widget.days + 1)
         .onValue
         .listen((e) {
       if (mounted) {
         setState(() {
-          _raw = e.snapshot.value;
+          _raw = EnergyHistory.legacyRange(e.snapshot.value);
           _loaded = true;
         });
       }

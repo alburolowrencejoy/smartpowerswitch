@@ -2,6 +2,10 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'energy_history.dart';
+import 'history_clock.dart';
+import 'history_keys.dart';
+
 /// Service to manage home screen widget updates
 class HomeWidgetService {
   /// Initialize home widget updates
@@ -41,13 +45,25 @@ class HomeWidgetService {
 
       final data = Map<String, dynamic>.from(snapshot.value as Map);
 
-      // Extract metrics
-      final kwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+      // Today's energy and its stored cost, from the daily summary written
+      // by the server (`devices/{id}/kwh` is the meter's lifetime total).
+      final today = HistoryClock.realNow();
+      final todaySnap = await FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', HistoryKeys.dailyKey(today.year, today.month, today.day))}'
+              '/devices/$deviceId')
+          .get();
+      final todayNode = todaySnap.value;
+      final kwh = todayNode is Map && todayNode['kwh'] is num
+          ? (todayNode['kwh'] as num).toDouble()
+          : 0.0;
+      final cost = (todayNode is Map && todayNode['cost'] is num
+              ? (todayNode['cost'] as num).toDouble()
+              : 0.0)
+          .toStringAsFixed(2);
+
       final voltage = (data['voltage'] as num?)?.toDouble() ?? 0.0;
       final power = (data['power'] as num?)?.toDouble() ?? 0.0;
       final status = (data['status'] as String?) ?? 'offline';
-      const rate = 11.5; // PHP per kWh
-      final cost = (kwh * rate).toStringAsFixed(2);
 
       // Determine voltage status
       final voltageStatus = _getVoltageStatus(voltage);

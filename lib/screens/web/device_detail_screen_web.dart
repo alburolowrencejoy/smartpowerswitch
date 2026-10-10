@@ -15,7 +15,9 @@ import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 
 /// The desktop device page: live PZEM readings (voltage, current, power,
 /// energy today), a 7-day energy trend, and the relay Control panel.
@@ -121,6 +123,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     _combinedSub?.cancel();
     _weekSub?.cancel();
     _monthSub?.cancel();
+    _todaySub?.cancel();
     super.dispose();
   }
 
@@ -311,20 +314,43 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   // ── Build (preview layout) ────────────────────────────────────────────
 
   /// The device's recorded kWh for each of the last 7 days (oldest first),
-  /// from `history/daily/{date}/devices/{id}/kwh`; 0 when a day has none.
+  /// from `energy_summaries/daily/{date}/devices/{id}/kwh`; 0 when a day has
+  /// none.
   List<({DateTime date, double kwh})> _week = const [];
 
-  /// This month's recorded kWh, from `history/monthly/{month}/devices/{id}`.
+  /// This month's recorded kWh, from the monthly summary.
   double? _monthKwh;
+
+  /// Today's recorded kWh and stored cost (rate at the time it was counted),
+  /// from the daily summary. Not `devices/{id}/kwh`: that is the meter's
+  /// lifetime total.
+  double _todayKwh = 0.0;
+  double? _todayCost;
 
   StreamSubscription<DatabaseEvent>? _weekSub;
   StreamSubscription<DatabaseEvent>? _monthSub;
+  StreamSubscription<DatabaseEvent>? _todaySub;
 
   void _listenHistory() {
     final now = HistoryClock.instance.now();
-    final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    final month = HistoryKeys.of(now).monthly;
+    final realToday = HistoryClock.realNow();
+    _todaySub = FirebaseDatabase.instance
+        .ref('${EnergyHistory.path('daily', HistoryKeys.dailyKey(realToday.year, realToday.month, realToday.day))}'
+            '/devices/${widget.deviceId}')
+        .onValue
+        .listen((e) {
+      if (!mounted) return;
+      final v = e.snapshot.value;
+      final kwh = v is Map ? v['kwh'] : null;
+      final cost = v is Map ? v['cost'] : null;
+      setState(() {
+        _todayKwh = kwh is num ? kwh.toDouble() : 0.0;
+        _todayCost = cost is num ? cost.toDouble() : null;
+      });
+    }, onError: (_) {});
     _weekSub = FirebaseDatabase.instance
-        .ref('history/daily')
+        .ref(EnergyHistory.path('daily'))
         .orderByKey()
         .limitToLast(10)
         .onValue
@@ -346,15 +372,14 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           for (var i = 6; i >= 0; i--)
             (() {
               final d = DateTime(today.year, today.month, today.day - i);
-              final key = '${d.year}-${d.month.toString().padLeft(2, '0')}-'
-                  '${d.day.toString().padLeft(2, '0')}';
+              final key = HistoryKeys.dailyKey(d.year, d.month, d.day);
               return (date: d, kwh: byDay[key] ?? 0.0);
             })(),
         ];
       });
     }, onError: (_) {});
     _monthSub = FirebaseDatabase.instance
-        .ref('history/monthly/$month/devices/${widget.deviceId}/kwh')
+        .ref('${EnergyHistory.path('monthly', month)}/devices/${widget.deviceId}/kwh')
         .onValue
         .listen((e) {
       if (!mounted) return;
@@ -504,10 +529,6 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     );
   }
 
-  double get _todayKwh {
-    final k = _deviceData['kwh'];
-    return k is num ? k.toDouble() : 0.0;
-  }
 
   String _lastSeenText() {
     final seen = _deviceData['last_seen'];
@@ -816,7 +837,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         ],
         const SizedBox(height: 18),
         _kvRow('Estimated Cost',
-            '₱${(_todayKwh * _ratePhp).toStringAsFixed(2)} today'),
+            '₱${(_todayCost ?? _todayKwh * _ratePhp).toStringAsFixed(2)} today'),
         _kvRow('Total Energy',
             month == null ? '—' : '${month.toStringAsFixed(1)} kWh this month'),
         _kvRow('PZEM reading', _hasPzemReadings ? 'Detected' : 'Not detected'),

@@ -87,15 +87,15 @@ double _num(Object? v) {
 
 final _dayKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 
-/// Flattens a `history/daily` snapshot (`{yyyy-MM-dd: {devices: {id: {kwh,
+/// Flattens a daily snapshot in the legacy `history/daily` shape (see
+/// `EnergyHistory.legacyRange`: `{yyyy-MM-dd: {devices: {id: {kwh, cost,
 /// building}}, buildings: {...}, total_kwh}}`) into per-device rows.
 /// Days without per-device entries fall back to per-building totals, then
-/// to the day total, so old data still counts toward campus-wide numbers.
+/// to the day total.
 List<UsageRow> parseDaily(
   Object? raw,
   Map<String, DeviceMeta> meta, {
   required RateTimeline rates,
-  Set<String> deleted = const {},
   DateTime? until,
 }) {
   final rows = <UsageRow>[];
@@ -105,7 +105,7 @@ List<UsageRow> parseDaily(
   if (raw is! Map) return rows;
   raw.forEach((key, val) {
     final k = key.toString();
-    if (!_dayKeyPattern.hasMatch(k) || deleted.contains(k) || val is! Map) {
+    if (!_dayKeyPattern.hasMatch(k) || val is! Map) {
       return;
     }
     final date = DateTime.tryParse(k);

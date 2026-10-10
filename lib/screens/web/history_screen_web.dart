@@ -24,6 +24,7 @@ import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
 
@@ -58,12 +59,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   AnalyticsFilter _filter = _savedFilter.withValidGroup();
 
-  /// The deleted-entries path of [_listenAll]; Analytics always reads the
-  /// daily history now that the filter bar replaced the Daily/Monthly tabs.
-  final String _range = 'daily';
   String _trendChartType = 'line';
 
-  // ── Filtered range data (history/daily, queried by date key) ──────────
+  // ── Filtered range data (energy_summaries/daily, queried by date key) ─
   StreamSubscription<DatabaseEvent>? _rangeSub;
   StreamSubscription<DatabaseEvent>? _compareSub;
   StreamSubscription<DatabaseEvent>? _buildingsSub;
@@ -77,7 +75,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   // Forecast input, parsed from the full daily history and cached.
   Object? _fcSource;
-  Set<String>? _fcDeleted;
   Map<String, DeviceMeta>? _fcMeta;
   List<UsageRow> _fcRows = const [];
   bool _exporting = false;
@@ -94,16 +91,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   StreamSubscription? _combinedSub;
 
+  /// `energy_summaries` in the legacy `history` shape (see [EnergyHistory]).
   Map<String, dynamic> _historyRoot = {};
-  Map<String, Set<String>> _deletedEntriesByRange = {
-    'daily': {},
-    'weekly': {},
-    'monthly': {},
-    'yearly': {},
-  };
 
-  Map<String, double> _utilityTotals = {};
-  Map<String, double> _buildingTotals = {};
   int _onlineCount = 0;
   int _offlineCount = 0;
   double _electricityRate = 11.5;
@@ -244,8 +234,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     }, onError: (_) {});
   }
 
-  /// Queries only the selected dates of `history/daily` (and the compare
-  /// period, if any). Re-subscribes only when those dates change.
+  /// Queries only the selected dates of `energy_summaries/daily` (and the
+  /// compare period, if any). Re-subscribes only when those dates change.
   void _listenRange() {
     final today = HistoryClock.instance.now();
     final span = _filter.span(today);
@@ -256,7 +246,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       // Callers rebuild right after (or this is initState).
       _rangeLoaded = false;
       _rangeSub = FirebaseDatabase.instance
-          .ref('history/daily')
+          .ref(EnergyHistory.path('daily'))
           .orderByKey()
           .startAt(dayKey(span.start))
           .endAt(dayKey(span.end))
@@ -264,7 +254,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
           .listen((e) {
         if (!mounted) return;
         setState(() {
-          _rangeRaw = e.snapshot.value;
+          _rangeRaw = EnergyHistory.legacyRange(e.snapshot.value);
           _rangeLoaded = true;
         });
       }, onError: (_) {
@@ -281,13 +271,16 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       _compareRaw = null;
       if (cs != null) {
         _compareSub = FirebaseDatabase.instance
-            .ref('history/daily')
+            .ref(EnergyHistory.path('daily'))
             .orderByKey()
             .startAt(dayKey(cs.start))
             .endAt(dayKey(cs.end))
             .onValue
             .listen((e) {
-          if (mounted) setState(() => _compareRaw = e.snapshot.value);
+          if (mounted) {
+            setState(() =>
+                _compareRaw = EnergyHistory.legacyRange(e.snapshot.value));
+          }
         }, onError: (_) {});
       }
     }
@@ -307,11 +300,10 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   // ── Data (ported from HistoryScreen, unchanged behavior) ─────────────────
 
-  /// Combines this screen's 4 Firebase paths (electricity rate, devices,
-  /// the active range's deleted-entries list, and the history root) into
-  /// one subscription with a sticky merge, so a transient null/empty
-  /// snapshot never blanks data that already loaded once. Re-created
-  /// whenever [_range] changes since the deleted-entries path depends on it.
+  /// Combines this screen's 3 Firebase paths (electricity rate, devices and
+  /// the energy summaries) into one subscription with a sticky merge, so a
+  /// transient null/empty snapshot never blanks data that already loaded
+  /// once.
   void _listenAll() {
     _combinedSub?.cancel();
     _timeoutTimer?.cancel();
@@ -327,8 +319,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
-      FirebaseDatabase.instance.ref('history/deleted/$_range').onValue,
-      FirebaseDatabase.instance.ref('history').onValue,
+      FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
     ]).listen((events) {
       if (!mounted) return;
       _timeoutTimer?.cancel();
@@ -336,12 +327,11 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       setState(() {
         _applyRate(events[0].snapshot.value);
         _applyDevices(events[1].snapshot.value);
-        _applyDeleted(events[2].snapshot.value);
+        _applyHistory(events[2].snapshot.value);
         _hasLoadedOnce = true;
         _isLoading = false;
         _errorText = null;
       });
-      _updateHistoryDisplay();
     }, onError: (Object error) {
       if (!mounted || _hasLoadedOnce) return;
       _timeoutTimer?.cancel();
@@ -369,16 +359,11 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     if (raw is! Map) return;
 
     final data = Map<String, dynamic>.from(raw);
-    final Map<String, double> utilityTotals = {};
-    final Map<String, double> buildingTotals = {};
     int online = 0, offline = 0;
 
     data.forEach((id, val) {
       if (val is! Map) return;
       final device = Map<String, dynamic>.from(val);
-      final utility = (device['utility'] ?? 'Unknown').toString();
-      final building = (device['building'] ?? 'Unknown').toString();
-      final kwh = (device['kwh'] ?? 0.0) as num;
       final lastSeen = device['last_seen'];
       final isOnline = lastSeen != null &&
           lastSeen != 0 &&
@@ -388,61 +373,20 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                   .inMinutes <
               2;
 
-      utilityTotals[utility] = (utilityTotals[utility] ?? 0) + kwh.toDouble();
-      buildingTotals[building] =
-          (buildingTotals[building] ?? 0) + kwh.toDouble();
       isOnline ? online++ : offline++;
     });
 
-    _utilityTotals = utilityTotals;
-    _buildingTotals = buildingTotals;
     _meta = DeviceMeta.parseAll(data);
     _onlineCount = online;
     _offlineCount = offline;
   }
 
-  void _applyDeleted(Object? raw) {
-    if (raw is Map) {
-      final map = Map<String, dynamic>.from(raw);
-      final deleted = Set<String>.from(map.keys);
-      _deletedEntriesByRange[_range] = deleted;
-    } else if (_isLoading) {
-      _deletedEntriesByRange[_range] = {};
-    }
-  }
-
-  Future<void> _updateHistoryDisplay() async {
-    if (!mounted) return;
-    final snapshot = await FirebaseDatabase.instance.ref('history').get();
-    if (snapshot.value is! Map) {
-      // A transient null read (reconnect blip) must never blank a history
-      // view that already loaded once -- only accept "no data" before the
-      // first successful load.
-      if (mounted && _isLoading) {
-        setState(() => _historyRoot = {});
-      }
-      return;
-    }
-
-    final root = Map<String, dynamic>.from(snapshot.value as Map);
-    const ranges = ['daily', 'weekly', 'monthly', 'yearly'];
-    final deletedSnapshots = await Future.wait(ranges.map((range) =>
-        FirebaseDatabase.instance.ref('history/deleted/$range').get()));
-    final deletedMap = <String, Set<String>>{};
-    for (var i = 0; i < ranges.length; i++) {
-      final deleted = <String>{};
-      final value = deletedSnapshots[i].value;
-      if (value is Map) {
-        deleted.addAll(Map<String, dynamic>.from(value).keys);
-      }
-      deletedMap[ranges[i]] = deleted;
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _historyRoot = root;
-      _deletedEntriesByRange = deletedMap;
-    });
+  void _applyHistory(Object? raw) {
+    // A transient null read (reconnect blip) must never blank a history view
+    // that already loaded once -- only accept "no data" before the first
+    // successful load.
+    if (raw is! Map && _hasLoadedOnce) return;
+    _historyRoot = EnergyHistory.legacyRoot(raw);
   }
 
   Map<String, dynamic> _pickRangeNode(
@@ -484,106 +428,53 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     return 0.0;
   }
 
+  /// One range of [root] as `{label, kwh, cost}` rows, oldest first.
   List<Map<String, dynamic>> _parseRangeEntries(
-      Map<String, dynamic> root, String rangeKey,
-      [Set<String>? deleted]) {
-    final deletedEntries = deleted ?? const <String>{};
-    final directRangeNode = root[rangeKey];
-    final hasDirectRangeNode = directRangeNode is Map &&
-        _matchingKeyCount(
-                Map<String, dynamic>.from(directRangeNode), rangeKey) >
-            0;
-    final data = hasDirectRangeNode
-        ? Map<String, dynamic>.from(directRangeNode)
-        : _pickRangeNode(root, rangeKey);
+      Map<String, dynamic> root, String rangeKey) {
     final list = <Map<String, dynamic>>[];
-
-    data.forEach((key, val) {
+    _pickRangeNode(root, rangeKey).forEach((key, val) {
       if (val is! Map) return;
-      if (deletedEntries.contains(key)) return;
-
-      final entry = Map<String, dynamic>.from(val);
       list.add({
         'label': key,
-        'kwh': _asDouble(entry['kwh'] ?? entry['total_kwh']),
-        'cost': _asDouble(entry['cost'] ?? entry['total_cost']),
+        'kwh': _asDouble(val['total_kwh']),
+        'cost': _asDouble(val['total_cost']),
       });
     });
-
-    if (list.isNotEmpty || hasDirectRangeNode) {
-      list.sort(
-          (a, b) => a['label'].toString().compareTo(b['label'].toString()));
-      return list;
-    }
-
-    final rawRoot = root['raw'];
-    if (rawRoot is! Map) return list;
-
-    final grouped = <String, Map<String, dynamic>>{};
-    final rawMap = Map<String, dynamic>.from(rawRoot);
-
-    rawMap.forEach((key, val) {
-      if (val is! Map) return;
-      final entry = Map<String, dynamic>.from(val);
-      final timestamp = _rawEntryTimestamp(entry, key.toString());
-      if (timestamp == null) return;
-
-      final label = _rangeLabel(timestamp, rangeKey);
-      final kwh = _asDouble(entry['kwh']);
-      final cost = _asDouble(entry['cost']);
-
-      final bucket = grouped.putIfAbsent(
-          label,
-          () => {
-                'label': label,
-                'kwh': 0.0,
-                'cost': 0.0,
-              });
-      bucket['kwh'] = (bucket['kwh'] as double) + kwh;
-      bucket['cost'] = (bucket['cost'] as double) + cost;
-    });
-
-    final groupedList = grouped.values.toList()
-      ..sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
-    return groupedList;
+    list.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+    return list;
   }
 
-  DateTime? _rawEntryTimestamp(Map<String, dynamic> entry, String fallbackKey) {
-    final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
-    if (rawTs is num) {
-      return DateTime.fromMillisecondsSinceEpoch(rawTs.toInt());
-    }
-    if (rawTs is String) {
-      final asInt = int.tryParse(rawTs);
-      if (asInt != null) {
-        return DateTime.fromMillisecondsSinceEpoch(asInt);
+  /// All recorded energy (the yearly summaries added up) per building and
+  /// per utility, for the export's breakdown sheets.
+  ({Map<String, double> buildings, Map<String, double> utilities})
+      _recordedBreakdown(Map<String, dynamic> root) {
+    final buildings = <String, double>{};
+    final utilities = <String, double>{};
+    final years = root['yearly'];
+    if (years is Map) {
+      for (final year in years.values) {
+        if (year is! Map) continue;
+        final b = year['buildings'];
+        if (b is Map) {
+          b.forEach((code, node) {
+            final kwh = node is Map ? node['kwh'] : null;
+            if (kwh is num) {
+              buildings['$code'] = (buildings['$code'] ?? 0) + kwh.toDouble();
+            }
+          });
+        }
+        final d = year['devices'];
+        if (d is Map) {
+          d.forEach((id, node) {
+            final kwh = node is Map ? node['kwh'] : null;
+            if (kwh is! num) return;
+            final utility = _meta['$id']?.utility ?? 'Unknown';
+            utilities[utility] = (utilities[utility] ?? 0) + kwh.toDouble();
+          });
+        }
       }
-      return DateTime.tryParse(rawTs);
     }
-
-    final prefix = fallbackKey.contains('_')
-        ? fallbackKey.substring(0, fallbackKey.indexOf('_'))
-        : fallbackKey;
-    final keyTs = int.tryParse(prefix);
-    if (keyTs != null) {
-      return DateTime.fromMillisecondsSinceEpoch(keyTs);
-    }
-    return null;
-  }
-
-  String _rangeLabel(DateTime timestamp, String rangeKey) {
-    switch (rangeKey) {
-      case 'daily':
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-      case 'weekly':
-        return '${timestamp.year}-W${_pad(_isoWeek(timestamp))}';
-      case 'monthly':
-        return '${timestamp.year}-${_pad(timestamp.month)}';
-      case 'yearly':
-        return '${timestamp.year}';
-      default:
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-    }
+    return (buildings: buildings, utilities: utilities);
   }
 
   String _levelIndicator(double value, double average) {
@@ -622,41 +513,21 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     setState(() => _exporting = true);
 
     try {
-      final snapshot = await FirebaseDatabase.instance.ref('history').get();
-      final raw = snapshot.value;
-      if (raw is! Map) {
-        if (mounted) {
-          TopToast.threshold(context, 'No history data to export.');
-        }
-        return;
-      }
-
-      final historyRoot = Map<String, dynamic>.from(raw);
-
-      const exportRanges = ['daily', 'weekly', 'monthly', 'yearly'];
-      final exportDeletedSnapshots = await Future.wait(exportRanges.map(
-          (range) =>
-              FirebaseDatabase.instance.ref('history/deleted/$range').get()));
-      final deletedMap = <String, Set<String>>{};
-      for (var i = 0; i < exportRanges.length; i++) {
-        final deleted = <String>{};
-        final value = exportDeletedSnapshots[i].value;
-        if (value is Map) {
-          deleted.addAll(Map<String, dynamic>.from(value).keys);
-        }
-        deletedMap[exportRanges[i]] = deleted;
-      }
+      final snapshots = await Future.wait(EnergyHistory.ranges.map((range) =>
+          FirebaseDatabase.instance.ref(EnergyHistory.path(range)).get()));
+      final historyRoot = <String, dynamic>{
+        for (var i = 0; i < EnergyHistory.ranges.length; i++)
+          EnergyHistory.ranges[i]:
+              EnergyHistory.legacyRange(snapshots[i].value),
+      };
 
       final clustered = <String, List<Map<String, dynamic>>>{
-        'yearly': _parseRangeEntries(
-            historyRoot, 'yearly', deletedMap['yearly'] ?? {}),
-        'monthly': _parseRangeEntries(
-            historyRoot, 'monthly', deletedMap['monthly'] ?? {}),
-        'weekly': _parseRangeEntries(
-            historyRoot, 'weekly', deletedMap['weekly'] ?? {}),
-        'daily':
-            _parseRangeEntries(historyRoot, 'daily', deletedMap['daily'] ?? {}),
+        'yearly': _parseRangeEntries(historyRoot, 'yearly'),
+        'monthly': _parseRangeEntries(historyRoot, 'monthly'),
+        'weekly': _parseRangeEntries(historyRoot, 'weekly'),
+        'daily': _parseRangeEntries(historyRoot, 'daily'),
       };
+      final breakdown = _recordedBreakdown(historyRoot);
 
       final hasData = clustered.values.any((list) => list.isNotEmpty);
       if (!hasData) {
@@ -905,7 +776,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       writeRow(buildingsSheet, br++, ['Building Breakdown'], style: titleStyle);
       writeRow(buildingsSheet, br++, ['Institute', 'Energy (kWh)'],
           style: headerStyle);
-      final sortedBuildings = _buildingTotals.entries.toList()
+      final sortedBuildings = breakdown.buildings.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
       for (final e in sortedBuildings) {
         writeRow(buildingsSheet, br++, [e.key, e.value.toStringAsFixed(2)]);
@@ -917,7 +788,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       writeRow(utilitiesSheet, ur++, ['Utility Breakdown'], style: titleStyle);
       writeRow(utilitiesSheet, ur++, ['Utility', 'Energy (kWh)'],
           style: headerStyle);
-      final sortedUtilities = _utilityTotals.entries.toList()
+      final sortedUtilities = breakdown.utilities.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
       for (final e in sortedUtilities) {
         writeRow(utilitiesSheet, ur++, [e.key, e.value.toStringAsFixed(2)]);
@@ -951,13 +822,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   }
 
   String _pad(int n) => n.toString().padLeft(2, '0');
-  int _isoWeek(DateTime date) {
-    final startOfYear = DateTime(date.year, 1, 1);
-    final firstMonday = startOfYear.weekday;
-    final dayOfYear = date.difference(startOfYear).inDays + 1;
-    final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
-    return weekNumber < 1 ? 1 : weekNumber;
-  }
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();
@@ -968,17 +832,13 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   static const _forecastMinDays = 28;
 
   /// The full daily history as rows (for the forecasts), reparsed only when
-  /// the history, deleted entries or device list change.
+  /// the history or device list change.
   List<UsageRow> _forecastRows() {
     final src = _historyRoot['daily'];
-    final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
-    if (!identical(src, _fcSource) ||
-        !identical(deleted, _fcDeleted) ||
-        !identical(_meta, _fcMeta)) {
+    if (!identical(src, _fcSource) || !identical(_meta, _fcMeta)) {
       _fcSource = src;
-      _fcDeleted = deleted;
       _fcMeta = _meta;
-      _fcRows = parseDaily(src, _meta, rates: _rates, deleted: deleted);
+      _fcRows = parseDaily(src, _meta, rates: _rates);
     }
     return _fcRows;
   }
@@ -1049,16 +909,13 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     final f = _filter;
     final today = dateOnly(HistoryClock.instance.now());
     final span = f.span(today);
-    final deleted = _deletedEntriesByRange['daily'] ?? const <String>{};
-    final rows = applyFilter(
-        f, parseDaily(_rangeRaw, _meta, rates: _rates, deleted: deleted), span);
+    final rows =
+        applyFilter(f, parseDaily(_rangeRaw, _meta, rates: _rates), span);
     final cmpSpan = f.compareSpan(today);
     final cmpRows = cmpSpan == null
         ? null
         : applyFilter(
-            f,
-            parseDaily(_compareRaw, _meta, rates: _rates, deleted: deleted),
-            cmpSpan);
+            f, parseDaily(_compareRaw, _meta, rates: _rates), cmpSpan);
     final empty = _rangeLoaded && rows.isEmpty;
 
     return Theme(

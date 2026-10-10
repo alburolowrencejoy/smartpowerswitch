@@ -10,6 +10,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_segmented_control.dart';
@@ -330,7 +331,7 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings')
+          .ref('${EnergyHistory.path('monthly', monthKey)}/buildings')
           .onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('hotspots').onValue,

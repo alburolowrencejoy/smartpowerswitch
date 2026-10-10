@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/energy_history.dart';
+import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
@@ -146,10 +149,12 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         return floorDevice['relay'] == true && _isDeviceOnline(e.key);
       }).length;
 
-  double get _floorTodayKwh => _devices.keys.fold<double>(0, (sum, id) {
-        final kwh = (_liveFor(id)?['kwh'] as num?)?.toDouble() ?? 0.0;
-        return sum + kwh;
-      });
+  /// Today's kWh per device (daily summary). Not `devices/{id}/kwh`, which
+  /// is the meter's lifetime total.
+  Map<String, double> _todayDeviceKwh = const {};
+
+  double get _floorTodayKwh => _devices.keys
+      .fold<double>(0, (sum, id) => sum + (_todayDeviceKwh[id] ?? 0.0));
 
   double _roomPowerKw(String room) {
     double totalWatts = 0;
@@ -269,6 +274,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
               'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
           .onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', HistoryKeys.of(HistoryClock.instance.now()).daily)}/devices')
+          .onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -301,6 +309,17 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         } else if (_isLoading) {
           _liveDevices = {};
         }
+
+        // ── today's kWh per device, from the daily summary ─────────
+        final todayRaw = events[2].snapshot.value;
+        final today = <String, double>{};
+        if (todayRaw is Map) {
+          todayRaw.forEach((id, d) {
+            final kwh = d is Map ? d['kwh'] : null;
+            if (kwh is num) today[id.toString()] = kwh.toDouble();
+          });
+        }
+        _todayDeviceKwh = today;
 
         _isLoading = false;
         _errorText = null;

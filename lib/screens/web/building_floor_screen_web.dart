@@ -13,7 +13,9 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 
 /// The desktop building page: floor tabs, then one card per room listing
 /// its devices with a live switch, View, and admin add/edit/delete icons.
@@ -103,7 +105,8 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
   Map<String, dynamic> _devices = {};
 
   double _buildingKwh = 0;
-  bool _hasMonthlyBuildingEnergy = false;
+  /// Today's kWh per device (daily summary), keyed by device ID.
+  Map<String, double> _todayDeviceKwh = const {};
   int _instituteTotalDevices = 0;
   int _totalAssigned = 0;
 
@@ -222,7 +225,8 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       });
     });
 
-    final monthKey = _monthKey(HistoryClock.instance.now());
+    final keys = HistoryKeys.of(HistoryClock.instance.now());
+    final monthKey = keys.monthly;
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance
           .ref(
@@ -231,7 +235,10 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings/${widget.buildingCode}/kwh')
+          .ref('${EnergyHistory.path('monthly', monthKey)}/buildings/${widget.buildingCode}/kwh')
+          .onValue,
+      FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', keys.daily)}/devices')
           .onValue,
     ]).listen((events) {
       if (!mounted) return;
@@ -239,6 +246,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       _applyMasterDevices(events[1].snapshot.value);
       _applyHistoryKwh(events[3].snapshot.value);
       _applyDevicesSnapshot(events[2].snapshot.value);
+      _applyTodayDevices(events[4].snapshot.value);
 
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
@@ -310,42 +318,36 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     }
   }
 
+  /// This month's building total. No total yet means 0 kWh recorded this
+  /// month; it never falls back to `devices/*/kwh`, which are lifetime meter
+  /// totals.
   void _applyHistoryKwh(Object? raw) {
-    if (raw is num) {
-      _hasMonthlyBuildingEnergy = true;
-      _buildingKwh = raw.toDouble();
-    } else {
-      // Absence of a monthly total is a legitimate ongoing state (falls
-      // back to the live device kwh sum below), not a loading regression.
-      _hasMonthlyBuildingEnergy = false;
-    }
+    _buildingKwh = raw is num ? raw.toDouble() : 0.0;
   }
 
-  /// Shared `devices` snapshot: live per-device kWh / last_seen for the rows,
-  /// and the energy sum feeding [_buildingKwh] when no monthly total exists.
+  /// Today's kWh per device, from the daily summary.
+  void _applyTodayDevices(Object? raw) {
+    final today = <String, double>{};
+    if (raw is Map) {
+      raw.forEach((id, d) {
+        final kwh = d is Map ? d['kwh'] : null;
+        if (kwh is num) today[id.toString()] = kwh.toDouble();
+      });
+    }
+    _todayDeviceKwh = today;
+  }
+
+  /// Shared `devices` snapshot: live readings / last_seen for the rows.
   void _applyDevicesSnapshot(Object? raw) {
     if (raw is Map) {
       final liveDevices = <String, dynamic>{};
-      double kwh = 0;
       raw.forEach((id, val) {
         if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        liveDevices[id.toString()] = device;
-
-        final building = (device['building'] ?? '').toString();
-        if (building != widget.buildingCode) return;
-        kwh += ((device['kwh'] ?? 0.0) as num).toDouble();
+        liveDevices[id.toString()] = Map<String, dynamic>.from(val);
       });
-
       _liveDevices = liveDevices;
-      if (!_hasMonthlyBuildingEnergy) {
-        _buildingKwh = kwh;
-      }
     } else if (_isLoading) {
       _liveDevices = {};
-      if (!_hasMonthlyBuildingEnergy) {
-        _buildingKwh = 0;
-      }
     }
   }
 
@@ -359,9 +361,6 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     });
     _listenAll();
   }
-
-  String _monthKey(DateTime date) =>
-      '${date.year}-${date.month.toString().padLeft(2, '0')}';
 
   DatabaseReference get _roomsRef => FirebaseDatabase.instance
       .ref('buildings/${widget.buildingCode}/floorData/$_selectedFloor/rooms');
@@ -641,10 +640,8 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
         2;
   }
 
-  double _deviceKwh(String deviceId) {
-    final k = _live(deviceId)?['kwh'];
-    return k is num ? k.toDouble() : 0.0;
-  }
+  /// Today's kWh for a device (not its lifetime meter value).
+  double _deviceKwh(String deviceId) => _todayDeviceKwh[deviceId] ?? 0.0;
 
   Future<void> _setDeviceRelay(String deviceId, bool on) async {
     if (_togglingDevices.contains(deviceId)) return;

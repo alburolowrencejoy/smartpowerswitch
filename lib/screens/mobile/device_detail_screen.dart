@@ -18,6 +18,9 @@ import '../../widgets/app_button.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../utils/last_seen.dart';
+import '../../services/energy_history.dart';
+import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
 import 'automation_screen.dart';
@@ -55,13 +58,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   DateTime?
       _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
-  // Today's accumulated energy for this device, read live from
-  // `history/daily/{today}/devices/{deviceId}/kwh` (written by
-  // the server's rollupEnergy function) -- deliberately NOT the device's
-  // `kwh`, which is the PZEM's lifetime cumulative meter reading. The redesign's "Energy
-  // today" / "Cost today" readings need the daily figure, not lifetime.
+  // Today's energy and stored cost for this device, read live from
+  // `energy_summaries/daily/{today}/devices/{deviceId}` (written by the
+  // server's rollupEnergy function) -- deliberately NOT the device's `kwh`,
+  // which is the PZEM's lifetime cumulative meter reading.
   double _energyTodayKwh = 0.0;
-  late String _todayKey = _dailyKey(DateTime.now());
+  double? _costTodayPhp;
+  late String _todayKey = _dailyKey(HistoryClock.realNow());
 
   // The single automations entry (if any) whose scope is 'device' and whose
   // target is this deviceId -- drives the Schedule row. Null means "no
@@ -190,13 +193,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       });
     });
 
-    _todayKey = _dailyKey(DateTime.now());
+    _todayKey = _dailyKey(HistoryClock.realNow());
 
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices/${widget.deviceId}').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance
-          .ref('history/daily/$_todayKey/devices/${widget.deviceId}/kwh')
+          .ref(
+              '${EnergyHistory.path('daily', _todayKey)}/devices/${widget.deviceId}')
           .onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
     ]).listen((events) {
@@ -205,7 +209,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
       final raw = events[0].snapshot.value;
       final rateRaw = events[1].snapshot.value;
-      final todayKwhRaw = events[2].snapshot.value;
+      final todayRaw = events[2].snapshot.value;
       final automationsRaw = events[3].snapshot.value;
 
       // Precompute the device-side updates exactly as the original
@@ -269,11 +273,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           _ratePhp = 11.5;
         }
 
-        if (todayKwhRaw is num) {
-          _energyTodayKwh = todayKwhRaw.toDouble();
-        } else if (_isLoading) {
-          _energyTodayKwh = 0.0;
-        }
+        // Nothing recorded today yet is a real 0, not a loading gap.
+        final todayKwh = todayRaw is Map ? todayRaw['kwh'] : null;
+        final todayCost = todayRaw is Map ? todayRaw['cost'] : null;
+        _energyTodayKwh = todayKwh is num ? todayKwh.toDouble() : 0.0;
+        _costTodayPhp = todayCost is num ? todayCost.toDouble() : null;
 
         if (automationsRaw is Map) {
           _deviceSchedule = parsedSchedule;
@@ -343,12 +347,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _weeklyError = null;
     });
     try {
-      final now = DateTime.now();
+      final now = HistoryClock.realNow();
       final keys = List.generate(
           7, (i) => _dailyKey(now.subtract(Duration(days: 6 - i))));
       final snaps = await Future.wait(keys.map((key) => FirebaseDatabase
           .instance
-          .ref('history/daily/$key/devices/${widget.deviceId}/kwh')
+          .ref('${EnergyHistory.path('daily', key)}/devices/${widget.deviceId}/kwh')
           .get()));
       if (!mounted) return;
       setState(() {
@@ -363,8 +367,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
-  String _dailyKey(DateTime d) => '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
-  String _pad(int n) => n.toString().padLeft(2, '0');
+  String _dailyKey(DateTime d) => HistoryKeys.dailyKey(d.year, d.month, d.day);
 
   // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
   bool _checkOnline(Map<String, dynamic> data) =>
@@ -781,7 +784,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final power = _safeFormatPzem(_deviceData['power'], 1);
     final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
     final energyToday = _energyTodayKwh.toStringAsFixed(2);
-    final costToday = (_energyTodayKwh * _ratePhp).toStringAsFixed(2);
+    // The cost stored when the energy was counted (rate of that moment);
+    // today's rate is only a fallback while nothing is stored yet.
+    final costToday =
+        (_costTodayPhp ?? _energyTodayKwh * _ratePhp).toStringAsFixed(2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
