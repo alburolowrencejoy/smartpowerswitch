@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:syncfusion_flutter_xlsio/xlsio.dart' as xlsio;
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
+import '../../widgets/history_start_notice.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import 'analytics/analytics_data.dart';
@@ -954,6 +955,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                     buildings: _scopeBuildings(),
                     devices: _meta,
                   ),
+                  HistoryStartNotice(
+                      rangeStart: span.start,
+                      padding: const EdgeInsets.only(top: 12)),
                   const SizedBox(height: 22),
                   if (!_rangeLoaded)
                     Padding(

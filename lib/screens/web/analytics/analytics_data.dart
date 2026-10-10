@@ -101,7 +101,7 @@ List<UsageRow> parseDaily(
   final rows = <UsageRow>[];
   // Stored cost when the record has one; otherwise kWh at that day's rate.
   double costOf(Object? stored, double kwh, DateTime date) =>
-      stored is num ? stored.toDouble() : kwh * rates.rateForDay(date);
+      rates.costOf(stored, kwh, date);
   if (raw is! Map) return rows;
   raw.forEach((key, val) {
     final k = key.toString();

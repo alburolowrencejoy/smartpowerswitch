@@ -21,6 +21,7 @@ import '../../utils/last_seen.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
+import '../../services/rate_timeline.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
 import 'automation_screen.dart';
@@ -787,7 +788,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     // The cost stored when the energy was counted (rate of that moment);
     // today's rate is only a fallback while nothing is stored yet.
     final costToday =
-        (_costTodayPhp ?? _energyTodayKwh * _ratePhp).toStringAsFixed(2);
+        RateHistory.instance
+            .timeline(_ratePhp)
+            .costOf(_costTodayPhp, _energyTodayKwh, HistoryClock.realNow())
+            .toStringAsFixed(2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

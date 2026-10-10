@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
+import '../../services/rate_timeline.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
@@ -345,13 +346,14 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
         final rate = vm.electricityRate.toDouble();
         final todayKwh = scoped ? _scopedKwh : vm.totalKwh.toDouble();
-        // Recorded costs (each reading priced at the rate of its day), not
+        // Recorded costs via the one cost rule (RateTimeline.costOf), not
         // this month's kWh x today's rate.
+        final monthEnd = RateTimeline.monthEnd(HistoryClock.instance.now());
         final monthCost = scoped
             ? rows.fold<double>(
                 0,
-                (a, r) =>
-                    a + (vm.buildingCost[r.code] ?? r.monthKwh * rate))
+                (a, r) => a +
+                    vm.rates.costOf(vm.buildingCost[r.code], r.monthKwh, monthEnd))
             : vm.monthlyCostPhp.toDouble();
         final highLoad =
             rows.where((r) => _levelFor(r.monthKwh) == 'HIGH').length;

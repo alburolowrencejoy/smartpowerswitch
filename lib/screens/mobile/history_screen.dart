@@ -17,6 +17,7 @@ import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
 import '../../services/forecast_models.dart';
 import '../../utils/last_seen.dart';
+import '../../widgets/history_start_notice.dart';
 import '../../widgets/app_bottom_sheet.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_chip.dart';
@@ -649,10 +650,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final compareTotal = compareRows == null ? null : _metric(compareRows, f);
     final ds = _devicesInScope(f);
 
-    final header = _buildHeader(
-      f.rangeName,
-      '${spanText(span)} · ${_scopeLabel(f)}${f.hasUtility ? ' · ${f.utilityName}' : ''}',
-    );
+    final header = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _buildHeader(
+        f.rangeName,
+        '${spanText(span)} · ${_scopeLabel(f)}${f.hasUtility ? ' · ${f.utilityName}' : ''}',
+      ),
+      HistoryStartNotice(
+          rangeStart: span.start, padding: const EdgeInsets.only(top: 8)),
+    ]);
 
     if (ds.isEmpty || total == 0) {
       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

@@ -30,8 +30,22 @@ class HistoryClock extends ChangeNotifier {
   Future<void>? _ready;
   StreamSubscription<DatabaseEvent>? _sub;
 
+  /// Oldest day present under `energy_summaries/daily`. History restarted
+  /// clean on 2026-10-10 (old demo history archived), so earlier dates have
+  /// no data; screens say so instead of showing them as 0 kWh.
+  DateTime? _earliest;
+  bool _earliestKnown = false;
+  StreamSubscription<DatabaseEvent>? _firstSub;
+
   /// Newest day that has recorded history, if known.
   DateTime? get latestRecorded => _latest;
+
+  /// Oldest day that has recorded history, if known.
+  DateTime? get earliestRecorded => _earliest;
+
+  /// True once the oldest day has been looked up; then a null
+  /// [earliestRecorded] means nothing has been recorded yet.
+  bool get earliestKnown => _earliestKnown;
 
   /// The real current time as Philippine wall-clock time (a local
   /// [DateTime] whose fields read as the time in the Philippines). History
@@ -92,7 +106,28 @@ class HistoryClock extends ChangeNotifier {
       // Allow a retry on the next ensureReady() (e.g. after signing in).
       _sub?.cancel();
       _sub = null;
+      _firstSub?.cancel();
+      _firstSub = null;
       _ready = null;
+    });
+    // And the oldest key, for the "history starts on" notice.
+    _firstSub = FirebaseDatabase.instance
+        .ref(EnergyHistory.path('daily'))
+        .orderByKey()
+        .limitToFirst(1)
+        .onValue
+        .listen((event) {
+      final key = event.snapshot.children.isEmpty
+          ? null
+          : event.snapshot.children.first.key;
+      final parsed = key == null ? null : DateTime.tryParse(key);
+      if (parsed != _earliest || !_earliestKnown) {
+        _earliest = parsed;
+        _earliestKnown = true;
+        notifyListeners();
+      }
+    }, onError: (Object e) {
+      debugPrint('[HistoryClock] could not read first history day: $e');
     });
     await first.future.timeout(const Duration(seconds: 8), onTimeout: () {});
   }
@@ -103,13 +138,25 @@ class HistoryClock extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Forget the resolved date (call on sign-out).
+  @visibleForTesting
+  void debugSetEarliest(DateTime? earliest, {bool known = true}) {
+    _earliest = earliest;
+    _earliestKnown = known;
+    notifyListeners();
+  }
+
+  /// Forget the resolved dates (call on sign-out).
   void reset() {
     _sub?.cancel();
     _sub = null;
+    _firstSub?.cancel();
+    _firstSub = null;
     _ready = null;
-    if (_latest != null) {
-      _latest = null;
+    final hadData = _latest != null || _earliest != null || _earliestKnown;
+    _latest = null;
+    _earliest = null;
+    _earliestKnown = false;
+    if (hadData) {
       notifyListeners();
     }
   }

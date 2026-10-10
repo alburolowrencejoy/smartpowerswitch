@@ -18,6 +18,7 @@ import '../../theme/app_fonts.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
+import '../../services/rate_timeline.dart';
 
 /// The desktop device page: live PZEM readings (voltage, current, power,
 /// energy today), a 7-day energy trend, and the relay Control panel.
@@ -837,7 +838,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
         ],
         const SizedBox(height: 18),
         _kvRow('Estimated Cost',
-            '₱${(_todayCost ?? _todayKwh * _ratePhp).toStringAsFixed(2)} today'),
+            '₱${RateHistory.instance.timeline(_ratePhp).costOf(_todayCost, _todayKwh, HistoryClock.realNow()).toStringAsFixed(2)} today'),
         _kvRow('Total Energy',
             month == null ? '—' : '${month.toStringAsFixed(1)} kWh this month'),
         _kvRow('PZEM reading', _hasPzemReadings ? 'Detected' : 'Not detected'),

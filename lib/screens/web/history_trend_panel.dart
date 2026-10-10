@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/energy_history.dart';
+import '../../services/rate_timeline.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/institute_colors.dart';
 import 'web_theme.dart';
@@ -121,7 +122,8 @@ class _HistoryTrendPanelState extends State<HistoryTrendPanel> {
           }
         }
       }
-      out.add(_HistoryDay(date, kwh, cost ?? kwh * _rate));
+      out.add(_HistoryDay(date, kwh,
+          RateHistory.instance.timeline(_rate).costOf(cost, kwh, date)));
     });
     out.sort((a, b) => a.date.compareTo(b.date));
     return out;

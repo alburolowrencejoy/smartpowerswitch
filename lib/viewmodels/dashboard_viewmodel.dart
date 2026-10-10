@@ -7,6 +7,7 @@ import '../services/energy_history.dart';
 import '../services/history_clock.dart';
 import '../services/history_keys.dart';
 import '../services/notification_seen.dart';
+import '../services/rate_timeline.dart';
 
 class DashboardViewModel extends ChangeNotifier {
   // Data fields
@@ -28,8 +29,15 @@ class DashboardViewModel extends ChangeNotifier {
   /// change never reprices them. Null when the month has no stored cost.
   double? _storedMonthlyCost;
 
-  void _refreshMonthlyCost() =>
-      monthlyCostPhp = _storedMonthlyCost ?? monthlyKwh * electricityRate;
+  /// The one cost rule ([RateTimeline.costOf]): the stored cost, else kWh at
+  /// the rate in force at the end of the month.
+  void _refreshMonthlyCost() => monthlyCostPhp = rates.costOf(
+      _storedMonthlyCost,
+      monthlyKwh,
+      RateTimeline.monthEnd(HistoryClock.instance.now()));
+
+  /// Past rates, for [RateTimeline.costOf].
+  RateTimeline get rates => RateHistory.instance.timeline(electricityRate);
   Map<String, double> utilityTotals = {};
   List<Map<String, dynamic>> historyData = [];
 

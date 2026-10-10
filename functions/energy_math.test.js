@@ -304,6 +304,30 @@ test('a new device gets a baseline and contributes nothing on its first run', ()
   assert.deepStrictEqual(p.sets, { 'meterState/ESP32-NEW': { lastAcceptedKwh: 57.3, lastAcceptedAt: NOW, meterEpoch: 0 } });
 });
 
+test('a rate change prices each run at the rate in force then; earlier energy is never repriced', () => {
+  const reg = { 'ESP32-A': { source: 'real_iot', assignedTo: 'IC/1/Room 101' } };
+  const t1 = T0 + MIN;
+  const t2 = T0 + 2 * MIN;
+  // Run 1 at ₱10/kWh counts 0.1 kWh; the rate then changes to ₱12/kWh and
+  // run 2 counts 0.2 kWh.
+  const run1 = planRollup({ registry: reg, kwhById: { 'ESP32-A': 1.1 }, meterState: { 'ESP32-A': state(1.0) }, rate: 10, nowMs: t1 });
+  const run2 = planRollup({
+    registry: reg, kwhById: { 'ESP32-A': 1.3 }, meterState: { 'ESP32-A': run1.sets['meterState/ESP32-A'] }, rate: 12, nowMs: t2,
+  });
+  // What the database holds after both runs (increments add up per path).
+  const totals = {};
+  for (const p of [run1, run2]) {
+    for (const [path, amount] of Object.entries(p.increments)) totals[path] = (totals[path] ?? 0) + amount;
+  }
+  const day = `energy_summaries/daily/${run2.keys.daily}`;
+  close(totals[`${day}/campus/kwh`], 0.3);
+  close(totals[`${day}/campus/cost`], 0.1 * 10 + 0.2 * 12); // ₱3.40
+  close(totals[`${day}/devices/ESP32-A/cost`], 3.4);
+  close(totals[`${day}/buildings/IC/cost`], 3.4);
+  // Not 0.3 kWh × today's ₱12 (₱3.60): the first 0.1 kWh keeps its ₱10 price.
+  assert.ok(Math.abs(totals[`${day}/campus/cost`] - 0.3 * 12) > 0.1);
+});
+
 test('toUpdate wraps increments and keeps sets', () => {
   const p = plan();
   const u = toUpdate(p, (n) => ({ inc: n }));

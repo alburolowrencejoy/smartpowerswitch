@@ -40,6 +40,33 @@ void main() {
     test('with no log it falls back to the current rate', () {
       expect(RateTimeline.parse(null, 11.5).rateAt(DateTime(2020)), 11.5);
     });
+
+    test('a log that missed the newest change uses the current rate after it',
+        () {
+      final stale = RateTimeline.parse(log, 13.24);
+      expect(stale.rateAt(DateTime(2026, 11, 5)), 13.24);
+      // Earlier periods keep their logged rates.
+      expect(stale.rateAt(DateTime(2026, 10, 20)), 12.0);
+      expect(stale.rateAt(DateTime(2026, 9, 15)), 11.5);
+    });
+  });
+
+  group('RateTimeline.costOf (the one cost rule)', () {
+    test('a stored cost always wins', () {
+      expect(rates.costOf(115.0, 10, DateTime(2026, 11, 30)), 115.0);
+    });
+
+    test('without one, kWh at the rate of the period\'s last day', () {
+      expect(rates.costOf(null, 10, DateTime(2026, 10, 31)), 120.0);
+      expect(rates.costOf(null, 10, RateTimeline.monthEnd(DateTime(2026, 9, 3))),
+          115.0);
+    });
+
+    test('monthEnd', () {
+      expect(RateTimeline.monthEnd(DateTime(2026, 2, 10)), DateTime(2026, 2, 28));
+      expect(RateTimeline.monthEnd(DateTime(2028, 2, 10)), DateTime(2028, 2, 29));
+      expect(RateTimeline.monthEnd(DateTime(2026, 12, 5)), DateTime(2026, 12, 31));
+    });
   });
 
   group('parseDaily cost', () {

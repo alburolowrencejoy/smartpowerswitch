@@ -745,12 +745,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final totalCost = monthMap['total_cost'];
 
       _monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
-      // The recorded cost: each reading was priced at the rate in force when
-      // it was saved, so changing the rate never reprices past usage. Only a
-      // month with no stored cost falls back to kWh x the current rate.
-      _monthlyCostPhp = (totalCost is num)
-          ? totalCost.toDouble()
-          : _monthlyKwh * _electricityRate;
+      // The one cost rule (RateTimeline.costOf): the stored cost, else kWh
+      // at the rate in force at the end of the month.
+      _monthlyCostPhp = _rates.costOf(totalCost, _monthlyKwh,
+          RateTimeline.monthEnd(HistoryClock.instance.now()));
     } catch (e) {
       _monthlyKwh = 0;
       _monthlyCostPhp = 0;
@@ -905,18 +903,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (buildings is! Map) return null;
     final b = buildings[code];
     if (b is! Map) return null;
-    final cost = b['cost'];
-    if (cost is num) return cost.toDouble();
     final kwh = b['kwh'];
-    if (kwh is num) {
-      // No stored cost: price it at the rate in force at the end of that
-      // month, not today's rate.
-      final monthEnd = DateTime(d.year, d.month + 1, 0);
-      return kwh.toDouble() *
-          RateHistory.instance.timeline(_electricityRate).rateForDay(monthEnd);
-    }
-    return null;
+    if (b['cost'] is! num && kwh is! num) return null;
+    return _rates.costOf(
+        b['cost'], kwh is num ? kwh.toDouble() : 0.0, RateTimeline.monthEnd(d));
   }
+
+  /// Past rates, for [RateTimeline.costOf] (the one cost rule).
+  RateTimeline get _rates => RateHistory.instance.timeline(_electricityRate);
 
   String _weeklyKeyForDate(DateTime d) =>
       HistoryKeys.isoWeekKey(d.year, d.month, d.day);
@@ -1707,7 +1701,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final weekKwh = _weeklyBuildingKwh(now, code);
     final roomCount = _instituteRooms.length;
     final monthCost = _monthlyBuildingCost(now, code) ??
-        _instituteMonthlyKwh * _electricityRate;
+        _rates.costOf(null, _instituteMonthlyKwh, RateTimeline.monthEnd(now));
 
     return Container(
       width: double.infinity,
@@ -1802,7 +1796,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final lastMonth = DateTime(now.year, now.month - 1, 1);
     final lastMonthCost = _monthlyBuildingCost(lastMonth, code);
     final monthCost = _monthlyBuildingCost(now, code) ??
-        _instituteMonthlyKwh * _electricityRate;
+        _rates.costOf(null, _instituteMonthlyKwh, RateTimeline.monthEnd(now));
     double? costDeltaPct;
     if (lastMonthCost != null && lastMonthCost > 0) {
       costDeltaPct = ((monthCost - lastMonthCost) / lastMonthCost) * 100;
