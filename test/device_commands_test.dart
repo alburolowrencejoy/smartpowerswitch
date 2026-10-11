@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_power_switch/services/device_commands.dart';
 
@@ -59,6 +61,17 @@ void main() {
     test('confirmed but relay did not follow is failed', () {
       expect(at(cmd, {'lastCommandId': 'c1', 'reportedRelay': false}, 2),
           CommandStatus.failed);
+    });
+  });
+
+  group('failureMessage', () {
+    test('says why a command could not be sent', () {
+      expect(DeviceCommands.failureMessage(Exception('PERMISSION_DENIED')),
+          contains('permission'));
+      expect(DeviceCommands.failureMessage(TimeoutException('slow')),
+          contains('No response'));
+      expect(DeviceCommands.failureMessage(Exception('other')),
+          contains('Try again'));
     });
   });
 }

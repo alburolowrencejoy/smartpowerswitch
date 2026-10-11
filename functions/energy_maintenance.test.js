@@ -81,3 +81,12 @@ test('totals that do not add up', () => {
   const a = planHealthAlerts({ ...healthy, today });
   assert.deepStrictEqual(a.map((x) => x.subtype), ['summary_mismatch']);
 });
+
+test('a board with a broken meter (last_seen backdated, last_updated fresh) is not offline', () => {
+  const a = planHealthAlerts({
+    ...healthy,
+    devices: { 'ESP32-A': { last_seen: NOW - 2 * DAY, last_updated: NOW - 60 * 1000 } },
+    deviceLive: { 'ESP32-B': { connectivity: { lastSeenAt: NOW - 3 * DAY, lastUpdatedAt: NOW - 60 * 1000 } } },
+  });
+  assert.deepStrictEqual(a, []);
+});

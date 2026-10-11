@@ -485,16 +485,20 @@ void pushTelemetry() {
   const float energyKwh = pzem.energy();
   const float frequency = pzem.frequency();
   const float powerFactor = pzem.pf();
-  const String voltageWarning = voltageWarningLabel(voltage);
   const bool pzemOk = isPlausiblePzemReading(
       voltage, current, power, energyKwh, frequency, powerFactor);
+  // Only a valid reading can trigger a brownout / surge warning.
+  const String voltageWarning =
+      pzemOk ? voltageWarningLabel(voltage) : String("unknown");
 
   if (pzemOk) {
     pzemAddress = pzem.readAddress();
   }
 
   const uint64_t t = nowMs();
-  const String status = pzemOk ? "online" : "offline";
+  // The board is up either way (it is reporting and taking commands); a
+  // meter that isn't answering is reported as meter_error, not offline.
+  const String status = pzemOk ? "online" : "meter_error";
 
   Serial.print("[PZEM] V=");
   Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
@@ -539,7 +543,7 @@ void pushTelemetry() {
 
   connectivity["status"] = status;
   connectivity["lastUpdatedAt"] = t;
-  connectivity["lastSeenAt"] = pzemOk ? t : (t > 300000 ? t - 300000 : 0);
+  connectivity["lastSeenAt"] = t;
   // Network the device is on, shown on the app's device page.
   connectivity["wifiSsid"] = WiFi.SSID();
   connectivity["wifiRssi"] = WiFi.RSSI();

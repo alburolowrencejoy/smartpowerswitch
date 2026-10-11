@@ -19,6 +19,7 @@ import '../../widgets/app_top_bar.dart';
 import '../../widgets/outline_icon_box.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../utils/last_seen.dart';
 
 /// The mobile "Devices → Map" screen (handoff §4.3/§5/§8), reusing the exact
 /// Firebase data model and Approximate/Precise logic already proven by
@@ -391,7 +392,6 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       if (_isLoading) _devices = [];
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
     final data = Map<String, dynamic>.from(raw);
     final list = <_MapDevice>[];
     data.forEach((id, val) {
@@ -399,9 +399,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       final d = Map<String, dynamic>.from(val);
       final building = (d['building'] ?? '').toString();
       if (building.isEmpty) return;
-      final lastSeen = _num(d['last_seen']);
-      final online = lastSeen > 0
-          ? now - lastSeen < 2 * 60 * 1000
+      final online = deviceSeenMillis(d) != null
+          ? isDeviceOnline(d)
           : (d['status'] ?? '') == 'online';
       list.add(_MapDevice(
         id: id.toString(),

@@ -10,6 +10,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../utils/last_seen.dart';
 
 /// Self-contained "device grid for one room" widget, extracted out of
 /// `BuildingFloorScreen` so it can be dropped into both:
@@ -107,7 +108,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
           'utility': d.utility,
           if (d.name.isNotEmpty) 'name': d.name,
           'relay': d.live['relay'] == true,
-          'status': (d.live['status'] ?? 'offline').toString(),
+          'status': isDeviceOnline(d.live) ? 'online' : 'offline',
         },
     };
   }

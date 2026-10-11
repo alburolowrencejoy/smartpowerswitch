@@ -39,3 +39,28 @@ int? lastSeenMillis(Object? lastSeenRaw) {
   if (millis == 0) return null;
   return millis;
 }
+
+/// When a board last checked in: the newer of `last_seen` and
+/// `last_updated` (for firmware 2.0 these are `connectivity.lastSeenAt` /
+/// `lastUpdatedAt`, merged by `DeviceLive`). Only boards write either field.
+///
+/// Both firmware versions backdate `last_seen` by five minutes while the
+/// PZEM meter isn't answering, but keep stamping `last_updated` on every
+/// report. Reading `last_seen` alone made a board with a broken meter look
+/// offline, which disabled its ON/OFF switch even though the board was up
+/// and polling for commands.
+int? deviceSeenMillis(Map<dynamic, dynamic>? data) {
+  if (data == null) return null;
+  final seen = lastSeenMillis(data['last_seen']);
+  final updated = lastSeenMillis(data['last_updated']);
+  if (seen == null) return updated;
+  if (updated == null) return seen;
+  return seen > updated ? seen : updated;
+}
+
+/// Whether the board behind [data] (a `devices/{id}` record, merged with
+/// `device_live` where present) has checked in within [within]. Use this
+/// for every online/offline decision, not `last_seen` alone.
+bool isDeviceOnline(Map<dynamic, dynamic>? data,
+        {Duration within = const Duration(minutes: 2)}) =>
+    isRecentlySeen(deviceSeenMillis(data), within: within);

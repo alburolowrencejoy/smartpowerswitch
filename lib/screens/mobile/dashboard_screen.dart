@@ -498,17 +498,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }
             final device = Map<String, dynamic>.from(val);
             final building = (device['building'] ?? '').toString();
-            final lastSeen = device['last_seen'];
-            bool isOnline = false;
-            if (lastSeen != null && lastSeen != 0) {
-              final ms = lastSeen is num
-                  ? lastSeen.toInt()
-                  : int.tryParse(lastSeen.toString()) ?? 0;
-              if (ms > 0) {
-                final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-                isOnline = DateTime.now().difference(dt).inMinutes < 2;
-              }
-            }
+            final isOnline = isDeviceOnline(device);
             if (isOnline) onlineCount++;
 
             if (building.isNotEmpty) {
@@ -675,7 +665,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final deviceKwh = todayKwh[id] ?? 0.0;
             kwh += deviceKwh;
 
-            if (isRecentlySeen(device['last_seen'])) online++;
+            if (isDeviceOnline(device)) online++;
 
             final room = (device['room'] ?? '').toString();
             if (room.isNotEmpty) {

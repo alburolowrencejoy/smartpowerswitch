@@ -315,6 +315,15 @@
     "meta": {
       ".read": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
       ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))"
+    },
+    "meterState": {
+      "$deviceId": {
+        ".read": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))))",
+        "resolve": {
+          ".write": "(((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))))) && (newData.exists()) && (data.parent().child('flag').child('frozen').val() === true)",
+          ".validate": "newData.val() === 'accept' || newData.val() === 'rebaseline'"
+        }
+      }
     }
   }
 }

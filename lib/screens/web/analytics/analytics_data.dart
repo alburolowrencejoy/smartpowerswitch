@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../services/rate_timeline.dart';
 import 'analytics_filter.dart';
+import '../../../utils/last_seen.dart';
 
 /// Live facts about one device from the `devices` node.
 @immutable
@@ -27,13 +28,9 @@ class DeviceMeta {
   static Map<String, DeviceMeta> parseAll(Object? raw) {
     final out = <String, DeviceMeta>{};
     if (raw is! Map) return out;
-    final now = DateTime.now().millisecondsSinceEpoch;
     raw.forEach((id, val) {
       if (val is! Map) return;
-      final lastSeen = val['last_seen'];
-      final online = lastSeen is num && lastSeen > 0
-          ? now - lastSeen.toInt() < 2 * 60 * 1000
-          : false;
+      final online = isDeviceOnline(val);
       out[id.toString()] = DeviceMeta(
         id: id.toString(),
         building: (val['building'] ?? '').toString(),

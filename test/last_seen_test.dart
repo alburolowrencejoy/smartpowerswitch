@@ -80,4 +80,41 @@ void main() {
       expect(lastSeenMillis('nope'), isNull);
     });
   });
+
+  group('isDeviceOnline', () {
+    int ago(Duration d) =>
+        DateTime.now().subtract(d).millisecondsSinceEpoch;
+
+    test('uses the newer of last_seen and last_updated', () {
+      // Firmware backdates last_seen while the meter is down but keeps
+      // stamping last_updated: the board is still up and takes commands.
+      final brokenMeter = {
+        'last_seen': ago(const Duration(minutes: 5)),
+        'last_updated': ago(const Duration(seconds: 10)),
+      };
+      expect(isDeviceOnline(brokenMeter), isTrue);
+      expect(deviceSeenMillis(brokenMeter), brokenMeter['last_updated']);
+    });
+
+    test('offline when both are old, or nothing is recorded', () {
+      expect(
+          isDeviceOnline({
+            'last_seen': ago(const Duration(minutes: 10)),
+            'last_updated': ago(const Duration(minutes: 9)),
+          }),
+          isFalse);
+      expect(isDeviceOnline({}), isFalse);
+      expect(isDeviceOnline(null), isFalse);
+      expect(deviceSeenMillis({'last_seen': 0}), isNull);
+    });
+
+    test('either field alone is enough', () {
+      expect(isDeviceOnline({'last_seen': ago(const Duration(seconds: 5))}),
+          isTrue);
+      expect(
+          isDeviceOnline(
+              {'last_updated': ago(const Duration(seconds: 5)).toDouble()}),
+          isTrue);
+    });
+  });
 }

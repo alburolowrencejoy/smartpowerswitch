@@ -23,6 +23,8 @@ import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
 import '../../services/rate_timeline.dart';
+import '../../utils/last_seen.dart';
+import '../../widgets/meter_review_banner.dart';
 
 /// The desktop device page: live PZEM readings (voltage, current, power,
 /// energy today), a 7-day energy trend, and the relay Control panel.
@@ -265,12 +267,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   }
 
 
-  bool _checkOnline(Map<String, dynamic> data) {
-    final lastSeen = data['last_seen'];
-    if (lastSeen == null || lastSeen == 0) return false;
-    final lastSeenTime = DateTime.fromMillisecondsSinceEpoch(lastSeen as int);
-    return DateTime.now().difference(lastSeenTime).inMinutes < 2;
-  }
+  bool _checkOnline(Map<String, dynamic> data) => isDeviceOnline(data);
 
   bool _checkHasPzemReadings(Map<String, dynamic> data) {
     final voltage = data['voltage'];
@@ -309,26 +306,21 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
       _toggling = true;
     });
 
-    final db = FirebaseDatabase.instance.ref();
     Object? lastError;
     var success = false;
-
-    for (var attempt = 0; attempt < 2 && !success; attempt++) {
-      try {
-        // A command (device_commands, see DeviceCommands); the board
-        // reports its actual relay separately.
-        await db
-            .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
-                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp))
-            .timeout(const Duration(milliseconds: 1200));
-
-        success = true;
-      } catch (e) {
-        lastError = e;
-        if (attempt < 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 80));
-        }
-      }
+    try {
+      // A command (device_commands, see DeviceCommands); the board reports
+      // its actual relay separately. Sent once: a retry would issue a
+      // second command while the first may still be on its way.
+      await FirebaseDatabase.instance
+          .ref()
+          .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
+              issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+              issuedAt: ServerValue.timestamp))
+          .timeout(DeviceCommands.sendTimeout);
+      success = true;
+    } catch (e) {
+      lastError = e;
     }
 
     if (!mounted) return;
@@ -342,6 +334,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
 
     if (!success) {
       debugPrint('[DeviceDetailWeb] Relay update failed: $lastError');
+      TopToast.error(context, DeviceCommands.failureMessage(lastError!));
     }
   }
 
@@ -558,9 +551,9 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
 
 
   String _lastSeenText() {
-    final seen = _deviceData['last_seen'];
-    if (seen is! num || seen == 0) return 'Never';
-    final t = DateTime.fromMillisecondsSinceEpoch(seen.toInt());
+    final seen = deviceSeenMillis(_deviceData);
+    if (seen == null) return 'Never';
+    final t = DateTime.fromMillisecondsSinceEpoch(seen);
     final ago = DateTime.now().difference(t);
     if (ago.inMinutes < 1) return 'Just now';
     if (ago.inMinutes < 60) return '${ago.inMinutes} min ago';
@@ -840,6 +833,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
           ],
         ]),
         CommandStatusNote(status: _commandStatus),
+        MeterReviewBanner(deviceId: widget.deviceId, canResolve: _canToggle),
         if (warning != null) ...[
           const SizedBox(height: 12),
           Container(

@@ -303,7 +303,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final registry = events[4].snapshot.value;
       data.forEach((id, val) {
         if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) return;
-        final isOnline = isRecentlySeen(val['last_seen']);
+        final isOnline = isDeviceOnline(val);
         isOnline ? online++ : offline++;
       });
       _onlineCount = online;

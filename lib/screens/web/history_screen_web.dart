@@ -30,6 +30,7 @@ import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
+import '../../utils/last_seen.dart';
 
 /// Opens the device detail screen for a device.
 typedef OpenDeviceCallback = void Function(
@@ -377,15 +378,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     data.forEach((id, val) {
       if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) return;
       final device = Map<String, dynamic>.from(val);
-      final lastSeen = device['last_seen'];
-      // `num`, not `int`: the SDK can hand back a whole-number double.
-      final isOnline = lastSeen is num &&
-          lastSeen != 0 &&
-          DateTime.now()
-                  .difference(
-                      DateTime.fromMillisecondsSinceEpoch(lastSeen.toInt()))
-                  .inMinutes <
-              2;
+      final isOnline = isDeviceOnline(device);
 
       isOnline ? online++ : offline++;
     });

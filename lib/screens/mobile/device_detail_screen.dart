@@ -29,6 +29,7 @@ import '../../services/rate_timeline.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
 import 'automation_screen.dart';
+import '../../widgets/meter_review_banner.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -407,9 +408,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
   String _dailyKey(DateTime d) => HistoryKeys.dailyKey(d.year, d.month, d.day);
 
-  // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
-  bool _checkOnline(Map<String, dynamic> data) =>
-      isRecentlySeen(data['last_seen']);
+  // ── Online check: board reported in the last 2 minutes ─────────────────────
+  bool _checkOnline(Map<String, dynamic> data) => isDeviceOnline(data);
 
   bool _checkHasPzemReadings(Map<String, dynamic> data) {
     final voltage = data['voltage'];
@@ -438,7 +438,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   String _lastSeenText() {
-    final millis = lastSeenMillis(_deviceData['last_seen']);
+    final millis = deviceSeenMillis(_deviceData);
     if (millis == null) return 'never';
     final dt = DateTime.fromMillisecondsSinceEpoch(millis);
     final diff = DateTime.now().difference(dt);
@@ -460,26 +460,21 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _toggling = true;
     });
 
-    final db = FirebaseDatabase.instance.ref();
     Object? lastError;
     var success = false;
-
-    for (var attempt = 0; attempt < 2 && !success; attempt++) {
-      try {
-        // A command (device_commands, see DeviceCommands); the board
-        // reports its actual relay separately.
-        await db
-            .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
-                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp))
-            .timeout(const Duration(milliseconds: 1200));
-
-        success = true;
-      } catch (e) {
-        lastError = e;
-        if (attempt < 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 80));
-        }
-      }
+    try {
+      // A command (device_commands, see DeviceCommands); the board reports
+      // its actual relay separately. Sent once: a retry would issue a
+      // second command while the first may still be on its way.
+      await FirebaseDatabase.instance
+          .ref()
+          .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
+              issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+              issuedAt: ServerValue.timestamp))
+          .timeout(DeviceCommands.sendTimeout);
+      success = true;
+    } catch (e) {
+      lastError = e;
     }
 
     if (!mounted) return;
@@ -493,7 +488,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
     if (!success) {
       debugPrint('Relay update failed: $lastError');
-      TopToast.error(context, 'Could not reach the device. Try again.');
+      TopToast.error(context, DeviceCommands.failureMessage(lastError!));
     }
   }
 
@@ -761,6 +756,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         ],
       ),
       CommandStatusNote(status: _commandStatus),
+      MeterReviewBanner(deviceId: widget.deviceId, canResolve: _canControl),
       if (!_canControl) ...[
         const SizedBox(height: 6),
         Text('Only admins can control this device',

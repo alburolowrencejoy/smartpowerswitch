@@ -321,8 +321,24 @@ const rules = {
 
     meta: { '.read': admins, '.write': mainAdmins },
 
-    // meterState, anomalies, rollup, system_health: server only (no client
-    // access, inherited from the root).
+    // Server-owned meter tracking (rollupEnergy). Admins may read a device's
+    // state and answer a paused (frozen) meter with resolve: 'accept' (count
+    // the reading) or 'rebaseline' (start over); nothing else.
+    meterState: {
+      $deviceId: {
+        '.read': or(mainAdmins, and(instAdmin, inMyInst(masterAssigned('$deviceId')))),
+        resolve: {
+          '.write': and(
+            or(mainAdmins, and(instAdmin, inMyInst(masterAssigned('$deviceId')))),
+            'newData.exists()',
+            "data.parent().child('flag').child('frozen').val() === true"),
+          '.validate': oneOf('accept', 'rebaseline'),
+        },
+      },
+    },
+
+    // anomalies, rollup, system_health: server only (no client access,
+    // inherited from the root).
   },
 };
 

@@ -23,6 +23,7 @@ import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import '../../theme/app_fonts.dart';
 import '../../widgets/history_fallback_notice.dart';
+import '../../utils/last_seen.dart';
 
 /// The web "Dashboard" tab: an at-a-glance overview modelled on a classic
 /// admin layout -- a row of stat cards, a device-status card with a
@@ -287,7 +288,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
         }
         // Energy comes from today's summary; this only records the utility.
         utilityById[d.id] = _utilityOf({'utility': d.utility});
-        if (_isOnline(d.live['last_seen'])) {
+        if (isDeviceOnline(d.live)) {
           online++;
         } else {
           offline++;
@@ -1709,12 +1710,6 @@ class _DonutPainter extends CustomPainter {
 
 double _toDouble(Object? v) =>
     v is num ? v.toDouble() : double.tryParse('${v ?? ''}') ?? 0.0;
-
-bool _isOnline(Object? lastSeen) {
-  if (lastSeen is! num || lastSeen == 0) return false;
-  final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen.toInt());
-  return DateTime.now().difference(dt).inMinutes < 2;
-}
 
 /// Maps a device's `utility` field onto the three utilities every building
 /// has. Anything unrecognised is grouped under "Other".

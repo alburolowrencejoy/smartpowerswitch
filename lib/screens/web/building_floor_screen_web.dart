@@ -19,6 +19,7 @@ import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/history_keys.dart';
+import '../../utils/last_seen.dart';
 
 /// The desktop building page: floor tabs, then one card per room listing
 /// its devices with a live switch, View, and admin add/edit/delete icons.
@@ -296,7 +297,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
             'utility': d.utility,
             if (d.name.isNotEmpty) 'name': d.name,
             'relay': d.live['relay'] == true,
-            'status': (d.live['status'] ?? 'offline').toString(),
+            'status': isDeviceOnline(d.live) ? 'online' : 'offline',
           },
       };
     } else if (_isLoading) {
@@ -614,14 +615,7 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     return v is Map ? Map<String, dynamic>.from(v) : null;
   }
 
-  bool _deviceOnline(String deviceId) {
-    final seen = _live(deviceId)?['last_seen'];
-    if (seen is! num || seen == 0) return false;
-    return DateTime.now()
-            .difference(DateTime.fromMillisecondsSinceEpoch(seen.toInt()))
-            .inMinutes <
-        2;
-  }
+  bool _deviceOnline(String deviceId) => isDeviceOnline(_live(deviceId));
 
   /// Today's kWh for a device (not its lifetime meter value).
   double _deviceKwh(String deviceId) => _todayDeviceKwh[deviceId] ?? 0.0;
@@ -633,9 +627,12 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       await FirebaseDatabase.instance.ref().update(
             DeviceCommands.relayUpdate(deviceId, on,
                 issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp),
-          );
+          ).timeout(DeviceCommands.sendTimeout);
     } catch (e) {
-      if (mounted) TopToast.error(context, 'Could not switch $deviceId: $e');
+      if (mounted) {
+        TopToast.error(
+            context, '$deviceId: ${DeviceCommands.failureMessage(e)}');
+      }
     } finally {
       if (mounted) setState(() => _togglingDevices.remove(deviceId));
     }

@@ -56,10 +56,15 @@ async function readInputs(db) {
   const registry = registrySnap.val() ?? {};
   const ids = Object.keys(registry).filter((id) => isRealDevice(registry[id]));
   // Firmware v2 reports the meter in device_live (Phase 5); boards still on
-  // the old firmware report it in devices/{id}/kwh.
+  // the old firmware report it in devices/{id}/kwh. A v2 board (one with a
+  // device_live record) is read only from device_live: while its meter is
+  // down it sends no cumulativeKwh, and falling back to the pre-upgrade
+  // devices/{id}/kwh would look like a meter drop and freeze the device.
   const kwhSnaps = await Promise.all(ids.map(async (id) => {
-    const live = (await db.ref(`device_live/${id}/telemetry/cumulativeKwh`).get()).val();
-    if (live !== null && live !== undefined) return live;
+    const live = (await db.ref(`device_live/${id}`).get()).val();
+    if (live !== null && typeof live === 'object') {
+      return live.telemetry?.cumulativeKwh ?? null;
+    }
     return (await db.ref(`devices/${id}/kwh`).get()).val();
   }));
   return {

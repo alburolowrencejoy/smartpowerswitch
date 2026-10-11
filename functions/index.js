@@ -60,9 +60,13 @@ async function assertCanManageUser(callerUid, targetUid) {
     return;
   }
 
+  // Institute admins: faculty and institute admins of their own institute,
+  // never a main-admin tier (same limit as the users/{uid} database rule).
   if (callerRole === 'institute_admin' && caller.institute) {
     const target = targetSnap.val() || {};
-    if (target.institute === caller.institute) {
+    if (target.institute === caller.institute &&
+        (target.role === 'faculty' || target.role === 'institute_admin') &&
+        target.isMainAdmin !== true) {
       return;
     }
   }
@@ -88,7 +92,7 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
       'invalid-argument', 'uid and newPassword are required.');
   }
 
-  if (newPassword.length < 6) {
+  if (typeof uid !== 'string' || typeof newPassword !== 'string' || newPassword.length < 6) {
     throw new functions.https.HttpsError(
       'invalid-argument', 'Password must be at least 6 characters.');
   }

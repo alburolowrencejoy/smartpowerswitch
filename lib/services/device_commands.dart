@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 /// Commands to a board (master plan Phase 5): what the app asks for, kept
@@ -41,6 +42,24 @@ class DeviceCommands {
         // Old firmware reads this field (transition, see class doc).
         'devices/$id/relay': on,
       };
+
+  /// How long a screen waits for the database to accept a command. Long
+  /// enough for a slow phone connection: giving up early made the switch
+  /// bounce back while the queued write still reached the board.
+  static const sendTimeout = Duration(seconds: 15);
+
+  /// A short message for a command that couldn't be sent.
+  static String failureMessage(Object error) {
+    final text = error.toString().toLowerCase();
+    if (text.contains('permission') || text.contains('denied')) {
+      return "You don't have permission to control this device.";
+    }
+    if (error is TimeoutException) {
+      return 'No response from the server. Check your connection and '
+          'try again.';
+    }
+    return "Couldn't send the command. Try again.";
+  }
 
   /// Multi-path update asking [id] to forget its Wi-Fi ([reset] = true), or
   /// cancelling that request.

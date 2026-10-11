@@ -142,7 +142,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       _liveDevices[deviceId] as Map<String, dynamic>?;
 
   bool _isDeviceOnline(String deviceId) =>
-      isRecentlySeen(_liveFor(deviceId)?['last_seen']);
+      isDeviceOnline(_liveFor(deviceId));
 
   // ── Floor-level summary (handoff §4.4: "Devices / On now / Today kWh") ──
   int get _floorDeviceCount => _devices.length;
@@ -181,11 +181,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       await FirebaseDatabase.instance.ref().update(
             DeviceCommands.relayUpdate(deviceId, newValue,
                 issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp),
-          );
+          ).timeout(DeviceCommands.sendTimeout);
     } catch (e) {
-      if (mounted) {
-        TopToast.error(context, 'Could not reach the device. Try again.');
-      }
+      if (mounted) TopToast.error(context, DeviceCommands.failureMessage(e));
     } finally {
       if (mounted) setState(() => _togglingDevices.remove(deviceId));
     }
@@ -306,7 +304,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
                 'utility': d.utility,
                 if (d.name.isNotEmpty) 'name': d.name,
                 'relay': d.live['relay'] == true,
-                'status': (d.live['status'] ?? 'offline').toString(),
+                'status': isDeviceOnline(d.live) ? 'online' : 'offline',
               },
           };
         } else if (_isLoading) {

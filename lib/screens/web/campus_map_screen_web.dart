@@ -15,6 +15,7 @@ import '../../theme/app_fonts.dart';
 import '../../services/device_live.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../utils/last_seen.dart';
 
 /// Web campus map with two views over the real campus image:
 ///
@@ -286,15 +287,13 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       if (_isLoading) _devices = [];
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
     final list = <_Device>[];
     raw.forEach((id, val) {
       if (val is! Map) return;
       final building = (val['building'] ?? '').toString();
       if (building.isEmpty) return;
-      final lastSeen = _num(val['last_seen']);
-      final online = lastSeen > 0
-          ? now - lastSeen < 2 * 60 * 1000
+      final online = deviceSeenMillis(val) != null
+          ? isDeviceOnline(val)
           : (val['status'] ?? '') == 'online';
       list.add(_Device(
         id: id.toString(),

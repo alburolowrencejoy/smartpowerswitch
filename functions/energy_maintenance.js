@@ -65,11 +65,18 @@ async function runRetention(db, nowMs = Date.now()) {
 
 // ── Monitoring ────────────────────────────────────────────────────────────
 
-/** Live last-seen time of a board: device_live (firmware 2.0+) or devices. */
+/**
+ * When a board last checked in: the newest of its device_live (firmware
+ * 2.0+) and devices timestamps. Both firmware versions backdate last_seen
+ * while the meter isn't answering but still stamp last_updated, so a board
+ * with a broken meter isn't reported offline.
+ */
 function lastSeenOf(live, legacy) {
-  const v2 = live?.connectivity?.lastSeenAt;
-  if (typeof v2 === 'number') return v2;
-  return typeof legacy?.last_seen === 'number' ? legacy.last_seen : null;
+  const times = [
+    live?.connectivity?.lastSeenAt, live?.connectivity?.lastUpdatedAt,
+    legacy?.last_seen, legacy?.last_updated,
+  ].filter((t) => typeof t === 'number' && t > 0);
+  return times.length ? Math.max(...times) : null;
 }
 
 /**

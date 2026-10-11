@@ -268,3 +268,28 @@ test('buildings: sane name, floor count and room names', async () => {
   await assertFails(as('main').ref('buildings/NEW/floors').set(0));
   await assertFails(as('main').ref('buildings/NEW/floorData/1/rooms/0').set(42));
 });
+
+test('meterState: admins read and answer a paused meter; nothing else', async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.database().ref('meterState').set({
+      'IC-1': { lastAcceptedKwh: 1, flag: { reason: 'spike', frozen: true, at: 1 } },
+      'ITED-1': { lastAcceptedKwh: 1, flag: { reason: 'decrease', frozen: true, at: 1 } },
+      'FREE-1': { lastAcceptedKwh: 1 },
+    });
+  });
+  await assertSucceeds(as('main').ref('meterState/ITED-1').get());
+  await assertSucceeds(as('ic').ref('meterState/IC-1').get());
+  await assertFails(as('ic').ref('meterState/ITED-1').get());
+  await assertFails(as('fac').ref('meterState/IC-1').get());
+  await assertFails(as('main').ref('meterState').get());
+
+  await assertSucceeds(as('ic').ref('meterState/IC-1/resolve').set('accept'));
+  await assertSucceeds(as('main').ref('meterState/ITED-1/resolve').set('rebaseline'));
+  await assertFails(as('ic').ref('meterState/ITED-1/resolve').set('accept'));
+  await assertFails(as('fac').ref('meterState/IC-1/resolve').set('accept'));
+  await assertFails(as('main').ref('meterState/IC-1/resolve').set('maybe'));
+  await assertFails(as('main').ref('meterState/IC-1/resolve').remove());
+  await assertFails(as('main').ref('meterState/FREE-1/resolve').set('accept')); // not paused
+  await assertFails(as('main').ref('meterState/IC-1/lastAcceptedKwh').set(0));
+  await assertFails(as('main').ref('meterState/IC-1/flag').remove());
+});

@@ -163,6 +163,18 @@ test('firmware v2 boards are read from device_live; old boards from devices', as
   close(day.devices['ESP32-B'].kwh, 0.3, 'B from devices');
 });
 
+test('a v2 board whose meter is down counts nothing (no fallback to the old field)', async () => {
+  await seed();
+  await db.ref('device_live/ESP32-A').set({ telemetry: { cumulativeKwh: 5.0 }, connectivity: { lastUpdatedAt: T0 } });
+  await runRollup(db, { nowMs: T0 });
+  // Meter stops answering: firmware sends telemetry without cumulativeKwh.
+  await db.ref('device_live/ESP32-A').set({ telemetry: { voltageWarning: 'unknown' }, connectivity: { lastUpdatedAt: T0 + MIN } });
+  await runRollup(db, { nowMs: T0 + MIN });
+  const state = await get('meterState/ESP32-A');
+  assert.strictEqual(state.lastAcceptedKwh, 5.0);
+  assert.strictEqual(state.flag, undefined, 'must not be frozen as a meter drop');
+});
+
 test('lock helpers: only the owner keeps or releases the lock', async () => {
   await db.ref().set(null);
   assert.ok(await acquireLock(db, 'run-1', T0));
