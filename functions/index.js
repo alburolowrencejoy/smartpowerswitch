@@ -26,9 +26,16 @@ async function runAutomationSchedules() {
     timeZone: String(timezoneSnap.val() ?? 'Asia/Manila'),
   });
 
-  // The live record is the only relay state (no copy under buildings/).
+  // Each change is a command (device_commands); the old relay field is
+  // written too while boards still run the old firmware (Phase 5 transition).
   for (const { deviceId, relay } of changes) {
-    await admin.database().ref(`devices/${deviceId}/relay`).set(relay);
+    await admin.database().ref().update({
+      [`device_commands/${deviceId}/desiredRelay`]: relay,
+      [`device_commands/${deviceId}/commandId`]: `${Date.now()}-sched`,
+      [`device_commands/${deviceId}/issuedAt`]: admin.database.ServerValue.TIMESTAMP,
+      [`device_commands/${deviceId}/issuedBy`]: 'scheduler',
+      [`devices/${deviceId}/relay`]: relay,
+    });
     console.log(`[AutomationScheduler] ${deviceId} -> ${relay ? 'ON' : 'OFF'}`);
   }
 }

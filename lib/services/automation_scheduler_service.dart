@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 
+import 'device_commands.dart';
 import 'schedule_windows.dart';
 
 String _dayLabel(DateTime now) {
@@ -199,8 +200,9 @@ class AutomationSchedulerService {
     final deviceId = device.key;
 
     try {
-      // The live record is the only relay state (no building copy).
-      await _root.child('devices/$deviceId/relay').set(desiredRelay);
+      // A command (device_commands, see DeviceCommands).
+      await _root.update(DeviceCommands.relayUpdate(deviceId, desiredRelay,
+          issuedBy: 'app-scheduler', issuedAt: ServerValue.timestamp));
 
       debugPrint(
         '[AutomationScheduler] $deviceId -> ${desiredRelay ? 'ON' : 'OFF'}',

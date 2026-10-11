@@ -10,6 +10,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../widgets/top_toast.dart';
+import '../../services/device_commands.dart';
 import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
@@ -280,9 +281,11 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
 
     for (var attempt = 0; attempt < 2 && !success; attempt++) {
       try {
+        // A command (device_commands, see DeviceCommands); the board
+        // reports its actual relay separately.
         await db
-            .child('devices/${widget.deviceId}/relay')
-            .set(newRelay)
+            .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
+                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp))
             .timeout(const Duration(milliseconds: 1200));
 
         success = true;
@@ -936,14 +939,14 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     );
   }
 
-  /// Sets (or cancels) `devices/<id>/wifiReset`. The ESP32 picks it up on
+  /// Sets (or cancels) the Wi-Fi reset command. The ESP32 picks it up on
   /// its next poll, clears it, erases its saved WiFi and reboots into setup.
   Future<void> _setWifiReset(bool reset) async {
     setState(() => _wifiBusy = true);
     try {
       await FirebaseDatabase.instance
-          .ref('devices/${widget.deviceId}/wifiReset')
-          .set(reset ? true : null);
+          .ref()
+          .update(DeviceCommands.wifiResetUpdate(widget.deviceId, reset));
       if (!mounted) return;
       TopToast.success(context,
           reset ? 'Disconnect sent to the device' : 'Disconnect cancelled');

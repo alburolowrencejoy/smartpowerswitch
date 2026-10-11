@@ -55,10 +55,16 @@ async function readInputs(db) {
   ]);
   const registry = registrySnap.val() ?? {};
   const ids = Object.keys(registry).filter((id) => isRealDevice(registry[id]));
-  const kwhSnaps = await Promise.all(ids.map((id) => db.ref(`devices/${id}/kwh`).get()));
+  // Firmware v2 reports the meter in device_live (Phase 5); boards still on
+  // the old firmware report it in devices/{id}/kwh.
+  const kwhSnaps = await Promise.all(ids.map(async (id) => {
+    const live = (await db.ref(`device_live/${id}/telemetry/cumulativeKwh`).get()).val();
+    if (live !== null && live !== undefined) return live;
+    return (await db.ref(`devices/${id}/kwh`).get()).val();
+  }));
   return {
     registry,
-    kwhById: Object.fromEntries(ids.map((id, i) => [id, kwhSnaps[i].val()])),
+    kwhById: Object.fromEntries(ids.map((id, i) => [id, kwhSnaps[i]])),
     meterState: stateSnap.val() ?? {},
     rate: rateSnap.val(),
   };

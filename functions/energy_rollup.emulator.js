@@ -150,6 +150,19 @@ test('a run is skipped while another run holds an unexpired lock', async () => {
   close(await get('energy_summaries/daily/2026-10-10/campus/kwh'), 0.5);
 });
 
+test('firmware v2 boards are read from device_live; old boards from devices', async () => {
+  await seed();
+  // ESP32-A runs firmware v2: its devices/{id}/kwh goes stale, device_live is current.
+  await db.ref('device_live/ESP32-A/telemetry/cumulativeKwh').set(1.0);
+  await runRollup(db, { nowMs: T0 });
+  await db.ref('device_live/ESP32-A/telemetry/cumulativeKwh').set(1.25);
+  await setKwh({ 'ESP32-A': 99, 'ESP32-B': 2.3 }); // A's old field is ignored
+  await runRollup(db, { nowMs: T0 + MIN });
+  const day = await get('energy_summaries/daily/2026-10-10');
+  close(day.devices['ESP32-A'].kwh, 0.25, 'A from device_live');
+  close(day.devices['ESP32-B'].kwh, 0.3, 'B from devices');
+});
+
 test('lock helpers: only the owner keeps or releases the lock', async () => {
   await db.ref().set(null);
   assert.ok(await acquireLock(db, 'run-1', T0));

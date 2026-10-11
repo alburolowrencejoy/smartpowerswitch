@@ -1,8 +1,15 @@
 /*
   SmartPowerSwitch ESP32 Firmware (ID-only registration flow)
-  VERSION: 1.3.3  (2026-10-10)
+  VERSION: 2.0.0  (2026-10-11)
 
   CHANGELOG
+  2.0.0  Commands and live readings are separate (master plan Phase 5):
+         reads commands from /device_commands/<ID> (desiredRelay, commandId,
+         wifiReset) and reports to /device_live/<ID> (telemetry,
+         connectivity, state.reportedRelay + state.lastCommandId as the
+         acknowledgement). No longer reads or writes /devices/<ID>, runs
+         schedules itself (the server does) or mirrors the relay under
+         /buildings. Needs the Phase 5 database rules.
   1.3.3  Reports the connected WiFi network (wifi_ssid, wifi_rssi) so the app
          can show it on the device page and disconnect it from there.
   1.3.2  Setup page moved to portal_html.h (fixes page not responding to taps:
@@ -26,9 +33,10 @@
        retrying the saved network in the background.
      - Hold BOOT (GPIO 0) for 5 s: erases saved WiFi and reboots into setup.
   2) Reads PZEM-004T V4.0 values (voltage/current/power/energy)
-  3) Polls Firebase relay command from: /devices/<DEVICE_ID>/relay
+  3) Polls its commands from: /device_commands/<DEVICE_ID>
   4) Controls an SSR output pin
-  5) Pushes telemetry to: /devices/<DEVICE_ID>
+  5) Pushes readings to: /device_live/<DEVICE_ID>
+     (telemetry, connectivity, state incl. the last command it carried out)
 
   Required Arduino libraries:
   - ArduinoJson (by Benoit Blanchon)
@@ -46,8 +54,9 @@
 
   IMPORTANT:
   - Register DEVICE_ID first in app Settings -> IoT Device Inventory.
-  - This firmware assumes your Firebase rules allow ID-registered unauthenticated
-    read/write under /devices/<DEVICE_ID>.
+  - This firmware assumes your Firebase rules allow an ID-registered,
+    unauthenticated board to read /device_commands/<DEVICE_ID> (and clear its
+    wifiReset) and to write /device_live/<DEVICE_ID>.
 */
 
 #include <WiFi.h>
@@ -76,7 +85,7 @@ static const uint8_t RESET_BTN_PIN = 0;                  // BOOT button
 static const uint32_t RESET_HOLD_MS = 5000;              // hold to erase WiFi
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;   // per connect attempt
 // Setup hotspot only opens on first setup (nothing saved), when the system sends
-// a disconnect (/devices/<DEVICE_ID>/wifiReset = true), or BOOT held 5 s.
+// a disconnect (/device_commands/<DEVICE_ID>/wifiReset = true), or BOOT held 5 s.
 // A network outage never reopens it — the device just keeps retrying.
 static const uint32_t OFFLINE_PORTAL_AFTER_MS = 0;       // 0 = never reopen when offline
 static const uint32_t SAVED_WIFI_RETRY_MS = 30000;       // retry saved WiFi while hotspot is open
@@ -112,6 +121,9 @@ PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
 uint8_t pzemAddress = 0xF8;  // Factory default address for v4.0 modules
 
 bool relayState = false;
+// Last command carried out (acknowledged in device_live/<ID>/state).
+String lastCommandId = "";
+uint64_t lastCommandAtMs = 0;
 bool pzemReady = false;
 // Track last seen energy reading so we can write per-interval history deltas
 float lastReportedEnergyKwh = -1.0f;
@@ -666,22 +678,24 @@ bool firebasePatch(const String& path, const String& json, int& statusCode) {
 void handleRemoteWifiReset() {
   Serial.println("[WiFi] Disconnect requested by the system");
 
-  DynamicJsonDocument doc(192);
-  doc["wifiReset"] = nullptr;  // null removes the key
-  doc["wifi_ssid"] = nullptr;  // no network until it is set up again
-  doc["wifi_rssi"] = nullptr;
-  doc["status"] = "offline";
-  doc["relay"] = false;        // relay is OFF after the reboot
-
-  String payload;
-  serializeJson(doc, payload);
-
+  // Clear the command first so it doesn't loop (null removes the key).
   int code = 0;
-  const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
+  const bool ok = firebasePatch(String("/device_commands/") + DEVICE_ID + ".json",
+                                "{\"wifiReset\":null}", code);
   if (!ok || (code != 200 && code != 204)) {
-    Serial.println("[WiFi] Could not clear wifiReset flag, will retry");
+    Serial.println("[WiFi] Could not clear wifiReset command, will retry");
     return;
   }
+
+  // Report going offline with the relay OFF (it is OFF after the reboot).
+  DynamicJsonDocument doc(256);
+  doc["connectivity"]["status"] = "offline";
+  doc["connectivity"]["wifiSsid"] = nullptr;
+  doc["connectivity"]["wifiRssi"] = nullptr;
+  doc["state"]["reportedRelay"] = false;
+  String payload;
+  serializeJson(doc, payload);
+  firebasePatch(String("/device_live/") + DEVICE_ID + ".json", payload, code);
 
   clearWifiCredentials();
   WiFi.disconnect(true, true);
@@ -689,20 +703,23 @@ void handleRemoteWifiReset() {
   ESP.restart();
 }
 
-void pollRelayAndAssignment() {
+// Reads /device_commands/<ID>: { desiredRelay, commandId, issuedAt, wifiReset }.
+// Applies the desired relay state and acknowledges the command ID in the
+// next device_live push. Schedules are run by the server, not the board.
+void pollCommands() {
   String body;
   int code = 0;
 
-  const String path = String("/devices/") + DEVICE_ID + ".json";
+  const String path = String("/device_commands/") + DEVICE_ID + ".json";
   if (!firebaseGet(path, body, code)) {
     return;
   }
 
   if (code != 200 || body == "null") {
-    return;
+    return;  // no command yet: keep the current relay state
   }
 
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(512);
   const DeserializationError err = deserializeJson(doc, body);
   if (err) {
     Serial.print("[Firebase] JSON parse error: ");
@@ -715,33 +732,28 @@ void pollRelayAndAssignment() {
     return;
   }
 
-  bool cloudRelay = relayState;
-  if (doc.containsKey("relay")) {
-    cloudRelay = doc["relay"].as<bool>();
+  if (!doc.containsKey("desiredRelay")) {
+    return;
   }
-
-  const String building = doc.containsKey("building") ? String(doc["building"].as<const char*>()) : "";
-  const String floor = doc.containsKey("floor") ? String(doc["floor"].as<const char*>()) : "";
-  const String utility = doc.containsKey("utility") ? String(doc["utility"].as<const char*>()) : "";
-
-  bool desiredRelay = cloudRelay;
-  const bool automationMatched = applyAutomationIfNeeded(
-      String(DEVICE_ID), building, utility, cloudRelay, desiredRelay);
+  const bool desiredRelay = parseBoolean(doc["desiredRelay"]);
+  const String commandId = doc.containsKey("commandId")
+      ? String(doc["commandId"].as<const char*>())
+      : String("");
+  const bool newCommand = commandId != lastCommandId;
 
   if (desiredRelay != relayState) {
     setRelay(desiredRelay);
-    if (automationMatched) {
-      Serial.print("[Automation] Set from schedule: ");
-      Serial.println(desiredRelay ? "ON" : "OFF");
-    } else {
-      Serial.print("[Relay] Set from cloud: ");
-      Serial.println(desiredRelay ? "ON" : "OFF");
-    }
+    Serial.print("[Relay] Set from command ");
+    Serial.print(commandId);
+    Serial.print(": ");
+    Serial.println(desiredRelay ? "ON" : "OFF");
+  }
 
-    mirrorRelayToBuilding(building, floor, desiredRelay);
-
-    // Push telemetry immediately so the cloud reflects the updated relay
-    // state and (when meter is after the relay) we get readings faster.
+  if (newCommand) {
+    lastCommandId = commandId;
+    lastCommandAtMs = nowMs();
+    // Acknowledge right away (and report the relay) instead of waiting for
+    // the next scheduled push.
     lastTelemetryPushMs = millis();
     pushTelemetry();
   }
@@ -799,36 +811,41 @@ void pushTelemetry() {
     pzemReady = false;
   }
 
-  DynamicJsonDocument doc(640);
-  doc["status"] = status;
-  doc["relay"] = relayState;
-  // Network the device is on, shown on the app's device page.
-  doc["wifi_ssid"] = WiFi.SSID();
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["voltage_warning"] = voltageWarning;
-  doc["last_updated"] = t;
-  doc["last_seen"] = pzemOk ? t : (t > 300000 ? t - 300000 : 0);
+  // /device_live/<ID>: { telemetry, connectivity, state }. Each group is
+  // replaced as a whole by the PATCH.
+  DynamicJsonDocument doc(768);
+  JsonObject telemetry = doc.createNestedObject("telemetry");
+  JsonObject connectivity = doc.createNestedObject("connectivity");
+  JsonObject state = doc.createNestedObject("state");
 
   if (pzemOk) {
-    doc["voltage"] = roundTo(voltage, 1);
-    doc["current"] = roundTo(current, 2);
-    doc["power"] = roundTo(power, 1);
-    doc["kwh"] = roundTo(energyKwh, 4);
-    doc["powerFactor"] = roundTo(powerFactor, 2);
-    doc["frequency"] = roundTo(frequency, 1);
-  } else {
-    doc["voltage"] = nullptr;
-    doc["current"] = nullptr;
-    doc["power"] = nullptr;
-    doc["powerFactor"] = nullptr;
-    doc["frequency"] = nullptr;
+    telemetry["voltage"] = roundTo(voltage, 1);
+    telemetry["current"] = roundTo(current, 2);
+    telemetry["power"] = roundTo(power, 1);
+    telemetry["cumulativeKwh"] = roundTo(energyKwh, 4);
+    telemetry["powerFactor"] = roundTo(powerFactor, 2);
+    telemetry["frequency"] = roundTo(frequency, 1);
+  }
+  telemetry["voltageWarning"] = voltageWarning;
+
+  connectivity["status"] = status;
+  connectivity["lastUpdatedAt"] = t;
+  connectivity["lastSeenAt"] = pzemOk ? t : (t > 300000 ? t - 300000 : 0);
+  // Network the device is on, shown on the app's device page.
+  connectivity["wifiSsid"] = WiFi.SSID();
+  connectivity["wifiRssi"] = WiFi.RSSI();
+
+  state["reportedRelay"] = relayState;
+  if (lastCommandId.length() > 0) {
+    state["lastCommandId"] = lastCommandId;
+    state["lastCommandAt"] = lastCommandAtMs;
   }
 
   String payload;
   serializeJson(doc, payload);
 
   int code = 0;
-  const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
+  const bool ok = firebasePatch(String("/device_live/") + DEVICE_ID + ".json", payload, code);
   
   if (!ok) {
     return;
@@ -1411,7 +1428,7 @@ void loop() {
 
   if (now - lastRelayPollMs >= RELAY_POLL_MS) {
     lastRelayPollMs = now;
-    pollRelayAndAssignment();
+    pollCommands();
   }
 
   if (now - lastTelemetryPushMs >= TELEMETRY_PUSH_MS) {

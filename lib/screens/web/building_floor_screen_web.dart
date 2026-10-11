@@ -13,6 +13,7 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_commands.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -625,7 +626,10 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
     if (_togglingDevices.contains(deviceId)) return;
     setState(() => _togglingDevices.add(deviceId));
     try {
-      await FirebaseDatabase.instance.ref('devices/$deviceId/relay').set(on);
+      await FirebaseDatabase.instance.ref().update(
+            DeviceCommands.relayUpdate(deviceId, on,
+                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp),
+          );
     } catch (e) {
       if (mounted) TopToast.error(context, 'Could not switch $deviceId: $e');
     } finally {

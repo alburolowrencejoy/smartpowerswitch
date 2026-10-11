@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/device_commands.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -176,9 +177,10 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     if (_togglingDevices.contains(deviceId)) return;
     setState(() => _togglingDevices.add(deviceId));
     try {
-      await FirebaseDatabase.instance
-          .ref('devices/$deviceId/relay')
-          .set(newValue);
+      await FirebaseDatabase.instance.ref().update(
+            DeviceCommands.relayUpdate(deviceId, newValue,
+                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp),
+          );
     } catch (e) {
       if (mounted) {
         TopToast.error(context, 'Could not reach the device. Try again.');
