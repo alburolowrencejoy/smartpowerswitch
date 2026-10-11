@@ -41,19 +41,22 @@ def init_firebase():
 
 
 def fetch_daily_history():
-    ref = db.reference('history/daily')
+    # Written once a minute by the rollupEnergy Cloud Function:
+    # energy_summaries/daily/{YYYY-MM-DD}/campus/{kwh,cost} (Philippine time).
+    ref = db.reference('energy_summaries/daily')
     try:
         data = ref.get()
     except Exception as exc:
         raise RuntimeError(
-            'Could not read history/daily. The service account must belong '
-            'to (or be granted "Firebase Realtime Database Admin" on) the '
-            f'project that owns the database. Original error: {exc}') from exc
+            'Could not read energy_summaries/daily. The service account must '
+            'belong to (or be granted "Firebase Realtime Database Admin" on) '
+            f'the project that owns the database. Original error: {exc}') from exc
     if not isinstance(data, dict):
         return pd.DataFrame()
     rows = []
     for label, v in data.items():
-        kwh = v.get('kwh') or v.get('total_kwh') or 0.0
+        campus = v.get('campus') if isinstance(v, dict) else None
+        kwh = campus.get('kwh', 0.0) if isinstance(campus, dict) else 0.0
         rows.append({'label': label, 'kwh': float(kwh)})
     df = pd.DataFrame(rows)
     df = df.sort_values('label')

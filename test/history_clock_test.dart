@@ -10,11 +10,11 @@ void main() {
   test('uses the real date when nothing is known', () {
     clock.debugSetLatest(null);
     expect(clock.isFallback, isFalse);
-    expect(clock.now().difference(DateTime.now()).inSeconds.abs(), lessThan(2));
+    expect(clock.now().difference(HistoryClock.realNow()).inSeconds.abs(), lessThan(2));
   });
 
   test('uses the real date when the current month has data', () {
-    final today = DateTime.now();
+    final today = HistoryClock.realNow();
     clock.debugSetLatest(DateTime(today.year, today.month, 1));
     expect(clock.isFallback, isFalse);
     expect(clock.now().month, today.month);
@@ -22,7 +22,7 @@ void main() {
   });
 
   test('falls back to the newest recorded day when this month is empty', () {
-    final old = DateTime.now().subtract(const Duration(days: 120));
+    final old = HistoryClock.realNow().subtract(const Duration(days: 120));
     final latest = DateTime(old.year, old.month, old.day);
     clock.debugSetLatest(latest);
     expect(clock.isFallback, isTrue);

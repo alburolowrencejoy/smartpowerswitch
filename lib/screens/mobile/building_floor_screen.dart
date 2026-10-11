@@ -3,6 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/device_live.dart';
+import '../../services/device_commands.dart';
+import '../../services/device_registry.dart';
+import '../../services/energy_history.dart';
+import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
@@ -72,9 +78,9 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
 
   final Map<int, List<String>> _rooms = {};
 
-  /// This floor's devices, keyed by deviceId, straight from
-  /// `buildings/{code}/floorData/{floor}/devices` (fields: utility, status,
-  /// relay, room -- no live telemetry).
+  /// This floor's devices, keyed by deviceId (fields: room, utility, name,
+  /// relay, status), built from the registry (`master_devices`, see
+  /// [DeviceRegistry]) joined with each board's live record.
   Map<String, dynamic> _devices = {};
 
   /// The flat `devices` node (all devices, every building) -- source of
@@ -136,7 +142,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       _liveDevices[deviceId] as Map<String, dynamic>?;
 
   bool _isDeviceOnline(String deviceId) =>
-      isRecentlySeen(_liveFor(deviceId)?['last_seen']);
+      isDeviceOnline(_liveFor(deviceId));
 
   // ── Floor-level summary (handoff §4.4: "Devices / On now / Today kWh") ──
   int get _floorDeviceCount => _devices.length;
@@ -146,10 +152,12 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         return floorDevice['relay'] == true && _isDeviceOnline(e.key);
       }).length;
 
-  double get _floorTodayKwh => _devices.keys.fold<double>(0, (sum, id) {
-        final kwh = (_liveFor(id)?['kwh'] as num?)?.toDouble() ?? 0.0;
-        return sum + kwh;
-      });
+  /// Today's kWh per device (daily summary). Not `devices/{id}/kwh`, which
+  /// is the meter's lifetime total.
+  Map<String, double> _todayDeviceKwh = const {};
+
+  double get _floorTodayKwh => _devices.keys
+      .fold<double>(0, (sum, id) => sum + (_todayDeviceKwh[id] ?? 0.0));
 
   double _roomPowerKw(String room) {
     double totalWatts = 0;
@@ -170,18 +178,12 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     if (_togglingDevices.contains(deviceId)) return;
     setState(() => _togglingDevices.add(deviceId));
     try {
-      final db = FirebaseDatabase.instance.ref();
-      await Future.wait([
-        db.child('devices/$deviceId/relay').set(newValue),
-        db
-            .child(
-                'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId/relay')
-            .set(newValue),
-      ]);
+      await FirebaseDatabase.instance.ref().update(
+            DeviceCommands.relayUpdate(deviceId, newValue,
+                issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown', issuedAt: ServerValue.timestamp),
+          ).timeout(DeviceCommands.sendTimeout);
     } catch (e) {
-      if (mounted) {
-        TopToast.error(context, 'Could not reach the device. Try again.');
-      }
+      if (mounted) TopToast.error(context, DeviceCommands.failureMessage(e));
     } finally {
       if (mounted) setState(() => _togglingDevices.remove(deviceId));
     }
@@ -264,34 +266,20 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     }
 
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
-      FirebaseDatabase.instance
-          .ref(
-              'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices')
-          .onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', HistoryKeys.of(HistoryClock.instance.now()).daily)}/devices')
+          .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
-        // ── floor devices (for this floor's room/device rows) ───────
-        final floorRaw = events[0].snapshot.value;
-        if (floorRaw is Map) {
-          final devices = <String, dynamic>{};
-          floorRaw.forEach((k, v) {
-            if (v is Map) {
-              final device = <String, dynamic>{};
-              v.forEach((dk, dv) => device[dk.toString()] = dv);
-              devices[k.toString()] = device;
-            }
-          });
-          _devices = devices;
-        } else if (_isLoading) {
-          _devices = {};
-        }
-
         // ── flat devices node: live telemetry + online state ───────
-        final devicesRaw = events[1].snapshot.value;
-        if (devicesRaw is Map) {
+        final devicesRaw =
+            DeviceLive.merge(events[1].snapshot.value, events[3].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final liveDevices = <String, dynamic>{};
           devicesRaw.forEach((id, val) {
             if (val is! Map) return;
@@ -301,6 +289,38 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
         } else if (_isLoading) {
           _liveDevices = {};
         }
+
+        // ── this floor's devices (room/device rows), from the registry
+        // joined with live readings; relay is what the board reports ──
+        final masterRaw = events[0].snapshot.value;
+        if (masterRaw is Map) {
+          _devices = {
+            for (final d in DeviceRegistry.inPlace(
+                DeviceRegistry.parse(masterRaw, devicesRaw),
+                building: widget.buildingCode,
+                floor: _selectedFloor))
+              d.id: <String, dynamic>{
+                'room': d.room,
+                'utility': d.utility,
+                if (d.name.isNotEmpty) 'name': d.name,
+                'relay': d.live['relay'] == true,
+                'status': isDeviceOnline(d.live) ? 'online' : 'offline',
+              },
+          };
+        } else if (_isLoading) {
+          _devices = {};
+        }
+
+        // ── today's kWh per device, from the daily summary ─────────
+        final todayRaw = events[2].snapshot.value;
+        final today = <String, double>{};
+        if (todayRaw is Map) {
+          todayRaw.forEach((id, d) {
+            final kwh = d is Map ? d['kwh'] : null;
+            if (kwh is num) today[id.toString()] = kwh.toDouble();
+          });
+        }
+        _todayDeviceKwh = today;
 
         _isLoading = false;
         _errorText = null;
@@ -664,33 +684,19 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     final (utility, deviceId, name) = picked;
 
     try {
-      await FirebaseDatabase.instance
-          .ref(
-              'buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$deviceId')
-          .set({
-        'utility': utility,
-        'status': 'offline',
-        'relay': false,
-        'room': room,
-        if (name.isNotEmpty) 'name': name,
-      });
-      await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-        'building': widget.buildingCode,
-        'floor': '$_selectedFloor',
-        'room': room,
-        'utility': utility,
-        'relay': false,
-        'status': 'offline',
-        'kwh': 0,
-        'voltage': 0,
-        'current': 0,
-        'power': 0,
-        'last_seen': 0,
-        'last_updated': 0,
-      });
-      await FirebaseDatabase.instance
-          .ref('master_devices/$deviceId/assignedTo')
-          .set('${widget.buildingCode}/$_selectedFloor/$room');
+      // One atomic registry write; the board's live readings are left alone
+      // (resetting kwh would look like a meter drop to the energy rollup).
+      await FirebaseDatabase.instance.ref().update(
+            DeviceRegistry.assignmentUpdate(
+              id: deviceId,
+              building: widget.buildingCode,
+              floor: _selectedFloor,
+              room: room,
+              utility: utility,
+              name: name.isNotEmpty ? name : null,
+              updatedAt: ServerValue.timestamp,
+            ),
+          );
 
       if (!mounted) return;
       TopToast.success(
@@ -750,14 +756,7 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
     };
 
     for (final entry in roomDevices) {
-      final id = entry.key;
-      updates['buildings/${widget.buildingCode}/floorData/$_selectedFloor/devices/$id'] =
-          null;
-      updates['master_devices/$id/assignedTo'] = '';
-      updates['devices/$id/building'] = '';
-      updates['devices/$id/floor'] = '';
-      updates['devices/$id/room'] = '';
-      updates['devices/$id/status'] = 'offline';
+      updates.addAll(DeviceRegistry.unassignmentUpdate(entry.key));
     }
 
     final user = FirebaseAuth.instance.currentUser;

@@ -16,7 +16,7 @@ class RateChange {
 /// Which electricity rate applied at a given moment.
 ///
 /// History records store the cost at the rate in force when each reading
-/// was written (`history_writer.js` / `HistoryService`), so saved costs never
+/// was counted (the `rollupEnergy` Cloud Function), so saved costs never
 /// change when the rate does. This is the fallback for records that have no
 /// stored cost: they are priced at the rate of *their own* date, taken from
 /// the `rate_changes` log, never at today's rate -- so a new rate only ever
@@ -54,6 +54,11 @@ class RateTimeline {
 
   /// The rate in force at [t]: the latest change made on or before [t]. For
   /// dates before the first logged change, the rate that change replaced.
+  ///
+  /// After the newest logged change, [current] wins when it differs: the
+  /// log has missed a change (seen live: `settings/electricityRate` was
+  /// ₱13.24 while the log ended at ₱10.35), and the current rate is closer
+  /// to the truth for recent days than a stale logged one.
   double rateAt(DateTime t) {
     if (changes.isEmpty) return current;
     RateChange? last;
@@ -61,7 +66,9 @@ class RateTimeline {
       if (c.at.isAfter(t)) break;
       last = c;
     }
-    if (last != null) return last.rate;
+    if (last != null) {
+      return identical(last, changes.last) ? current : last.rate;
+    }
     return changes.first.previous ?? changes.first.rate;
   }
 
@@ -69,6 +76,16 @@ class RateTimeline {
   /// a change made during the day already counts for that day.
   double rateForDay(DateTime day) =>
       rateAt(DateTime(day.year, day.month, day.day, 23, 59, 59));
+
+  /// The one cost rule for every screen: the [stored] cost when there is
+  /// one (priced at the rate in force when the energy was counted, so later
+  /// rate changes never reprice it); otherwise [kwh] at the rate in force
+  /// on [periodEnd], the last day of the period (never simply today's rate).
+  double costOf(Object? stored, double kwh, DateTime periodEnd) =>
+      stored is num ? stored.toDouble() : kwh * rateForDay(periodEnd);
+
+  /// Last day of [d]'s month, the [costOf] period end for monthly figures.
+  static DateTime monthEnd(DateTime d) => DateTime(d.year, d.month + 1, 0);
 }
 
 /// App-wide live copy of the `rate_changes` log. Read access is limited to

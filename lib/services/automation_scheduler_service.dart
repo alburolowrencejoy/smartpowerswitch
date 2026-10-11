@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
 
+import 'device_commands.dart';
 import 'schedule_windows.dart';
 
 String _dayLabel(DateTime now) {
@@ -197,21 +198,11 @@ class AutomationSchedulerService {
     bool desiredRelay,
   ) async {
     final deviceId = device.key;
-    final deviceData = device.value;
 
     try {
-      await _root.child('devices/$deviceId/relay').set(desiredRelay);
-
-      final building = (deviceData['building'] ?? '').toString().trim();
-      final floor = (deviceData['floor'] ?? '').toString().trim();
-      if (building.isNotEmpty && floor.isNotEmpty) {
-        unawaited(
-          _root
-              .child(
-                  'buildings/$building/floorData/$floor/devices/$deviceId/relay')
-              .set(desiredRelay),
-        );
-      }
+      // A command (device_commands, see DeviceCommands).
+      await _root.update(DeviceCommands.relayUpdate(deviceId, desiredRelay,
+          issuedBy: 'app-scheduler', issuedAt: ServerValue.timestamp));
 
       debugPrint(
         '[AutomationScheduler] $deviceId -> ${desiredRelay ? 'ON' : 'OFF'}',

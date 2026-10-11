@@ -17,11 +17,19 @@ import '../../widgets/app_bottom_sheet.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
-import '../../services/readings_service.dart';
 import '../../utils/last_seen.dart';
+import '../../widgets/command_status_note.dart';
+import '../../services/device_live.dart';
+import '../../services/device_commands.dart';
+import '../../services/device_registry.dart';
+import '../../services/energy_history.dart';
+import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
+import '../../services/rate_timeline.dart';
 import '../../services/home_widget_service.dart';
 import '../../theme/app_fonts.dart';
 import 'automation_screen.dart';
+import '../../widgets/meter_review_banner.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceId;
@@ -52,20 +60,39 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   bool _isOnline = false;
   bool _toggling = false;
   double _ratePhp = 11.5;
-  double _lastValidEnergy = 0.0; // Persists last valid reading
-  double _lastReportedMeterKwh = -1.0; // Track PZEM meter kWh to detect deltas
-  int? _lastRecordedSeen; // Track last telemetry update to avoid duplicates
+  int? _lastRecordedSeen;
+
+  /// Last command sent to this board (`device_commands/{id}`) and the
+  /// board's acknowledgement (`device_live/{id}/state`), for the
+  /// "waiting / didn't confirm" note (see [DeviceCommands.statusOf]).
+  Object? _commandRaw;
+  Object? _liveStateRaw;
+  Timer? _commandTimer;
+
+  CommandStatus get _commandStatus =>
+      DeviceCommands.statusOf(_commandRaw, _liveStateRaw, now: DateTime.now());
+
+  /// Rebuilds once the confirm timeout has passed, so a pending command
+  /// turns into "didn't confirm" even if nothing else changes.
+  void _armCommandTimer() {
+    _commandTimer?.cancel();
+    if (_commandStatus == CommandStatus.pending) {
+      _commandTimer = Timer(const Duration(seconds: 31), () {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+ // Track last telemetry update to avoid duplicates
   DateTime?
       _lastToggleTime; // Track when relay was last toggled to ignore Firebase updates
 
-  // Today's accumulated energy for this device, read live from
-  // `history/daily/{today}/devices/{deviceId}/kwh` (written by
-  // HistoryService whenever a meaningful PZEM delta is recorded) --
-  // deliberately NOT the same number as `_lastValidEnergy` above, which is
-  // the PZEM's lifetime cumulative meter reading. The redesign's "Energy
-  // today" / "Cost today" readings need the daily figure, not lifetime.
+  // Today's energy and stored cost for this device, read live from
+  // `energy_summaries/daily/{today}/devices/{deviceId}` (written by the
+  // server's rollupEnergy function) -- deliberately NOT the device's `kwh`,
+  // which is the PZEM's lifetime cumulative meter reading.
   double _energyTodayKwh = 0.0;
-  late String _todayKey = _dailyKey(DateTime.now());
+  double? _costTodayPhp;
+  late String _todayKey = _dailyKey(HistoryClock.realNow());
 
   // The single automations entry (if any) whose scope is 'device' and whose
   // target is this deviceId -- drives the Schedule row. Null means "no
@@ -127,14 +154,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   // building_floor_screen*.dart, which also key off the building code).
   InstitutePalette get _palette => InstituteColors.forCode(widget.building);
 
-  /// Custom name given when the device was added to its room (stored on the
-  /// room's device entry, which only admins write). Empty = none.
+  /// Custom name given when the device was added to its room (stored in the
+  /// registry, `master_devices/{id}/name`). Empty = none.
   String _customName = '';
 
   Future<void> _loadCustomName() async {
     try {
       final snap = await FirebaseDatabase.instance
-          .ref('buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/name')
+          .ref('master_devices/${widget.deviceId}/name')
           .get();
       final name = (snap.value ?? '').toString().trim();
       if (mounted && name.isNotEmpty) setState(() => _customName = name);
@@ -153,7 +180,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       building: widget.building,
       room: widget.room,
     );
-    _loadPersistedReading();
     _listenAll();
     _loadWeeklyHistory();
   }
@@ -162,6 +188,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   void dispose() {
     _combinedSub?.cancel();
     _loadTimeoutTimer?.cancel();
+    _commandTimer?.cancel();
     super.dispose();
   }
 
@@ -195,22 +222,30 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       });
     });
 
-    _todayKey = _dailyKey(DateTime.now());
+    _todayKey = _dailyKey(HistoryClock.realNow());
 
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices/${widget.deviceId}').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance
-          .ref('history/daily/$_todayKey/devices/${widget.deviceId}/kwh')
+          .ref(
+              '${EnergyHistory.path('daily', _todayKey)}/devices/${widget.deviceId}')
           .onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
+      FirebaseDatabase.instance.ref('device_live/${widget.deviceId}').onValue,
+      FirebaseDatabase.instance
+          .ref('device_commands/${widget.deviceId}')
+          .onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
 
-      final raw = events[0].snapshot.value;
+      // Firmware 2.0+ reports to device_live; merged over the old record.
+      final Object? raw = DeviceLive.mergeOne(
+          events[0].snapshot.value, events[4].snapshot.value);
+      final liveV2 = events[4].snapshot.value;
       final rateRaw = events[1].snapshot.value;
-      final todayKwhRaw = events[2].snapshot.value;
+      final todayRaw = events[2].snapshot.value;
       final automationsRaw = events[3].snapshot.value;
 
       // Precompute the device-side updates exactly as the original
@@ -228,10 +263,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
         final lastSeen = (data['last_seen'] as num?)?.toInt();
 
         if (lastSeen == null || lastSeen != _lastRecordedSeen) {
-          // ✅ Use PZEM meter kWh delta (not calculated from power)
-          // The PZEM module reports cumulative energy since last reset.
-          // We track deltas and write only significant changes to history.
-          final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
+          // Energy history is written only by the server (rollupEnergy);
+          // this screen just displays the live reading.
           final relay = (data['relay'] as bool?) ?? false;
 
           // Don't override relay state if we just toggled it (give ESP32
@@ -239,36 +272,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           final now = DateTime.now();
           final ignoreRelayUpdate = _lastToggleTime != null &&
               now.difference(_lastToggleTime!).inMilliseconds < 3000;
-
-          // Calculate delta from PZEM meter reading
-          double kwhDelta = 0.0;
-          if (_lastReportedMeterKwh >= 0.0) {
-            kwhDelta = meterKwh - _lastReportedMeterKwh;
-            // If meter reset detected (new reading < old), use new reading
-            // as delta.
-            if (kwhDelta < 0.0) {
-              kwhDelta = meterKwh;
-            }
-          }
-
-          // Only record if delta is significant (avoid noise). History
-          // itself is written once, globally, by GlobalReadingsListener --
-          // this screen no longer duplicates that write, which used to
-          // double-count energy/cost for a device whenever its detail
-          // screen happened to be open.
-          if (kwhDelta >= 0.000001) {
-            _lastValidEnergy = meterKwh; // Running total = meter reading
-
-            ReadingsService.recordReading(
-              deviceId: widget.deviceId,
-              building: widget.building,
-              room: widget.room,
-              kwh: _lastValidEnergy,
-              relay: relay,
-            );
-
-            _lastReportedMeterKwh = meterKwh; // Track this meter reading
-          }
 
           parsedDevice = data;
           computedHasPzem = _checkHasPzemReadings(data);
@@ -285,6 +288,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       }
 
       setState(() {
+        _liveStateRaw = liveV2 is Map ? liveV2['state'] : null;
+        _commandRaw = events[5].snapshot.value;
+        _armCommandTimer();
         if (raw is Map) {
           final ssid = (raw['wifi_ssid'] ?? '').toString().trim();
           _wifiSsid = ssid.isEmpty ? null : ssid;
@@ -306,11 +312,11 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           _ratePhp = 11.5;
         }
 
-        if (todayKwhRaw is num) {
-          _energyTodayKwh = todayKwhRaw.toDouble();
-        } else if (_isLoading) {
-          _energyTodayKwh = 0.0;
-        }
+        // Nothing recorded today yet is a real 0, not a loading gap.
+        final todayKwh = todayRaw is Map ? todayRaw['kwh'] : null;
+        final todayCost = todayRaw is Map ? todayRaw['cost'] : null;
+        _energyTodayKwh = todayKwh is num ? todayKwh.toDouble() : 0.0;
+        _costTodayPhp = todayCost is num ? todayCost.toDouble() : null;
 
         if (automationsRaw is Map) {
           _deviceSchedule = parsedSchedule;
@@ -373,28 +379,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return null;
   }
 
-  Future<void> _loadPersistedReading() async {
-    try {
-      final snap = await FirebaseDatabase.instance
-          .ref('readings/${widget.building}/${widget.room}/${widget.deviceId}')
-          .get();
-
-      if (!mounted || snap.value == null || snap.value is! Map) return;
-
-      final data = Map<String, dynamic>.from(snap.value as Map);
-      final cumulative = (data['cumulative_kwh'] as num?)?.toDouble();
-      if (cumulative == null) return;
-
-      setState(() {
-        _lastValidEnergy = cumulative;
-        _lastReportedMeterKwh = cumulative;
-        _hasPzemReadings = true;
-      });
-    } catch (e) {
-      debugPrint('[DeviceDetail] Failed to load persisted reading: $e');
-    }
-  }
-
   // ── Last 7 days (one-shot; see field doc) ────────────────────────────
   Future<void> _loadWeeklyHistory() async {
     setState(() {
@@ -402,12 +386,12 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _weeklyError = null;
     });
     try {
-      final now = DateTime.now();
+      final now = HistoryClock.realNow();
       final keys = List.generate(
           7, (i) => _dailyKey(now.subtract(Duration(days: 6 - i))));
       final snaps = await Future.wait(keys.map((key) => FirebaseDatabase
           .instance
-          .ref('history/daily/$key/devices/${widget.deviceId}/kwh')
+          .ref('${EnergyHistory.path('daily', key)}/devices/${widget.deviceId}/kwh')
           .get()));
       if (!mounted) return;
       setState(() {
@@ -422,12 +406,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     }
   }
 
-  String _dailyKey(DateTime d) => '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
-  String _pad(int n) => n.toString().padLeft(2, '0');
+  String _dailyKey(DateTime d) => HistoryKeys.dailyKey(d.year, d.month, d.day);
 
-  // ── Online check based on last_seen (< 2 minutes = online) ──────────────────
-  bool _checkOnline(Map<String, dynamic> data) =>
-      isRecentlySeen(data['last_seen']);
+  // ── Online check: board reported in the last 2 minutes ─────────────────────
+  bool _checkOnline(Map<String, dynamic> data) => isDeviceOnline(data);
 
   bool _checkHasPzemReadings(Map<String, dynamic> data) {
     final voltage = data['voltage'];
@@ -456,7 +438,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   String _lastSeenText() {
-    final millis = lastSeenMillis(_deviceData['last_seen']);
+    final millis = deviceSeenMillis(_deviceData);
     if (millis == null) return 'never';
     final dt = DateTime.fromMillisecondsSinceEpoch(millis);
     final diff = DateTime.now().difference(dt);
@@ -478,32 +460,21 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       _toggling = true;
     });
 
-    final db = FirebaseDatabase.instance.ref();
     Object? lastError;
     var success = false;
-
-    for (var attempt = 0; attempt < 2 && !success; attempt++) {
-      try {
-        // Update the live device node first so the ESP32 and the relay card
-        // react immediately, then mirror to the building copy in the background.
-        await db
-            .child('devices/${widget.deviceId}/relay')
-            .set(newRelay)
-            .timeout(const Duration(milliseconds: 1200));
-
-        // Best-effort mirror for the building/floor screens.
-        unawaited(db
-            .child(
-                'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}/relay')
-            .set(newRelay));
-
-        success = true;
-      } catch (e) {
-        lastError = e;
-        if (attempt < 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 80));
-        }
-      }
+    try {
+      // A command (device_commands, see DeviceCommands); the board reports
+      // its actual relay separately. Sent once: a retry would issue a
+      // second command while the first may still be on its way.
+      await FirebaseDatabase.instance
+          .ref()
+          .update(DeviceCommands.relayUpdate(widget.deviceId, newRelay,
+              issuedBy: FirebaseAuth.instance.currentUser?.uid ?? 'unknown',
+              issuedAt: ServerValue.timestamp))
+          .timeout(DeviceCommands.sendTimeout);
+      success = true;
+    } catch (e) {
+      lastError = e;
     }
 
     if (!mounted) return;
@@ -517,7 +488,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
 
     if (!success) {
       debugPrint('Relay update failed: $lastError');
-      TopToast.error(context, 'Could not reach the device. Try again.');
+      TopToast.error(context, DeviceCommands.failureMessage(lastError!));
     }
   }
 
@@ -595,13 +566,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final logRef = db.child('deletion_log').push();
 
     final updates = <String, Object?>{
-      'buildings/${widget.building}/floorData/${widget.floor}/devices/${widget.deviceId}':
-          null,
-      'master_devices/${widget.deviceId}/assignedTo': '',
-      'devices/${widget.deviceId}/building': '',
-      'devices/${widget.deviceId}/floor': '',
-      'devices/${widget.deviceId}/room': '',
-      'devices/${widget.deviceId}/status': 'offline',
+      ...DeviceRegistry.unassignmentUpdate(widget.deviceId),
       'deletion_log/${logRef.key}': {
         'type': 'device',
         'deviceId': widget.deviceId,
@@ -790,6 +755,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               style: AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
         ],
       ),
+      CommandStatusNote(status: _commandStatus),
+      MeterReviewBanner(deviceId: widget.deviceId, canResolve: _canControl),
       if (!_canControl) ...[
         const SizedBox(height: 6),
         Text('Only admins can control this device',
@@ -840,7 +807,13 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     final power = _safeFormatPzem(_deviceData['power'], 1);
     final powerFactor = _safeFormatPzem(_deviceData['powerFactor'], 2);
     final energyToday = _energyTodayKwh.toStringAsFixed(2);
-    final costToday = (_energyTodayKwh * _ratePhp).toStringAsFixed(2);
+    // The cost stored when the energy was counted (rate of that moment);
+    // today's rate is only a fallback while nothing is stored yet.
+    final costToday =
+        RateHistory.instance
+            .timeline(_ratePhp)
+            .costOf(_costTodayPhp, _energyTodayKwh, HistoryClock.realNow())
+            .toStringAsFixed(2);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1184,14 +1157,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     if (confirmed == true) await _setWifiReset(true);
   }
 
-  /// Sets (or cancels) `devices/<id>/wifiReset`. The ESP32 picks it up on
+  /// Sets (or cancels) the Wi-Fi reset command. The ESP32 picks it up on
   /// its next poll, clears it, erases its saved WiFi and reboots into setup.
   Future<void> _setWifiReset(bool reset) async {
     setState(() => _wifiBusy = true);
     try {
       await FirebaseDatabase.instance
-          .ref('devices/${widget.deviceId}/wifiReset')
-          .set(reset ? true : null);
+          .ref()
+          .update(DeviceCommands.wifiResetUpdate(widget.deviceId, reset));
       if (!mounted) return;
       TopToast.success(context,
           reset ? 'Disconnect sent to the device' : 'Disconnect cancelled');

@@ -29,7 +29,11 @@ import '../shared/campus_map_screen.dart';
 import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_live.dart';
+import '../../services/device_registry.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
 import '../../services/notification_seen.dart';
 import '../../services/rate_timeline.dart';
 import '../../widgets/history_fallback_notice.dart';
@@ -51,12 +55,10 @@ class _BuildingDeleteImpact {
 }
 
 /// One room's live load, grouped from the flat `devices` node's `room`
-/// field (see `_listenInstituteScoped`). [kwh] is today's live figure, not
-/// a "this month" total -- there is no per-room node under `history/` to
-/// read a real monthly figure from (only per-device and per-building sums
-/// are written, see `history_service.dart`), so the Home tab's "Room load"
-/// section is honestly labelled "Today" here rather than showing a
-/// fabricated monthly number.
+/// field (see `_listenInstituteScoped`). [kwh] is today's recorded energy
+/// (each device's figure from today's daily summary), not a "this month"
+/// total -- the summaries are kept per device and per building, not per
+/// room, so the Home tab's "Room load" section is labelled "Today".
 class _RoomLoad {
   const _RoomLoad({
     required this.name,
@@ -397,8 +399,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref('history').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardDays)
+          .onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('weekly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardWeeks)
+          .onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('monthly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardMonths)
+          .onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('hourly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardHours)
+          .onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -458,43 +480,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _buildingDeviceCounts = {};
         }
 
-        // ── devices (today's energy totals + per-building signals) ─
-        final devicesRaw = events[2].snapshot.value;
-        if (devicesRaw is Map) {
+        // ── devices (per-building online/on signals). Energy comes from
+        // the daily summary below: `devices/{id}/kwh` is a lifetime meter
+        // total, not today's use. ─────────────────────────────────────
+        final devicesRaw =
+            DeviceLive.merge(events[2].snapshot.value, events[6].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final data = Map<String, dynamic>.from(devicesRaw);
-          double totalKwh = 0;
           int onlineCount = 0;
-          Map<String, double> buildingTodayKwh = {};
           Map<String, int> buildingOnline = {};
           Map<String, int> buildingOffline = {};
           Map<String, int> buildingOnCounts = {};
+          final registry = events[1].snapshot.value;
           data.forEach((id, val) {
-            if (val is! Map) return;
-            final device = Map<String, dynamic>.from(val);
-            final kwhValue = device['kwh'];
-            final kwh = kwhValue is num
-                ? kwhValue.toDouble()
-                : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
-
-            totalKwh += kwh;
-
-            final building = (device['building'] ?? '').toString();
-            final lastSeen = device['last_seen'];
-            bool isOnline = false;
-            if (lastSeen != null && lastSeen != 0) {
-              final ms = lastSeen is num
-                  ? lastSeen.toInt()
-                  : int.tryParse(lastSeen.toString()) ?? 0;
-              if (ms > 0) {
-                final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-                isOnline = DateTime.now().difference(dt).inMinutes < 2;
-              }
+            if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) {
+              return;
             }
+            final device = Map<String, dynamic>.from(val);
+            final building = (device['building'] ?? '').toString();
+            final isOnline = isDeviceOnline(device);
             if (isOnline) onlineCount++;
 
             if (building.isNotEmpty) {
-              buildingTodayKwh[building] =
-                  (buildingTodayKwh[building] ?? 0) + kwh;
               if (isOnline) {
                 buildingOnline[building] = (buildingOnline[building] ?? 0) + 1;
               } else {
@@ -507,16 +514,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }
             }
           });
-          _totalKwh = totalKwh;
           _onlineDevicesCount = onlineCount;
-          _buildingTodayKwh = buildingTodayKwh;
           _buildingOnlineCounts = buildingOnline;
           _buildingOfflineCounts = buildingOffline;
           _buildingOnCounts = buildingOnCounts;
         } else if (_isLoading) {
-          _totalKwh = 0;
           _onlineDevicesCount = 0;
-          _buildingTodayKwh = {};
           _buildingOnlineCounts = {};
           _buildingOfflineCounts = {};
           _buildingOnCounts = {};
@@ -530,18 +533,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _electricityRate = 11.5;
         }
 
-        // ── history (monthly totals + per-building energy) ───────
-        final historyRaw = events[4].snapshot.value;
-        if (historyRaw is Map) {
-          _historyRoot = Map<String, dynamic>.from(historyRaw);
-          _buildingEnergy = _currentMonthBuildingEnergy(_historyRoot);
-          _updateMonthlyTotals(_historyRoot);
-        } else if (_isLoading) {
-          _historyRoot = {};
-          _buildingEnergy = {};
-          _monthlyKwh = 0;
-          _monthlyCostPhp = 0;
-        }
+        // ── history: today, this month and per-building energy ────
+        // Nothing recorded yet (null) is real "0 kWh", so it is applied
+        // too, not only while loading.
+        final historyRaw = {
+          'daily': events[4].snapshot.value,
+          'weekly': events[7].snapshot.value,
+          'monthly': events[8].snapshot.value,
+          'hourly': events[9].snapshot.value,
+        };
+        _historyRoot = EnergyHistory.legacyRoot(historyRaw);
+        _buildingEnergy = _currentMonthBuildingEnergy(_historyRoot);
+        _updateMonthlyTotals(_historyRoot);
+        _applyToday();
 
         // ── automations (institute admin "Schedules" KPI only) ─────
         final automationsRaw = events[5].snapshot.value;
@@ -602,48 +606,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ── Institute-scoped combined listener (institute_admin only) ─────────
   // Mirrors the exact field-filtering pattern already proven in
   // building_floor_screen.dart (`_listenAll` there): `devices` filtered by
-  // `building == _institute` for today's kWh + online count, `master_devices`
-  // filtered by `assignedTo` starting with `"$code/"` for the assigned
-  // count, and `history/monthly/{monthKey}/buildings/{code}/kwh` for this
-  // month's institute energy. Every number here is scoped to `_institute`
-  // only -- never falls back to the system-wide totals used elsewhere on
-  // this screen.
+  // `building == _institute` for the online count and room grouping, today's
+  // daily summary for today's kWh (per device, summed per room),
+  // `master_devices` filtered by `assignedTo` starting with `"$code/"` for
+  // the assigned count, and the monthly summary's
+  // `buildings/{code}/kwh` for this month's institute energy. Every number
+  // here is scoped to `_institute` only -- never falls back to the
+  // system-wide totals used elsewhere on this screen.
   void _listenInstituteScoped() {
     final code = _institute;
     if (code == null || code.isEmpty) return;
 
     _instituteSub?.cancel();
-    final monthKey = _monthKey(HistoryClock.instance.now());
+    final keys = HistoryKeys.of(HistoryClock.instance.now());
     _instituteSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings/$code/kwh')
+          .ref('${EnergyHistory.path('monthly', keys.monthly)}/buildings/$code/kwh')
           .onValue,
+      FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', keys.daily)}/devices')
+          .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
+        // Today's kWh per device, from the daily summary (`devices/{id}/kwh`
+        // is the meter's lifetime total, not today's use).
+        final todayRaw = events[3].snapshot.value;
+        final todayKwh = <String, double>{};
+        if (todayRaw is Map) {
+          todayRaw.forEach((id, d) {
+            final v = d is Map ? d['kwh'] : null;
+            if (v is num) todayKwh['$id'] = v.toDouble();
+          });
+        }
+
         // ── devices: today's institute kWh + online count + per-room
         // grouping for the Home tab's "Room load" section (handoff §5) --
-        // grouped by whichever room each live device reports, so it's real
-        // data with no extra Firebase reads (there is no per-room history
-        // node to read a true "this month" figure from; see `_RoomLoad`
-        // doc for why this is today's live kWh, not a monthly total). ────
-        final devicesRaw = events[0].snapshot.value;
-        if (devicesRaw is Map) {
+        // grouped by whichever room each live device reports, with each
+        // device's energy from today's summary. ─────────────────────────
+        final devicesRaw =
+            DeviceLive.merge(events[0].snapshot.value, events[4].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final data = Map<String, dynamic>.from(devicesRaw);
           double kwh = 0;
           int online = 0;
           final rooms = <String, _RoomLoad>{};
+          final registry = events[1].snapshot.value;
           data.forEach((id, val) {
-            if (val is! Map) return;
+            if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) {
+              return;
+            }
             final device = Map<String, dynamic>.from(val);
             final building = (device['building'] ?? '').toString();
             if (building != code) return;
-            final deviceKwh = ((device['kwh'] ?? 0.0) as num).toDouble();
+            final deviceKwh = todayKwh[id] ?? 0.0;
             kwh += deviceKwh;
 
-            if (isRecentlySeen(device['last_seen'])) online++;
+            if (isDeviceOnline(device)) online++;
 
             final room = (device['room'] ?? '').toString();
             if (room.isNotEmpty) {
@@ -749,54 +771,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final totalCost = monthMap['total_cost'];
 
       _monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
-      // The recorded cost: each reading was priced at the rate in force when
-      // it was saved, so changing the rate never reprices past usage. Only a
-      // month with no stored cost falls back to kWh x the current rate.
-      _monthlyCostPhp = (totalCost is num)
-          ? totalCost.toDouble()
-          : _monthlyKwh * _electricityRate;
+      // The one cost rule (RateTimeline.costOf): the stored cost, else kWh
+      // at the rate in force at the end of the month.
+      _monthlyCostPhp = _rates.costOf(totalCost, _monthlyKwh,
+          RateTimeline.monthEnd(HistoryClock.instance.now()));
     } catch (e) {
       _monthlyKwh = 0;
       _monthlyCostPhp = 0;
     }
   }
 
-  DateTime? _analyticsRawTimestamp(
-      Map<String, dynamic> entry, String fallbackKey) {
-    final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
-    if (rawTs is num) {
-      return DateTime.fromMillisecondsSinceEpoch(rawTs.toInt());
+  /// Today's campus and per-building kWh, from the daily summary.
+  void _applyToday() {
+    final today = _dailyNode(HistoryClock.instance.now());
+    final total = today?['total_kwh'];
+    _totalKwh = total is num ? total.toDouble() : 0.0;
+    final buildings = <String, double>{};
+    final b = today?['buildings'];
+    if (b is Map) {
+      b.forEach((code, node) {
+        final kwh = node is Map ? node['kwh'] : null;
+        if (kwh is num) buildings['$code'] = kwh.toDouble();
+      });
     }
-    if (rawTs is String) {
-      final asInt = int.tryParse(rawTs);
-      if (asInt != null) {
-        return DateTime.fromMillisecondsSinceEpoch(asInt);
-      }
-      return DateTime.tryParse(rawTs);
-    }
-
-    final prefix = fallbackKey.contains('_')
-        ? fallbackKey.substring(0, fallbackKey.indexOf('_'))
-        : fallbackKey;
-    final keyTs = int.tryParse(prefix);
-    if (keyTs != null) {
-      return DateTime.fromMillisecondsSinceEpoch(keyTs);
-    }
-    return null;
-  }
-
-  double _asDouble(dynamic value) {
-    if (value is num) return value.toDouble();
-    if (value is String) return double.tryParse(value) ?? 0.0;
-    return 0.0;
-  }
-
-  int _isoWeek(DateTime date) {
-    final startOfYear = DateTime(date.year, 1, 1);
-    final firstMonday = startOfYear.weekday;
-    final dayOfYear = date.difference(startOfYear).inDays + 1;
-    final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
-    return weekNumber < 1 ? 1 : weekNumber;
+    _buildingTodayKwh = buildings;
   }
 
   String _safeFormatDouble(dynamic value, int decimals) {
@@ -809,7 +807,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return '0.${'0' * decimals}';
   }
 
-  String _pad(int value) => value.toString().padLeft(2, '0');
 
   String _monthKey(DateTime date) =>
       '${date.year}-${date.month.toString().padLeft(2, '0')}';
@@ -852,8 +849,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
 
-  String _dailyKeyFor(DateTime d) =>
-      '${d.year}-${_pad(d.month)}-${_pad(d.day)}';
+  String _dailyKeyFor(DateTime d) => HistoryKeys.dailyKey(d.year, d.month, d.day);
 
   /// "Thursday, Sep 24" -- the real device date, never the preview's
   /// hardcoded sample date.
@@ -933,45 +929,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (buildings is! Map) return null;
     final b = buildings[code];
     if (b is! Map) return null;
-    final cost = b['cost'];
-    if (cost is num) return cost.toDouble();
     final kwh = b['kwh'];
-    if (kwh is num) {
-      // No stored cost: price it at the rate in force at the end of that
-      // month, not today's rate.
-      final monthEnd = DateTime(d.year, d.month + 1, 0);
-      return kwh.toDouble() *
-          RateHistory.instance.timeline(_electricityRate).rateForDay(monthEnd);
-    }
-    return null;
+    if (b['cost'] is! num && kwh is! num) return null;
+    return _rates.costOf(
+        b['cost'], kwh is num ? kwh.toDouble() : 0.0, RateTimeline.monthEnd(d));
   }
 
-  String _weeklyKeyForDate(DateTime d) => '${d.year}-W${_pad(_isoWeek(d))}';
+  /// Past rates, for [RateTimeline.costOf] (the one cost rule).
+  RateTimeline get _rates => RateHistory.instance.timeline(_electricityRate);
 
-  /// Attempts to bucket today's `history/raw` entries (if any exist) by
-  /// hour of day, to find the busiest hour so far -- there is no dedicated
-  /// hourly-history node in this app's Firebase schema (see
-  /// `history_service.dart`: only daily/weekly/monthly/yearly totals are
-  /// ever written), so this degrades to `null` ("no data yet") rather than
-  /// inventing a figure when `history/raw` is empty, which is the normal
-  /// case today.
+  String _weeklyKeyForDate(DateTime d) =>
+      HistoryKeys.isoWeekKey(d.year, d.month, d.day);
+
+  /// The busiest hour so far today, from the hourly summaries
+  /// (`energy_summaries/hourly/{YYYY-MM-DD-HH}`), campus-wide or for one
+  /// building. Null ("no data yet") when nothing was recorded today.
   String? _peakHourLabel({String? buildingCode}) {
-    final raw = _historyRoot['raw'];
-    if (raw is! Map) return null;
+    final hours = _historyRoot['hourly'];
+    if (hours is! Map) return null;
     final now = HistoryClock.instance.now();
-    final startOfDay = DateTime(now.year, now.month, now.day);
+    final todayPrefix = '${_dailyKeyFor(now)}-';
     final hourly = List<double>.filled(24, 0);
     bool any = false;
-    raw.forEach((key, val) {
-      if (val is! Map) return;
-      final entry = Map<String, dynamic>.from(val);
-      if (buildingCode != null &&
-          (entry['building'] ?? '').toString() != buildingCode) {
-        return;
+    hours.forEach((key, node) {
+      final k = key.toString();
+      if (!k.startsWith(todayPrefix) || node is! Map) return;
+      final hour = int.tryParse(k.substring(todayPrefix.length));
+      if (hour == null || hour < 0 || hour > 23) return;
+      Object? kwh;
+      if (buildingCode == null) {
+        kwh = node['total_kwh'];
+      } else {
+        final b = node['buildings'];
+        final bn = b is Map ? b[buildingCode] : null;
+        kwh = bn is Map ? bn['kwh'] : null;
       }
-      final ts = _analyticsRawTimestamp(entry, key.toString());
-      if (ts == null || ts.isBefore(startOfDay) || ts.isAfter(now)) return;
-      hourly[ts.hour] += _asDouble(entry['kwh']);
+      if (kwh is! num) return;
+      hourly[hour] += kwh.toDouble();
       any = true;
     });
     if (!any) return null;
@@ -1183,33 +1177,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// delete would touch, for the delete dialog's impact list (handoff §7.2
   /// "adapt the actual counts to the real building's data").
   Future<_BuildingDeleteImpact> _loadBuildingDeleteImpact(String code) async {
-    final assignedDeviceIds = <String>{};
-
-    final devicesSnap = await FirebaseDatabase.instance.ref('devices').get();
-    if (devicesSnap.value is Map) {
-      final devices = Map<String, dynamic>.from(devicesSnap.value as Map);
-      devices.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        if ((device['building'] ?? '').toString() == code) {
-          assignedDeviceIds.add(id.toString());
-        }
-      });
-    }
-
+    // Devices assigned to this building, from the registry (the one list).
     final masterSnap =
         await FirebaseDatabase.instance.ref('master_devices').get();
-    if (masterSnap.value is Map) {
-      final masters = Map<String, dynamic>.from(masterSnap.value as Map);
-      masters.forEach((id, val) {
-        if (val is! Map) return;
-        final master = Map<String, dynamic>.from(val);
-        final assignedTo = (master['assignedTo'] ?? '').toString();
-        if (assignedTo.startsWith('$code/')) {
-          assignedDeviceIds.add(id.toString());
-        }
-      });
-    }
+    final assignedDeviceIds = {
+      for (final d in DeviceRegistry.inPlace(
+          DeviceRegistry.parse(masterSnap.value, null),
+          building: code))
+        d.id,
+    };
 
     var roomCount = 0;
     var floorCount = 0;
@@ -1302,11 +1278,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'hotspots/$code': null,
         };
         for (final deviceId in impact!.assignedDeviceIds) {
-          updates['master_devices/$deviceId/assignedTo'] = '';
-          updates['devices/$deviceId/building'] = '';
-          updates['devices/$deviceId/floor'] = '';
-          updates['devices/$deviceId/room'] = '';
-          updates['devices/$deviceId/status'] = 'offline';
+          updates.addAll(DeviceRegistry.unassignmentUpdate(deviceId));
         }
         final logRef = FirebaseDatabase.instance.ref('deletion_log').push();
         updates['deletion_log/${logRef.key}'] = {
@@ -1733,7 +1705,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final weekKwh = _weeklyBuildingKwh(now, code);
     final roomCount = _instituteRooms.length;
     final monthCost = _monthlyBuildingCost(now, code) ??
-        _instituteMonthlyKwh * _electricityRate;
+        _rates.costOf(null, _instituteMonthlyKwh, RateTimeline.monthEnd(now));
 
     return Container(
       width: double.infinity,
@@ -1828,7 +1800,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final lastMonth = DateTime(now.year, now.month - 1, 1);
     final lastMonthCost = _monthlyBuildingCost(lastMonth, code);
     final monthCost = _monthlyBuildingCost(now, code) ??
-        _instituteMonthlyKwh * _electricityRate;
+        _rates.costOf(null, _instituteMonthlyKwh, RateTimeline.monthEnd(now));
     double? costDeltaPct;
     if (lastMonthCost != null && lastMonthCost > 0) {
       costDeltaPct = ((monthCost - lastMonthCost) / lastMonthCost) * 100;

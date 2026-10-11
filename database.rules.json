@@ -2,97 +2,328 @@
   "rules": {
     ".read": false,
     ".write": false,
-
     "users": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".read": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
       "$uid": {
-        ".read": "auth != null && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || (auth.uid === $uid && (data.child('role').val() === 'faculty' || data.child('role').val() === 'admin' || data.child('role').val() === 'main_admin' || data.child('role').val() === 'super_admin' || data.child('role').val() === 'institute_admin' || data.child('isMainAdmin').val() === true)))",
-        ".write": "auth != null && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || (auth.uid === $uid && ((!data.exists() && newData.child('role').val() === 'faculty') || (data.exists() && newData.child('role').val() === data.child('role').val() && newData.child('isMainAdmin').val() === data.child('isMainAdmin').val() && newData.child('institute').val() === data.child('institute').val() && newData.child('coAdmin').val() === data.child('coAdmin').val()))))"
+        ".read": "((auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))) || ((auth != null) && (auth.uid === $uid))",
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && (auth.uid !== $uid) && (!data.exists() || data.child('institute').val() === root.child('users').child(auth.uid).child('institute').val()) && ((!newData.exists()) || ((newData.child('institute').val() === root.child('users').child(auth.uid).child('institute').val()) && (newData.child('role').val() === 'faculty' || newData.child('role').val() === 'institute_admin') && (newData.child('isMainAdmin').val() !== true)))) || ((auth != null) && (auth.uid === $uid) && (!data.exists()) && (auth.token.email.endsWith('@dnsc.edu.ph')) && (newData.child('role').val() === 'faculty') && (!newData.child('isMainAdmin').exists()) && (!newData.child('coAdmin').exists())) || ((auth != null) && (auth.uid === $uid) && (data.exists()) && (newData.exists()) && (newData.child('role').val() === data.child('role').val()) && (newData.child('isMainAdmin').val() === data.child('isMainAdmin').val()) && (newData.child('institute').val() === data.child('institute').val()) && (newData.child('coAdmin').val() === data.child('coAdmin').val()))"
       }
     },
-
     "settings": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))",
       "electricityRate": {
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
         ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() < 100"
       },
-      "lastRateUpdate": {
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+      "updateNotifications": {
+        ".write": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))"
       },
-      "rateProposal": {
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
-      },
-      "$other": {
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+      "appMode": {
+        ".write": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))"
       }
     },
-
     "buildings": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
-    },
-
-    "devices": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      "$deviceId": {
-        ".read": "(auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')) || (auth == null && root.child('master_devices').child($deviceId).exists())",
-        ".write": "(auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')) || (auth == null && root.child('master_devices').child($deviceId).exists() && newData.child('building').val() == data.child('building').val() && newData.child('floor').val() == data.child('floor').val() && newData.child('room').val() == data.child('room').val() && newData.child('utility').val() == data.child('utility').val())"
-      }
-    },
-
-    "master_devices": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      "$deviceId": {
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-        "writeKey": {
-          ".read": false,
-          ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$code": {
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ($code === root.child('users').child(auth.uid).child('institute').val()))",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length <= 80"
+        },
+        "floors": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 50"
+        },
+        "floorData": {
+          "$floor": {
+            "rooms": {
+              "$i": {
+                ".validate": "newData.isString() && newData.val().length <= 60"
+              }
+            }
+          }
         }
       }
     },
-
-    "history": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
-    },
-
     "hotspots": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$code": {
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ($code === root.child('users').child(auth.uid).child('institute').val()))"
+      }
     },
-
-    "notifications": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".indexOn": ["timestamp"]
+    "master_devices": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$deviceId": {
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((!data.exists()) || (data.child('assignedTo').val() === '') || ((data.child('assignedTo').isString() && data.child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))) && ((!newData.exists()) || (newData.child('assignedTo').val() === '') || ((newData.child('assignedTo').isString() && newData.child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))",
+        "assignedTo": {
+          ".validate": "newData.isString() && newData.val().length <= 120"
+        },
+        "source": {
+          ".validate": "newData.val() === 'real_iot'"
+        },
+        "writeKey": {
+          ".read": false
+        }
+      }
     },
-
-    "rate_changes": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".indexOn": ["timestamp"]
+    "devices": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$deviceId": {
+        ".read": "((auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))) || ((auth == null) && (root.child('master_devices').child($deviceId).exists()))",
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))) || ((newData.parent().parent().child('master_devices').child($deviceId).child('assignedTo').isString() && newData.parent().parent().child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))) || (newData.parent().parent().child('master_devices').child($deviceId).child('assignedTo').val() === ''))) || (((auth == null) && (root.child('master_devices').child($deviceId).exists())) && (newData.child('building').val() == data.child('building').val()) && (newData.child('floor').val() == data.child('floor').val()) && (newData.child('room').val() == data.child('room').val()) && (newData.child('utility').val() == data.child('utility').val()))",
+        "kwh": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000)"
+        },
+        "voltage": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 300)"
+        },
+        "current": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100)"
+        },
+        "power": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 26000)"
+        },
+        "powerFactor": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1)"
+        },
+        "frequency": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 70)"
+        },
+        "relay": {
+          ".validate": "newData.isBoolean()"
+        },
+        "last_seen": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+        },
+        "last_updated": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+        },
+        "status": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 20)"
+        },
+        "wifi_ssid": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 64)"
+        },
+        "wifi_rssi": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -200 && newData.val() <= 0)"
+        },
+        "voltage_warning": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 40)"
+        }
+      }
     },
-
-    "deletion_log": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".indexOn": ["timestamp"]
+    "device_live": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$deviceId": {
+        ".read": "((auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))) || ((auth == null) && (root.child('master_devices').child($deviceId).exists()))",
+        ".write": "(auth == null) && (root.child('master_devices').child($deviceId).exists())",
+        "telemetry": {
+          "cumulativeKwh": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000)"
+          },
+          "voltage": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 300)"
+          },
+          "current": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100)"
+          },
+          "power": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 26000)"
+          },
+          "powerFactor": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1)"
+          },
+          "frequency": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 70)"
+          },
+          "voltageWarning": {
+            ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 40)"
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
+        "connectivity": {
+          "status": {
+            ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 20)"
+          },
+          "lastSeenAt": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+          },
+          "lastUpdatedAt": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+          },
+          "wifiSsid": {
+            ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 64)"
+          },
+          "wifiRssi": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -200 && newData.val() <= 0)"
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
+        "state": {
+          "reportedRelay": {
+            ".validate": "newData.isBoolean()"
+          },
+          "lastCommandId": {
+            ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 64)"
+          },
+          "lastCommandAt": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
     },
-
-    "automations": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('role').val() === 'faculty' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+    "device_commands": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$deviceId": {
+        ".read": "((auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))) || ((auth == null) && (root.child('master_devices').child($deviceId).exists()))",
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && (((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))) || ((newData.parent().parent().child('master_devices').child($deviceId).child('assignedTo').isString() && newData.parent().parent().child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))",
+        "desiredRelay": {
+          ".validate": "newData.isBoolean()"
+        },
+        "commandId": {
+          ".validate": "newData.isString() && newData.val().length <= 64"
+        },
+        "issuedAt": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 9999999999999)"
+        },
+        "issuedBy": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 128)"
+        },
+        "wifiReset": {
+          ".write": "((auth == null) && (root.child('master_devices').child($deviceId).exists())) && (!newData.exists())",
+          ".validate": "newData.isBoolean()"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
     },
-
-    "davao_light": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
+    "history": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
       ".write": false
     },
-
+    "energy_summaries": {
+      ".write": false,
+      "$range": {
+        ".read": "((auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))) && (query.orderByKey) && ((query.limitToLast != null && query.limitToLast <= 1100) || (query.limitToFirst != null && query.limitToFirst <= 1100) || (query.startAt != null && query.endAt != null))",
+        "$key": {
+          ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))"
+        }
+      }
+    },
+    "notifications": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))",
+      ".indexOn": [
+        "timestamp"
+      ],
+      "$id": {
+        ".write": "(((auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))) && (!data.exists()) && (newData.child('type').val() === 'app_update')) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && (!newData.exists()) && (data.child('building').val() === root.child('users').child(auth.uid).child('institute').val()))"
+      }
+    },
+    "rate_changes": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))",
+      ".indexOn": [
+        "timestamp"
+      ]
+    },
+    "deletion_log": {
+      ".read": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
+      ".indexOn": [
+        "timestamp"
+      ],
+      "$id": {
+        ".write": "((auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))) && (!data.exists())"
+      }
+    },
+    "automations": {
+      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
+      "$id": {
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((!data.exists()) || ((data.child('scope').val() === 'building') && (data.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((data.child('scope').val() === 'device') && ((data.child('target').isString()) && ((root.child('master_devices').child(data.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(data.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))) && ((!newData.exists()) || ((newData.child('scope').val() === 'building') && (newData.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((newData.child('scope').val() === 'device') && ((newData.child('target').isString()) && ((root.child('master_devices').child(newData.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(newData.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))))",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length <= 80"
+        },
+        "scope": {
+          ".validate": "newData.val() === 'global' || newData.val() === 'building' || newData.val() === 'utility' || newData.val() === 'device'"
+        },
+        "target": {
+          ".validate": "newData.isString() && newData.val().length <= 64"
+        },
+        "utility": {
+          ".validate": "newData.isString() && newData.val().length <= 40"
+        },
+        "onTime": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "offTime": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "time": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "action": {
+          ".validate": "newData.val() === 'on' || newData.val() === 'off'"
+        },
+        "enabled": {
+          ".validate": "newData.isBoolean()"
+        },
+        "scheduleMode": {
+          ".validate": "newData.val() === 'weekly' || newData.val() === 'calendar'"
+        },
+        "startDate": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        },
+        "endDate": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        },
+        "days": {
+          "$i": {
+            ".validate": "newData.val() === 'Mon' || newData.val() === 'Tue' || newData.val() === 'Wed' || newData.val() === 'Thu' || newData.val() === 'Fri' || newData.val() === 'Sat' || newData.val() === 'Sun'"
+          }
+        },
+        "windows": {
+          "$i": {
+            "on": {
+              ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+            },
+            "until": {
+              ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
+    "davao_light": {
+      ".read": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
+      ".write": false
+    },
     "meta": {
-      ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')",
-      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('role').val() === 'institute_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph')"
+      ".read": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
+      ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))"
+    },
+    "meterState": {
+      "$deviceId": {
+        ".read": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))))",
+        "resolve": {
+          ".write": "(((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((root.child('master_devices').child($deviceId).child('assignedTo').isString() && root.child('master_devices').child($deviceId).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/'))))) && (newData.exists()) && (data.parent().child('flag').child('frozen').val() === true)",
+          ".validate": "newData.val() === 'accept' || newData.val() === 'rebaseline'"
+        }
+      }
     }
   }
 }

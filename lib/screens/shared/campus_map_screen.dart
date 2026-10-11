@@ -10,6 +10,8 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/device_live.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_segmented_control.dart';
@@ -17,6 +19,7 @@ import '../../widgets/app_top_bar.dart';
 import '../../widgets/outline_icon_box.dart';
 import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
+import '../../utils/last_seen.dart';
 
 /// The mobile "Devices → Map" screen (handoff §4.3/§5/§8), reusing the exact
 /// Firebase data model and Approximate/Precise logic already proven by
@@ -330,16 +333,18 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance
-          .ref('history/monthly/$monthKey/buildings')
+          .ref('${EnergyHistory.path('monthly', monthKey)}/buildings')
           .onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('hotspots').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
         _applyBuildings(events[2].snapshot.value);
-        _applyDevices(events[0].snapshot.value);
+        _applyDevices(
+            DeviceLive.merge(events[0].snapshot.value, events[4].snapshot.value));
         _applyHistory(events[1].snapshot.value);
         _applyZones(events[3].snapshot.value);
         _isLoading = false;
@@ -387,7 +392,6 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       if (_isLoading) _devices = [];
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
     final data = Map<String, dynamic>.from(raw);
     final list = <_MapDevice>[];
     data.forEach((id, val) {
@@ -395,9 +399,8 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
       final d = Map<String, dynamic>.from(val);
       final building = (d['building'] ?? '').toString();
       if (building.isEmpty) return;
-      final lastSeen = _num(d['last_seen']);
-      final online = lastSeen > 0
-          ? now - lastSeen < 2 * 60 * 1000
+      final online = deviceSeenMillis(d) != null
+          ? isDeviceOnline(d)
           : (d['status'] ?? '') == 'online';
       list.add(_MapDevice(
         id: id.toString(),

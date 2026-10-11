@@ -1,8 +1,17 @@
 /*
   SmartPowerSwitch ESP32 Firmware (ID-only registration flow)
-  VERSION: 1.3.3  (2026-10-10)
+  VERSION: 2.0.0  (2026-10-11)
 
   CHANGELOG
+  2.0.0  Commands and live readings are separate (master plan Phase 5):
+         reads commands from /device_commands/<ID> (desiredRelay, commandId,
+         wifiReset) and reports to /device_live/<ID> (telemetry,
+         connectivity, state.reportedRelay + state.lastCommandId as the
+         acknowledgement). No longer reads or writes /devices/<ID>, runs
+         schedules itself (the server does) or mirrors the relay under
+         /buildings. Needs the Phase 5 database rules.
+         Also removed: the history/raw write and electricity-rate read after
+         each push (the server computes history and cost).
   1.3.3  Reports the connected WiFi network (wifi_ssid, wifi_rssi) so the app
          can show it on the device page and disconnect it from there.
   1.3.2  Setup page moved to portal_html.h (fixes page not responding to taps:
@@ -26,9 +35,10 @@
        retrying the saved network in the background.
      - Hold BOOT (GPIO 0) for 5 s: erases saved WiFi and reboots into setup.
   2) Reads PZEM-004T V4.0 values (voltage/current/power/energy)
-  3) Polls Firebase relay command from: /devices/<DEVICE_ID>/relay
+  3) Polls its commands from: /device_commands/<DEVICE_ID>
   4) Controls an SSR output pin
-  5) Pushes telemetry to: /devices/<DEVICE_ID>
+  5) Pushes readings to: /device_live/<DEVICE_ID>
+     (telemetry, connectivity, state incl. the last command it carried out)
 
   Required Arduino libraries:
   - ArduinoJson (by Benoit Blanchon)
@@ -46,8 +56,9 @@
 
   IMPORTANT:
   - Register DEVICE_ID first in app Settings -> IoT Device Inventory.
-  - This firmware assumes your Firebase rules allow ID-registered unauthenticated
-    read/write under /devices/<DEVICE_ID>.
+  - This firmware assumes your Firebase rules allow an ID-registered,
+    unauthenticated board to read /device_commands/<DEVICE_ID> (and clear its
+    wifiReset) and to write /device_live/<DEVICE_ID>.
 */
 
 #include <WiFi.h>
@@ -76,7 +87,7 @@ static const uint8_t RESET_BTN_PIN = 0;                  // BOOT button
 static const uint32_t RESET_HOLD_MS = 5000;              // hold to erase WiFi
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;   // per connect attempt
 // Setup hotspot only opens on first setup (nothing saved), when the system sends
-// a disconnect (/devices/<DEVICE_ID>/wifiReset = true), or BOOT held 5 s.
+// a disconnect (/device_commands/<DEVICE_ID>/wifiReset = true), or BOOT held 5 s.
 // A network outage never reopens it — the device just keeps retrying.
 static const uint32_t OFFLINE_PORTAL_AFTER_MS = 0;       // 0 = never reopen when offline
 static const uint32_t SAVED_WIFI_RETRY_MS = 30000;       // retry saved WiFi while hotspot is open
@@ -100,8 +111,6 @@ static const bool SSR_ACTIVE_HIGH = true;
 static const uint32_t RELAY_POLL_MS = 1000;
 static const uint32_t TELEMETRY_PUSH_MS = 3000;
 static const uint32_t WIFI_RETRY_MS = 10000;
-static const uint32_t AUTOMATION_POLL_MS = 15000;
-static const uint32_t TIMEZONE_REFRESH_MS = 300000;
 static const uint32_t PZEM_UART_BAUD = 9600;
 static const uint32_t PZEM_PROBE_RETRY_MS = 15000;
 
@@ -112,21 +121,20 @@ PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
 uint8_t pzemAddress = 0xF8;  // Factory default address for v4.0 modules
 
 bool relayState = false;
+// Last command carried out (acknowledged in device_live/<ID>/state).
+String lastCommandId = "";
+uint64_t lastCommandAtMs = 0;
 bool pzemReady = false;
 // Track last seen energy reading so we can write per-interval history deltas
-float lastReportedEnergyKwh = -1.0f;
 
 uint32_t lastRelayPollMs = 0;
 uint32_t lastTelemetryPushMs = 0;
 uint32_t lastWifiRetryMs = 0;
-uint32_t lastAutomationPollMs = 0;
-uint32_t lastTimezoneRefreshMs = 0;
 uint32_t lastPzemProbeMs = 0;
 wl_status_t lastWifiStatus = WL_DISCONNECTED;  // Track WiFi status changes
 
 uint64_t bootEpochMs = 0;
 uint32_t bootMillisAtSync = 0;
-int32_t scheduleTimezoneOffsetMinutes = 480;
 
 // ===================== FORWARD DECLARATIONS =====================
 // Functions used before they are defined. Declared by hand because the
@@ -165,11 +173,6 @@ uint8_t scanFailCount = 0;
 uint32_t lastScanMs = 0;
 
 // Setup page HTML lives in portal_html.h (see note there).
-
-struct ScheduleClock {
-  String day;
-  int minutes;
-};
 
 static inline float roundTo(float value, int places) {
   float scale = 1.0f;
@@ -210,203 +213,6 @@ static inline bool isPlausiblePzemReading(float voltage,
          isFiniteReading(powerFactor) && powerFactor >= 0.0f && powerFactor <= 1.0f;
 }
 
-static inline String compactText(String value) {
-  value.toLowerCase();
-  String out;
-  out.reserve(value.length());
-  for (size_t i = 0; i < value.length(); i++) {
-    const char c = value[i];
-    if (isalnum(static_cast<unsigned char>(c))) {
-      out += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-  }
-  return out;
-}
-
-static inline String canonicalUtility(String value) {
-  value = compactText(value);
-  if (value == "light" || value == "lights") return "lights";
-  if (value == "outlet" || value == "outlets") return "outlets";
-  if (value == "ac" || value == "aircon" || value == "airconditioner" ||
-      value == "airconditioners" || value == "airconditioning") {
-    return "ac";
-  }
-  if (value == "all" || value.isEmpty()) return "all";
-  return value;
-}
-
-static inline bool utilityMatches(const String& expected, const String& actual) {
-  const String normalizedExpected = canonicalUtility(String(expected));
-  if (normalizedExpected == "all") return true;
-  return normalizedExpected == canonicalUtility(String(actual));
-}
-
-static inline bool buildingMatches(const String& expected, const String& actual) {
-  return compactText(String(expected)) == compactText(String(actual));
-}
-
-static inline String dayLabelFromWeekday(int weekday) {
-  switch (weekday) {
-    case 0: return "Sun";
-    case 1: return "Mon";
-    case 2: return "Tue";
-    case 3: return "Wed";
-    case 4: return "Thu";
-    case 5: return "Fri";
-    case 6: return "Sat";
-    default: return "Mon";
-  }
-}
-
-static inline String previousDayLabel(const String& day) {
-  if (day == "Mon") return "Sun";
-  if (day == "Tue") return "Mon";
-  if (day == "Wed") return "Tue";
-  if (day == "Thu") return "Wed";
-  if (day == "Fri") return "Thu";
-  if (day == "Sat") return "Fri";
-  if (day == "Sun") return "Sat";
-  return "Sun";
-}
-
-static inline int parseMinutes(const String& value) {
-  const int colon = value.indexOf(':');
-  if (colon < 0) return -1;
-
-  const int hour = value.substring(0, colon).toInt();
-  const int minute = value.substring(colon + 1).toInt();
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return -1;
-  return hour * 60 + minute;
-}
-
-static inline int32_t parseTimezoneOffsetMinutes(String value) {
-  value.trim();
-  value.replace("\"", "");
-  const String lowered = compactText(value);
-
-  if (lowered.isEmpty() || lowered.indexOf("asiamanila") >= 0 || lowered.indexOf("philippines") >= 0) {
-    return 8 * 60;
-  }
-
-  if (lowered.indexOf("utc") >= 0 || lowered.indexOf("gmt") >= 0) {
-    int signIndex = value.indexOf('+');
-    int sign = 1;
-    if (signIndex < 0) {
-      signIndex = value.indexOf('-');
-      sign = -1;
-    }
-
-    if (signIndex >= 0) {
-      String hoursPart = value.substring(signIndex + 1);
-      hoursPart.trim();
-      hoursPart.replace("h", "");
-      hoursPart.replace("H", "");
-      const int hours = hoursPart.toInt();
-      if (hours > 0 || hoursPart == "0") {
-        return sign * hours * 60;
-      }
-    }
-
-    return 0;
-  }
-
-  return 8 * 60;
-}
-
-static inline ScheduleClock getScheduleClock() {
-  time_t now = time(nullptr);
-  if (now <= 1700000000) {
-    now = (time_t)(nowMs() / 1000ULL);
-  }
-
-  const time_t adjusted = now + (time_t)(scheduleTimezoneOffsetMinutes * 60L);
-  struct tm tm;
-  gmtime_r(&adjusted, &tm);
-
-  ScheduleClock clock;
-  clock.day = dayLabelFromWeekday(tm.tm_wday);
-  clock.minutes = tm.tm_hour * 60 + tm.tm_min;
-  return clock;
-}
-
-static inline bool scheduleHasDay(JsonVariant daysValue, const String& day) {
-  const String target = compactText(String(day));
-
-  if (daysValue.is<JsonArray>()) {
-    JsonArray daysArray = daysValue.as<JsonArray>();
-    for (JsonVariant value : daysArray) {
-      const char* raw = value.as<const char*>();
-      if (raw != nullptr && compactText(String(raw)) == target) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  if (daysValue.is<JsonObject>()) {
-    JsonObject daysObject = daysValue.as<JsonObject>();
-    for (JsonPair pair : daysObject) {
-      const char* raw = pair.value().as<const char*>();
-      if (raw != nullptr && compactText(String(raw)) == target) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  const char* raw = daysValue.as<const char*>();
-  return raw != nullptr && compactText(String(raw)) == target;
-}
-
-static inline String automationActionFor(JsonObject schedule, const ScheduleClock& clock) {
-  const String onTime = String(schedule["onTime"] | "08:00");
-  const String offTime = String(schedule["offTime"] | "18:00");
-  const int onMinutes = parseMinutes(onTime);
-  const int offMinutes = parseMinutes(offTime);
-  if (onMinutes < 0 || offMinutes < 0) return "";
-
-  const JsonVariant daysValue = schedule["days"];
-  const bool activeDay = scheduleHasDay(daysValue, clock.day);
-  const bool previousDay = scheduleHasDay(daysValue, previousDayLabel(clock.day));
-
-  if (activeDay && clock.minutes == onMinutes) {
-    return "on";
-  }
-
-  if (clock.minutes != offMinutes) {
-    return "";
-  }
-
-  if (onMinutes > offMinutes) {
-    return previousDay ? "off" : "";
-  }
-
-  return activeDay ? "off" : "";
-}
-
-static inline bool scheduleTargetsThisDevice(JsonObject schedule,
-                                            const String& deviceId,
-                                            const String& building,
-                                            const String& utility) {
-  const String scope = String(schedule["scope"] | "global");
-  const String target = String(schedule["target"] | "all");
-  const String scheduleUtility = String(schedule["utility"] | "All");
-
-  if (scope == "global") {
-    return utilityMatches(scheduleUtility, utility);
-  }
-  if (scope == "building") {
-    return buildingMatches(target, building) && utilityMatches(scheduleUtility, utility);
-  }
-  if (scope == "utility") {
-    return utilityMatches(target, utility);
-  }
-  if (scope == "device") {
-    return compactText(target) == compactText(deviceId);
-  }
-  return false;
-}
-
 static inline bool parseBoolean(JsonVariant value) {
   if (value.is<bool>()) {
     return value.as<bool>();
@@ -425,91 +231,6 @@ static inline bool parseBoolean(JsonVariant value) {
   normalized.trim();
   normalized.toLowerCase();
   return normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on";
-}
-
-static inline void mirrorRelayToBuilding(const String& building,
-                                         const String& floor,
-                                         bool relay) {
-  if (building.isEmpty() || floor.isEmpty()) return;
-
-  DynamicJsonDocument mirrorDoc(64);
-  mirrorDoc["relay"] = relay;
-
-  String payload;
-  serializeJson(mirrorDoc, payload);
-
-  int code = 0;
-  firebasePatch(String("/buildings/") + building + "/floorData/" + floor + "/devices/" + DEVICE_ID + ".json",
-                payload,
-                code);
-}
-
-static inline void refreshScheduleTimezone(bool force = false) {
-  const uint32_t now = millis();
-  if (!force && lastTimezoneRefreshMs != 0 && (now - lastTimezoneRefreshMs) < TIMEZONE_REFRESH_MS) {
-    return;
-  }
-
-  lastTimezoneRefreshMs = now;
-
-  String body;
-  int code = 0;
-  if (!firebaseGet(String("/settings/timezone.json"), body, code) || code != 200 || body == "null") {
-    return;
-  }
-
-  scheduleTimezoneOffsetMinutes = parseTimezoneOffsetMinutes(body);
-}
-
-static inline bool applyAutomationIfNeeded(const String& deviceId,
-                                          const String& building,
-                                          const String& utility,
-                                          bool currentRelay,
-                                          bool& desiredRelay) {
-  const uint32_t now = millis();
-  if (lastAutomationPollMs != 0 && (now - lastAutomationPollMs) < AUTOMATION_POLL_MS) {
-    return false;
-  }
-  lastAutomationPollMs = now;
-
-  refreshScheduleTimezone(false);
-
-  String body;
-  int code = 0;
-  if (!firebaseGet(String("/automations.json"), body, code) || code != 200 || body == "null") {
-    return false;
-  }
-
-  DynamicJsonDocument doc(8192);
-  const DeserializationError err = deserializeJson(doc, body);
-  if (err) {
-    Serial.print("[Automation] JSON parse error: ");
-    Serial.println(err.c_str());
-    return false;
-  }
-
-  const ScheduleClock clock = getScheduleClock();
-  bool matched = false;
-  desiredRelay = currentRelay;
-
-  JsonObject root = doc.as<JsonObject>();
-  for (JsonPair pair : root) {
-    JsonObject schedule = pair.value().as<JsonObject>();
-    if (schedule.isNull()) continue;
-    const bool enabled = schedule.containsKey("enabled")
-        ? parseBoolean(schedule["enabled"])
-        : true;
-    if (!enabled) continue;
-    if (!scheduleTargetsThisDevice(schedule, deviceId, building, utility)) continue;
-
-    const String action = automationActionFor(schedule, clock);
-    if (action.isEmpty()) continue;
-
-    matched = true;
-    desiredRelay = action == "on";
-  }
-
-  return matched;
 }
 
 static inline uint8_t relayPinLevel(bool on) {
@@ -666,22 +387,24 @@ bool firebasePatch(const String& path, const String& json, int& statusCode) {
 void handleRemoteWifiReset() {
   Serial.println("[WiFi] Disconnect requested by the system");
 
-  DynamicJsonDocument doc(192);
-  doc["wifiReset"] = nullptr;  // null removes the key
-  doc["wifi_ssid"] = nullptr;  // no network until it is set up again
-  doc["wifi_rssi"] = nullptr;
-  doc["status"] = "offline";
-  doc["relay"] = false;        // relay is OFF after the reboot
-
-  String payload;
-  serializeJson(doc, payload);
-
+  // Clear the command first so it doesn't loop (null removes the key).
   int code = 0;
-  const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
+  const bool ok = firebasePatch(String("/device_commands/") + DEVICE_ID + ".json",
+                                "{\"wifiReset\":null}", code);
   if (!ok || (code != 200 && code != 204)) {
-    Serial.println("[WiFi] Could not clear wifiReset flag, will retry");
+    Serial.println("[WiFi] Could not clear wifiReset command, will retry");
     return;
   }
+
+  // Report going offline with the relay OFF (it is OFF after the reboot).
+  DynamicJsonDocument doc(256);
+  doc["connectivity"]["status"] = "offline";
+  doc["connectivity"]["wifiSsid"] = nullptr;
+  doc["connectivity"]["wifiRssi"] = nullptr;
+  doc["state"]["reportedRelay"] = false;
+  String payload;
+  serializeJson(doc, payload);
+  firebasePatch(String("/device_live/") + DEVICE_ID + ".json", payload, code);
 
   clearWifiCredentials();
   WiFi.disconnect(true, true);
@@ -689,20 +412,23 @@ void handleRemoteWifiReset() {
   ESP.restart();
 }
 
-void pollRelayAndAssignment() {
+// Reads /device_commands/<ID>: { desiredRelay, commandId, issuedAt, wifiReset }.
+// Applies the desired relay state and acknowledges the command ID in the
+// next device_live push. Schedules are run by the server, not the board.
+void pollCommands() {
   String body;
   int code = 0;
 
-  const String path = String("/devices/") + DEVICE_ID + ".json";
+  const String path = String("/device_commands/") + DEVICE_ID + ".json";
   if (!firebaseGet(path, body, code)) {
     return;
   }
 
   if (code != 200 || body == "null") {
-    return;
+    return;  // no command yet: keep the current relay state
   }
 
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(512);
   const DeserializationError err = deserializeJson(doc, body);
   if (err) {
     Serial.print("[Firebase] JSON parse error: ");
@@ -715,33 +441,28 @@ void pollRelayAndAssignment() {
     return;
   }
 
-  bool cloudRelay = relayState;
-  if (doc.containsKey("relay")) {
-    cloudRelay = doc["relay"].as<bool>();
+  if (!doc.containsKey("desiredRelay")) {
+    return;
   }
-
-  const String building = doc.containsKey("building") ? String(doc["building"].as<const char*>()) : "";
-  const String floor = doc.containsKey("floor") ? String(doc["floor"].as<const char*>()) : "";
-  const String utility = doc.containsKey("utility") ? String(doc["utility"].as<const char*>()) : "";
-
-  bool desiredRelay = cloudRelay;
-  const bool automationMatched = applyAutomationIfNeeded(
-      String(DEVICE_ID), building, utility, cloudRelay, desiredRelay);
+  const bool desiredRelay = parseBoolean(doc["desiredRelay"]);
+  const String commandId = doc.containsKey("commandId")
+      ? String(doc["commandId"].as<const char*>())
+      : String("");
+  const bool newCommand = commandId != lastCommandId;
 
   if (desiredRelay != relayState) {
     setRelay(desiredRelay);
-    if (automationMatched) {
-      Serial.print("[Automation] Set from schedule: ");
-      Serial.println(desiredRelay ? "ON" : "OFF");
-    } else {
-      Serial.print("[Relay] Set from cloud: ");
-      Serial.println(desiredRelay ? "ON" : "OFF");
-    }
+    Serial.print("[Relay] Set from command ");
+    Serial.print(commandId);
+    Serial.print(": ");
+    Serial.println(desiredRelay ? "ON" : "OFF");
+  }
 
-    mirrorRelayToBuilding(building, floor, desiredRelay);
-
-    // Push telemetry immediately so the cloud reflects the updated relay
-    // state and (when meter is after the relay) we get readings faster.
+  if (newCommand) {
+    lastCommandId = commandId;
+    lastCommandAtMs = nowMs();
+    // Acknowledge right away (and report the relay) instead of waiting for
+    // the next scheduled push.
     lastTelemetryPushMs = millis();
     pushTelemetry();
   }
@@ -764,16 +485,20 @@ void pushTelemetry() {
   const float energyKwh = pzem.energy();
   const float frequency = pzem.frequency();
   const float powerFactor = pzem.pf();
-  const String voltageWarning = voltageWarningLabel(voltage);
   const bool pzemOk = isPlausiblePzemReading(
       voltage, current, power, energyKwh, frequency, powerFactor);
+  // Only a valid reading can trigger a brownout / surge warning.
+  const String voltageWarning =
+      pzemOk ? voltageWarningLabel(voltage) : String("unknown");
 
   if (pzemOk) {
     pzemAddress = pzem.readAddress();
   }
 
   const uint64_t t = nowMs();
-  const String status = pzemOk ? "online" : "offline";
+  // The board is up either way (it is reporting and taking commands); a
+  // meter that isn't answering is reported as meter_error, not offline.
+  const String status = pzemOk ? "online" : "meter_error";
 
   Serial.print("[PZEM] V=");
   Serial.print(pzemOk ? String(roundTo(voltage, 1)) : String("nan"));
@@ -799,36 +524,41 @@ void pushTelemetry() {
     pzemReady = false;
   }
 
-  DynamicJsonDocument doc(640);
-  doc["status"] = status;
-  doc["relay"] = relayState;
-  // Network the device is on, shown on the app's device page.
-  doc["wifi_ssid"] = WiFi.SSID();
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["voltage_warning"] = voltageWarning;
-  doc["last_updated"] = t;
-  doc["last_seen"] = pzemOk ? t : (t > 300000 ? t - 300000 : 0);
+  // /device_live/<ID>: { telemetry, connectivity, state }. Each group is
+  // replaced as a whole by the PATCH.
+  DynamicJsonDocument doc(768);
+  JsonObject telemetry = doc.createNestedObject("telemetry");
+  JsonObject connectivity = doc.createNestedObject("connectivity");
+  JsonObject state = doc.createNestedObject("state");
 
   if (pzemOk) {
-    doc["voltage"] = roundTo(voltage, 1);
-    doc["current"] = roundTo(current, 2);
-    doc["power"] = roundTo(power, 1);
-    doc["kwh"] = roundTo(energyKwh, 4);
-    doc["powerFactor"] = roundTo(powerFactor, 2);
-    doc["frequency"] = roundTo(frequency, 1);
-  } else {
-    doc["voltage"] = nullptr;
-    doc["current"] = nullptr;
-    doc["power"] = nullptr;
-    doc["powerFactor"] = nullptr;
-    doc["frequency"] = nullptr;
+    telemetry["voltage"] = roundTo(voltage, 1);
+    telemetry["current"] = roundTo(current, 2);
+    telemetry["power"] = roundTo(power, 1);
+    telemetry["cumulativeKwh"] = roundTo(energyKwh, 4);
+    telemetry["powerFactor"] = roundTo(powerFactor, 2);
+    telemetry["frequency"] = roundTo(frequency, 1);
+  }
+  telemetry["voltageWarning"] = voltageWarning;
+
+  connectivity["status"] = status;
+  connectivity["lastUpdatedAt"] = t;
+  connectivity["lastSeenAt"] = t;
+  // Network the device is on, shown on the app's device page.
+  connectivity["wifiSsid"] = WiFi.SSID();
+  connectivity["wifiRssi"] = WiFi.RSSI();
+
+  state["reportedRelay"] = relayState;
+  if (lastCommandId.length() > 0) {
+    state["lastCommandId"] = lastCommandId;
+    state["lastCommandAt"] = lastCommandAtMs;
   }
 
   String payload;
   serializeJson(doc, payload);
 
   int code = 0;
-  const bool ok = firebasePatch(String("/devices/") + DEVICE_ID + ".json", payload, code);
+  const bool ok = firebasePatch(String("/device_live/") + DEVICE_ID + ".json", payload, code);
   
   if (!ok) {
     return;
@@ -838,64 +568,6 @@ void pushTelemetry() {
     return;
   }
   
-  // Compute delta from PZEM energy meter and write raw history entry (includes cost)
-  if (pzemOk) {
-    float delta = 0.0f;
-    if (lastReportedEnergyKwh < 0.0f) {
-      lastReportedEnergyKwh = energyKwh; // initialize on first valid reading
-    } else {
-      delta = energyKwh - lastReportedEnergyKwh;
-      if (delta < 0.0f) {
-        // meter may have reset — use current reading as delta
-        delta = energyKwh;
-      }
-    }
-
-    // Only write if delta is meaningful (avoid noise)
-    if (delta >= 0.000001f) {
-      // Fetch rate (best-effort)
-      String rateBody;
-      int rateCode = 0;
-      double rate = 11.5;
-      if (firebaseGet(String("/settings/electricityRate.json"), rateBody, rateCode) && rateCode == 200 && rateBody != "null") {
-        rate = atof(rateBody.c_str());
-      }
-
-      // Write a single daily raw summary (overwrite, do not append incremental entries)
-      DynamicJsonDocument hdoc(384);
-      hdoc["deviceId"] = DEVICE_ID;
-      // cumulative total from the meter (not delta)
-      hdoc["kwh_total"] = roundTo(energyKwh, 4);
-      hdoc["cost_total"] = roundTo((float)(energyKwh * rate), 4);
-      hdoc["ts"] = (uint64_t)t; // epoch ms
-
-      // Build daily key YYYY-MM-DD
-      time_t secs = (time_t)(t / 1000ULL);
-      struct tm tm;
-      localtime_r(&secs, &tm);
-      char daybuf[16];
-      snprintf(daybuf, sizeof(daybuf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-
-      String hpayload;
-      serializeJson(hdoc, hpayload);
-
-      int hcode = 0;
-      // Overwrite daily raw summary: history/raw/<YYYY-MM-DD>_<deviceId>.json
-      String hpath = String("/history/raw/") + String(daybuf) + "_" + DEVICE_ID + ".json";
-      const bool hok = firebasePatch(hpath, hpayload, hcode);
-      if (!hok) {
-        Serial.print("[History] Failed to write daily raw summary (HTTP ");
-        Serial.print(hcode);
-        Serial.println(")");
-      } else {
-        Serial.print("[History] Daily raw summary written (HTTP ");
-        Serial.print(hcode);
-        Serial.println(")");
-      }
-
-      lastReportedEnergyKwh = energyKwh;
-    }
-  }
 }
 
 // ===================== WIFI SETUP PORTAL =====================
@@ -954,7 +626,6 @@ void onWifiUp() {
   Serial.print(". IP: ");
   Serial.println(WiFi.localIP());
   syncTimeIfPossible();
-  refreshScheduleTimezone(true);
   lastTelemetryPushMs = millis();
   lastWifiStatus = WiFi.status();
   offlineSinceMs = 0;
@@ -1411,7 +1082,7 @@ void loop() {
 
   if (now - lastRelayPollMs >= RELAY_POLL_MS) {
     lastRelayPollMs = now;
-    pollRelayAndAssignment();
+    pollCommands();
   }
 
   if (now - lastTelemetryPushMs >= TELEMETRY_PUSH_MS) {

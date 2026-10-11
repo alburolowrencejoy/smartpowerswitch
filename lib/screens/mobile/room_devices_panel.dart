@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../../services/device_live.dart';
+import '../../services/device_registry.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../widgets/responsive_center.dart';
@@ -8,6 +10,7 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/top_toast.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../utils/last_seen.dart';
 
 /// Self-contained "device grid for one room" widget, extracted out of
 /// `BuildingFloorScreen` so it can be dropped into both:
@@ -16,7 +19,7 @@ import '../../theme/app_fonts.dart';
 ///  - the new `RoomDevicesScreen` (institute-admin path, pushed as its own
 ///    route with no floor tabs).
 ///
-/// Deliberately owns its own Firebase subscriptions (floor devices +
+/// Deliberately owns its own Firebase subscriptions (live `devices` +
 /// master_devices) rather than receiving a live device map as a prop --
 /// that's what makes it genuinely reusable/testable instead of depending on
 /// a parent to plumb live data down to it.
@@ -76,6 +79,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
   @override
   void dispose() {
     _devicesSub?.cancel();
+    _liveV2Sub?.cancel();
     _masterSub?.cancel();
     super.dispose();
   }
@@ -86,33 +90,47 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
         text.contains('permission_denied');
   }
 
+  /// Latest `master_devices` (the registry) and `devices` (live readings);
+  /// [_devices] is rebuilt from both whenever either changes.
+  Object? _masterRaw;
+  Object? _liveRaw; // devices (old firmware)
+  Object? _liveV2Raw; // device_live (firmware 2.0+)
+  StreamSubscription<DatabaseEvent>? _liveV2Sub;
+
+  void _rebuildDevices() {
+    _devices = {
+      for (final d in DeviceRegistry.inPlace(
+          DeviceRegistry.parse(_masterRaw, DeviceLive.merge(_liveRaw, _liveV2Raw)),
+          building: widget.buildingCode,
+          floor: widget.floor))
+        d.id: <String, dynamic>{
+          'room': d.room,
+          'utility': d.utility,
+          if (d.name.isNotEmpty) 'name': d.name,
+          'relay': d.live['relay'] == true,
+          'status': isDeviceOnline(d.live) ? 'online' : 'offline',
+        },
+    };
+  }
+
+  /// Live readings (relay, status) for the device grid, from both the old
+  /// `devices` record and `device_live` (see [DeviceLive]).
   void _listenDevices() {
-    _devicesSub = FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/${widget.floor}/devices')
-        .onValue
-        .listen((event) {
+    _liveV2Sub =
+        FirebaseDatabase.instance.ref('device_live').onValue.listen((event) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
-      if (raw is Map) {
-        final devices = <String, dynamic>{};
-        raw.forEach((k, v) {
-          if (v is Map) {
-            final device = <String, dynamic>{};
-            v.forEach((dk, dv) => device[dk.toString()] = dv);
-            devices[k.toString()] = device;
-          }
-        });
-        setState(() {
-          _devices = devices;
-          _devicesLoading = false;
-        });
-      } else {
-        setState(() {
-          _devices = {};
-          _devicesLoading = false;
-        });
-      }
+      setState(() {
+        _liveV2Raw = event.snapshot.value;
+        _rebuildDevices();
+      });
+    }, onError: (Object _) {});
+    _devicesSub =
+        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+      if (!mounted) return;
+      setState(() {
+        _liveRaw = event.snapshot.value;
+        _rebuildDevices();
+      });
     }, onError: (Object error) {
       if (!mounted) return;
       setState(() => _devicesLoading = false);
@@ -134,8 +152,14 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
           if (assignedTo.startsWith('${widget.buildingCode}/')) count++;
         });
       }
-      setState(() => _buildingAssignedCount = count);
+      setState(() {
+        _buildingAssignedCount = count;
+        _masterRaw = raw;
+        _rebuildDevices();
+        _devicesLoading = false;
+      });
     }, onError: (Object error) {
+      if (mounted) setState(() => _devicesLoading = false);
       // Permission-denied here just means the 24-device cap check falls
       // back to "not at cap" rather than blocking Add Utility outright --
       // matches the tolerant handling of permission errors elsewhere in
@@ -281,37 +305,18 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
     );
     if (deviceId == null || !mounted) return;
 
-    // Save to buildings node
-    await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/${widget.floor}/devices/$deviceId')
-        .set({
-      'utility': utility,
-      'status': 'offline',
-      'relay': false,
-      'room': widget.room,
-    });
-
-    // Save to flat devices node
-    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-      'building': widget.buildingCode,
-      'floor': '${widget.floor}',
-      'room': widget.room,
-      'utility': utility,
-      'relay': false,
-      'status': 'offline',
-      'kwh': 0,
-      'voltage': 0,
-      'current': 0,
-      'power': 0,
-      'last_seen': 0,
-      'last_updated': 0,
-    });
-
-    // Update master_devices assignedTo
-    await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId/assignedTo')
-        .set('${widget.buildingCode}/${widget.floor}/${widget.room}');
+    // One atomic registry write; the board's live readings are left alone
+    // (resetting kwh would look like a meter drop to the energy rollup).
+    await FirebaseDatabase.instance.ref().update(
+          DeviceRegistry.assignmentUpdate(
+            id: deviceId,
+            building: widget.buildingCode,
+            floor: widget.floor,
+            room: widget.room,
+            utility: utility,
+            updatedAt: ServerValue.timestamp,
+          ),
+        );
 
     if (!mounted) return;
     TopToast.success(context, '$deviceId added as $utility in ${widget.room}.');
@@ -397,26 +402,11 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
     TopToast.success(context, '$deviceId removed.');
   }
 
-  // Deliberately duplicated from BuildingFloorScreen._unassignDevice (used
-  // there by _deleteRoom's cascading delete, which stays in that file).
-  // Kept as an exact ~10-line duplicate rather than hoisted to a shared
-  // helper -- if you touch this, update the copy in
-  // building_floor_screen.dart too so the two don't drift.
-  Future<void> _unassignDevice(String deviceId) async {
-    await FirebaseDatabase.instance
-        .ref(
-            'buildings/${widget.buildingCode}/floorData/${widget.floor}/devices/$deviceId')
-        .remove();
-    await FirebaseDatabase.instance
-        .ref('master_devices/$deviceId')
-        .update({'assignedTo': ''});
-    await FirebaseDatabase.instance.ref('devices/$deviceId').update({
-      'building': '',
-      'floor': '',
-      'room': '',
-      'status': 'offline',
-    });
-  }
+  /// Removes the device from its room (it stays registered), with the shared
+  /// registry helper so every screen unassigns the same way.
+  Future<void> _unassignDevice(String deviceId) => FirebaseDatabase.instance
+      .ref()
+      .update(DeviceRegistry.unassignmentUpdate(deviceId));
 
   @override
   Widget build(BuildContext context) {

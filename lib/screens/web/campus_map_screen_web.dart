@@ -12,7 +12,10 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_live.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../utils/last_seen.dart';
 
 /// Web campus map with two views over the real campus image:
 ///
@@ -232,14 +235,16 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
     final month = '${now.year}-${now.month.toString().padLeft(2, '0')}';
     _sub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices').onValue,
-      FirebaseDatabase.instance.ref('history/monthly/$month/buildings').onValue,
+      FirebaseDatabase.instance.ref('${EnergyHistory.path('monthly', month)}/buildings').onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('hotspots').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
         _applyBuildings(events[2].snapshot.value);
-        _applyDevices(events[0].snapshot.value);
+        _applyDevices(
+            DeviceLive.merge(events[0].snapshot.value, events[4].snapshot.value));
         _applyHistory(events[1].snapshot.value);
         // Keep local edits while a drag is in progress.
         if (!_dragging) _applyZones(events[3].snapshot.value);
@@ -282,15 +287,13 @@ class _CampusMapScreenWebState extends State<CampusMapScreenWeb> {
       if (_isLoading) _devices = [];
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
     final list = <_Device>[];
     raw.forEach((id, val) {
       if (val is! Map) return;
       final building = (val['building'] ?? '').toString();
       if (building.isEmpty) return;
-      final lastSeen = _num(val['last_seen']);
-      final online = lastSeen > 0
-          ? now - lastSeen < 2 * 60 * 1000
+      final online = deviceSeenMillis(val) != null
+          ? isDeviceOnline(val)
           : (val['status'] ?? '') == 'online';
       list.add(_Device(
         id: id.toString(),

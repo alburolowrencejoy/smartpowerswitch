@@ -3,8 +3,12 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../services/device_live.dart';
+import '../services/energy_history.dart';
 import '../services/history_clock.dart';
+import '../services/history_keys.dart';
 import '../services/notification_seen.dart';
+import '../services/rate_timeline.dart';
 
 class DashboardViewModel extends ChangeNotifier {
   // Data fields
@@ -26,8 +30,15 @@ class DashboardViewModel extends ChangeNotifier {
   /// change never reprices them. Null when the month has no stored cost.
   double? _storedMonthlyCost;
 
-  void _refreshMonthlyCost() =>
-      monthlyCostPhp = _storedMonthlyCost ?? monthlyKwh * electricityRate;
+  /// The one cost rule ([RateTimeline.costOf]): the stored cost, else kWh at
+  /// the rate in force at the end of the month.
+  void _refreshMonthlyCost() => monthlyCostPhp = rates.costOf(
+      _storedMonthlyCost,
+      monthlyKwh,
+      RateTimeline.monthEnd(HistoryClock.instance.now()));
+
+  /// Past rates, for [RateTimeline.costOf].
+  RateTimeline get rates => RateHistory.instance.timeline(electricityRate);
   Map<String, double> utilityTotals = {};
   List<Map<String, dynamic>> historyData = [];
 
@@ -119,18 +130,32 @@ class DashboardViewModel extends ChangeNotifier {
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref('history').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardDays)
+          .onValue,
       FirebaseDatabase.instance
           .ref('notifications')
           .orderByChild('timestamp')
           .limitToLast(100)
           .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('monthly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardMonths)
+          .onValue,
     ]).listen((events) {
       _applyBuildings(events[0].snapshot.value);
       _applyMasterDevices(events[1].snapshot.value);
-      _applyEnergyData(events[2].snapshot.value);
+      _applyEnergyData(
+          DeviceLive.merge(events[2].snapshot.value, events[6].snapshot.value));
       _applyRate(events[3].snapshot.value);
-      _applyHistory(events[4].snapshot.value);
+      _applyHistory({
+        'daily': events[4].snapshot.value,
+        'monthly': events[7].snapshot.value,
+      });
       _applyNotifications(events[5].snapshot.value);
 
       _hasLoadedOnce = true;
@@ -258,34 +283,50 @@ class DashboardViewModel extends ChangeNotifier {
     buildingDeviceCounts = bCounts;
   }
 
+  /// Each device's utility ("Lights", "Aircon", ...) from `devices`, used to
+  /// split today's energy by utility.
+  Map<String, String> _deviceUtility = {};
+
+  /// Only reads each device's utility. Energy never comes from
+  /// `devices/{id}/kwh`: that is the meter's lifetime total, not today's use.
   void _applyEnergyData(Object? raw) {
-    if (raw == null) {
-      if (isLoading) {
-        totalKwh = 0;
-        utilityTotals = {};
-      }
+    if (raw is! Map) return;
+    final utilities = <String, String>{};
+    raw.forEach((id, val) {
+      if (val is! Map) return;
+      final utility = (val['utility'] ?? '').toString();
+      if (utility.isEmpty) return;
+      utilities[id.toString()] =
+          utility[0].toUpperCase() + utility.substring(1).toLowerCase();
+    });
+    _deviceUtility = utilities;
+  }
+
+  /// Today's campus total and its split by utility, from the daily summary.
+  void _applyToday(Map<String, dynamic> root) {
+    final now = HistoryClock.instance.now();
+    final daily = root['daily'];
+    final today = daily is Map
+        ? daily[HistoryKeys.dailyKey(now.year, now.month, now.day)]
+        : null;
+    if (today is! Map) {
+      totalKwh = 0;
+      utilityTotals = {};
       return;
     }
-    final data = Map<String, dynamic>.from(raw as Map);
-    double total = 0;
-    Map<String, double> uTotals = {};
-    data.forEach((id, val) {
-      if (val is! Map) return;
-      final device = Map<String, dynamic>.from(val);
-      final utility = (device['utility'] ?? '').toString();
-      final kwhValue = device['kwh'];
-      final kwh = kwhValue is num
-          ? kwhValue.toDouble()
-          : double.tryParse(kwhValue?.toString() ?? '') ?? 0.0;
-      total += kwh;
-      final n = utility.isEmpty
-          ? ''
-          : utility[0].toUpperCase() + utility.substring(1).toLowerCase();
-      if (n.isNotEmpty) uTotals[n] = (uTotals[n] ?? 0) + kwh;
-    });
-    totalKwh = total;
-    utilityTotals = uTotals;
-    _refreshMonthlyCost();
+    final total = today['total_kwh'];
+    totalKwh = total is num ? total.toDouble() : 0.0;
+    final split = <String, double>{};
+    final devices = today['devices'];
+    if (devices is Map) {
+      devices.forEach((id, d) {
+        final utility = _deviceUtility[id.toString()];
+        final kwh = d is Map ? d['kwh'] : null;
+        if (utility == null || kwh is! num) return;
+        split[utility] = (split[utility] ?? 0) + kwh.toDouble();
+      });
+    }
+    utilityTotals = split;
   }
 
   void _applyRate(Object? raw) {
@@ -300,31 +341,35 @@ class DashboardViewModel extends ChangeNotifier {
 
   void _applyHistory(Object? raw) {
     if (raw == null) {
-      if (isLoading) {
-        historyData = [];
-        buildingEnergy = {};
-      }
+      // Nothing recorded yet (new or freshly cleaned database).
+      historyData = [];
+      buildingEnergy = {};
+      buildingCost = {};
+      monthlyKwh = 0;
+      _storedMonthlyCost = null;
+      totalKwh = 0;
+      utilityTotals = {};
+      _refreshMonthlyCost();
       return;
     }
     try {
-      final root = Map<String, dynamic>.from(raw as Map);
+      final root = EnergyHistory.legacyRoot(raw);
+      _applyToday(root);
       buildingEnergy = _currentMonthBuildingEnergy(root);
       buildingCost = _currentMonthBuildingEnergy(root, field: 'cost');
       final monthKey = _monthKey(HistoryClock.instance.now());
       final monthlyNode = root['monthly'];
-      if (monthlyNode is Map) {
-        final monthlyMap = Map<String, dynamic>.from(monthlyNode);
-        final monthNode = monthlyMap[monthKey];
-        if (monthNode is Map) {
-          final monthMap = Map<String, dynamic>.from(monthNode);
-          final totalKwh = monthMap['total_kwh'] ?? 0.0;
-          monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
-          final storedCost = monthMap['total_cost'];
-          _storedMonthlyCost =
-              storedCost is num ? storedCost.toDouble() : null;
-          _refreshMonthlyCost();
-        }
+      final monthNode = monthlyNode is Map ? monthlyNode[monthKey] : null;
+      if (monthNode is Map) {
+        final totalKwh = monthNode['total_kwh'];
+        monthlyKwh = (totalKwh is num) ? totalKwh.toDouble() : 0.0;
+        final storedCost = monthNode['total_cost'];
+        _storedMonthlyCost = storedCost is num ? storedCost.toDouble() : null;
+      } else {
+        monthlyKwh = 0;
+        _storedMonthlyCost = null;
       }
+      _refreshMonthlyCost();
       historyData = _parseAnalyticsEntries(root, 'daily');
     } catch (_) {
       if (isLoading) {

@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
-import 'history_service.dart';
+import 'package:rxdart/rxdart.dart';
+import 'device_live.dart';
 import 'home_widget_service.dart';
 
 /// Global service that maintains a persistent Firebase listener
@@ -67,17 +68,18 @@ class GlobalReadingsListener {
     _realIotDeviceIds = ids;
   }
 
-  /// Single persistent listener on the whole `devices` node -- covers every
-  /// real-IoT device with one subscription instead of one listener per
-  /// device (which also never noticed devices registered after startup).
+  /// One persistent listener on `devices` + `device_live` (merged, see
+  /// [DeviceLive]) -- covers every real-IoT device with one subscription
+  /// instead of one listener per device.
   void _startListening() {
     if (_devicesSub != null) return;
 
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      final raw = event.snapshot.value;
-      if (raw is! Map) return;
-      final devices = Map<String, dynamic>.from(raw);
+    _devicesSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
+    ]).listen((events) {
+      final devices =
+          DeviceLive.merge(events[0].snapshot.value, events[1].snapshot.value);
 
       for (final deviceId in _realIotDeviceIds) {
         final val = devices[deviceId];
@@ -91,39 +93,18 @@ class GlobalReadingsListener {
     });
   }
 
-  /// Process a device reading: calculate kWh delta, write to history, update widget
+  /// Refreshes the home widget when a device's meter reading changes.
+  /// Energy history is written only by the server (`rollupEnergy` Cloud
+  /// Function), never by the app.
   Future<void> _processReading(
       String deviceId, Map<String, dynamic> data) async {
     try {
-      final meterKwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
-      double kwhDelta = 0.0;
-
-      // Calculate kWh delta
-      final lastReportedKwh = _lastReportedMeterKwh[deviceId] ?? 0.0;
-      if (lastReportedKwh > 0.0) {
-        kwhDelta = meterKwh - lastReportedKwh;
-        if (kwhDelta < 0.0) kwhDelta = meterKwh; // Meter reset
+      final meterKwh = (data['kwh'] as num?)?.toDouble();
+      if (meterKwh == null || meterKwh == _lastReportedMeterKwh[deviceId]) {
+        return;
       }
-
-      // Only write if significant enough
-      if (kwhDelta >= 0.000001) {
-        // Get building from cached metadata
-        final metadata = _deviceMetadata[deviceId];
-        final building = (metadata?['building'] as String?) ?? 'Unknown';
-
-        await HistoryService.writeHistory(
-          deviceId: deviceId,
-          building: building,
-          kwh: kwhDelta,
-        );
-        _lastReportedMeterKwh[deviceId] = meterKwh;
-
-        // Update home widget with latest data
-        await HomeWidgetService.updateWidget();
-
-        debugPrint(
-            '[GlobalReadingsListener] Processed $deviceId: kwhDelta=$kwhDelta');
-      }
+      _lastReportedMeterKwh[deviceId] = meterKwh;
+      await HomeWidgetService.updateWidget();
     } catch (e) {
       debugPrint('[GlobalReadingsListener] Error processing $deviceId: $e');
     }

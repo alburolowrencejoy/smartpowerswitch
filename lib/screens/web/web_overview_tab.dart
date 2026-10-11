@@ -2,9 +2,15 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:firebase_database/firebase_database.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/device_live.dart';
+import '../../services/device_registry.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
+import '../../services/history_keys.dart';
+import '../../services/rate_timeline.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
 import '../../viewmodels/dashboard_viewmodel.dart';
@@ -17,6 +23,7 @@ import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import '../../theme/app_fonts.dart';
 import '../../widgets/history_fallback_notice.dart';
+import '../../utils/last_seen.dart';
 
 /// The web "Dashboard" tab: an at-a-glance overview modelled on a classic
 /// admin layout -- a row of stat cards, a device-status card with a
@@ -93,8 +100,11 @@ class _RoomInfo {
 }
 
 class _WebOverviewTabState extends State<WebOverviewTab> {
-  StreamSubscription<DatabaseEvent>? _devicesSub;
+  StreamSubscription<List<DatabaseEvent>>? _devicesSub;
   StreamSubscription<DatabaseEvent>? _historySub;
+  StreamSubscription<DatabaseEvent>? _todaySub;
+  Map<dynamic, dynamic>? _todayNode;
+  Map<String, String> _utilityById = const {};
   int _online = 0;
   int _offline = 0;
   double _scopedKwh = 0;
@@ -105,7 +115,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   };
 
   /// Institute scope only: its rooms (sorted by floor, then name) and this
-  /// month's kWh per device, from `history/daily`.
+  /// month's kWh per device, from the monthly summary.
   List<_RoomInfo> _rooms = const [];
   Map<String, double> _deviceMonthKwh = const {};
 
@@ -137,6 +147,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   void dispose() {
     _devicesSub?.cancel();
     _historySub?.cancel();
+    _todaySub?.cancel();
     _recentSub?.cancel();
     super.dispose();
   }
@@ -150,7 +161,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       return;
     }
     _recentSub = FirebaseDatabase.instance
-        .ref('history/daily')
+        .ref(EnergyHistory.path('daily'))
         .orderByKey()
         .limitToLast(7)
         .onValue
@@ -176,43 +187,73 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     });
   }
 
-  /// Institute scope only: this month's `history/daily` days, summed per
-  /// device so [_roomChartPanel] can total them by room.
+  /// Institute scope only: this month's per-device kWh (from the monthly
+  /// summary) so [_roomChartPanel] can total them by room, and today's
+  /// summary for the scoped "today" figures.
   void _listenMonthHistory() {
     _historySub?.cancel();
     _historySub = null;
+    _todaySub?.cancel();
+    _todaySub = null;
     if (widget.instituteCode == null) {
       _deviceMonthKwh = const {};
+      _todayNode = null;
       return;
     }
-    final now = HistoryClock.instance.now();
-    final monthStart =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-01';
+    final keys = HistoryKeys.of(HistoryClock.instance.now());
     _historySub = FirebaseDatabase.instance
-        .ref('history/daily')
-        .orderByKey()
-        .startAt(monthStart)
+        .ref('${EnergyHistory.path('monthly', keys.monthly)}/devices')
         .onValue
         .listen((event) {
       if (!mounted) return;
       final perDevice = <String, double>{};
       final raw = event.snapshot.value;
       if (raw is Map) {
-        raw.forEach((_, day) {
-          if (day is! Map) return;
-          final devices = day['devices'];
-          if (devices is! Map) return;
-          devices.forEach((id, d) {
-            if (d is! Map) return;
-            final k = _toDouble(d['kwh'] ?? d['total_kwh']);
-            perDevice['$id'] = (perDevice['$id'] ?? 0) + k;
-          });
+        raw.forEach((id, d) {
+          if (d is Map) perDevice['$id'] = _toDouble(d['kwh']);
         });
       }
       setState(() => _deviceMonthKwh = perDevice);
     }, onError: (Object e) {
       debugPrint('[Overview] history listen error: $e');
     });
+    _todaySub = FirebaseDatabase.instance
+        .ref(EnergyHistory.path('daily', keys.daily))
+        .onValue
+        .listen((event) {
+      if (!mounted) return;
+      final raw = event.snapshot.value;
+      setState(() {
+        _todayNode = raw is Map ? raw : null;
+        _recomputeScopedToday();
+      });
+    }, onError: (Object e) {
+      debugPrint('[Overview] today listen error: $e');
+    });
+  }
+
+  /// Institute scope only: today's kWh for the building and its split by
+  /// utility, from today's summary joined with each device's utility.
+  void _recomputeScopedToday() {
+    final code = widget.instituteCode;
+    final util = <String, double>{'Lights': 0, 'Outlets': 0, 'AC': 0};
+    var kwh = 0.0;
+    final today = _todayNode;
+    if (code != null && today != null) {
+      final b = today['buildings'];
+      final node = b is Map ? b[code] : null;
+      kwh = node is Map ? _toDouble(node['kwh']) : 0.0;
+      final devices = today['devices'];
+      if (devices is Map) {
+        devices.forEach((id, d) {
+          if (d is! Map || '${d['building']}' != code) return;
+          final u = _utilityById['$id'];
+          if (u != null) util[u] = (util[u] ?? 0) + _toDouble(d['kwh']);
+        });
+      }
+    }
+    _scopedKwh = kwh;
+    _utilityKwh = util;
   }
 
   /// One listener on `devices` for what the shared view model does not
@@ -222,46 +263,42 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
   void _listenDevices() {
     _devicesSub?.cancel();
     final code = widget.instituteCode;
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
+    // The registry (master_devices) is the device list; live readings only
+    // say whether each registered board is online.
+    _devicesSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
+    ]).listen((events) {
       if (!mounted) return;
-      final raw = event.snapshot.value;
       var online = 0;
       var offline = 0;
-      var kwh = 0.0;
-      final util = <String, double>{'Lights': 0, 'Outlets': 0, 'AC': 0};
+      final utilityById = <String, String>{};
       final rooms = <String, _RoomInfo>{};
-      if (raw is Map) {
-        raw.forEach((id, val) {
-          if (val is! Map) return;
-          final d = Map<String, dynamic>.from(val);
-          if (code != null && (d['building'] ?? '').toString() != code) {
-            return;
-          }
-          final room = (d['room'] ?? '').toString().trim();
-          if (code != null && room.isNotEmpty) {
-            final floor = int.tryParse('${d['floor'] ?? 1}') ?? 1;
-            rooms
-                .putIfAbsent('$floor|$room', () => _RoomInfo(floor, room))
-                .deviceIds
-                .add('$id');
-          }
-          final k = _toDouble(d['kwh']);
-          kwh += k;
-          final u = _utilityOf(d);
-          util[u] = (util[u] ?? 0) + k;
-          if (_isOnline(d['last_seen'])) {
-            online++;
-          } else {
-            offline++;
-          }
-        });
+      for (final d in DeviceRegistry.parse(
+          events[0].snapshot.value,
+          DeviceLive.merge(events[1].snapshot.value, events[2].snapshot.value))) {
+        if (code != null && d.building != code) continue;
+        if (code != null && d.room.isNotEmpty) {
+          final floor = d.floor == 0 ? 1 : d.floor;
+          rooms
+              .putIfAbsent('$floor|${d.room}', () => _RoomInfo(floor, d.room))
+              .deviceIds
+              .add(d.id);
+        }
+        // Energy comes from today's summary; this only records the utility.
+        utilityById[d.id] = _utilityOf({'utility': d.utility});
+        if (isDeviceOnline(d.live)) {
+          online++;
+        } else {
+          offline++;
+        }
       }
       setState(() {
         _online = online;
         _offline = offline;
-        _scopedKwh = kwh;
-        _utilityKwh = util;
+        _utilityById = utilityById;
+        _recomputeScopedToday();
         _rooms = rooms.values.toList()
           ..sort((a, b) => a.floor != b.floor
               ? a.floor.compareTo(b.floor)
@@ -311,13 +348,14 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
 
         final rate = vm.electricityRate.toDouble();
         final todayKwh = scoped ? _scopedKwh : vm.totalKwh.toDouble();
-        // Recorded costs (each reading priced at the rate of its day), not
+        // Recorded costs via the one cost rule (RateTimeline.costOf), not
         // this month's kWh x today's rate.
+        final monthEnd = RateTimeline.monthEnd(HistoryClock.instance.now());
         final monthCost = scoped
             ? rows.fold<double>(
                 0,
-                (a, r) =>
-                    a + (vm.buildingCost[r.code] ?? r.monthKwh * rate))
+                (a, r) => a +
+                    vm.rates.costOf(vm.buildingCost[r.code], r.monthKwh, monthEnd))
             : vm.monthlyCostPhp.toDouble();
         final highLoad =
             rows.where((r) => _levelFor(r.monthKwh) == 'HIGH').length;
@@ -1672,12 +1710,6 @@ class _DonutPainter extends CustomPainter {
 
 double _toDouble(Object? v) =>
     v is num ? v.toDouble() : double.tryParse('${v ?? ''}') ?? 0.0;
-
-bool _isOnline(Object? lastSeen) {
-  if (lastSeen is! num || lastSeen == 0) return false;
-  final dt = DateTime.fromMillisecondsSinceEpoch(lastSeen.toInt());
-  return DateTime.now().difference(dt).inMinutes < 2;
-}
 
 /// Maps a device's `utility` field onto the three utilities every building
 /// has. Anything unrecognised is grouped under "Other".

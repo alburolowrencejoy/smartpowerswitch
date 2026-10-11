@@ -20,11 +20,9 @@ import 'screens/mobile/settings_screen.dart';
 import 'screens/mobile/more_screen.dart';
 import 'screens/shared/campus_map_screen.dart';
 import 'services/runtime_mode_service.dart';
-import 'services/device_service.dart';
 import 'services/update_notification_service.dart';
 import 'services/home_widget_service.dart';
 import 'services/global_readings_listener.dart';
-import 'services/prediction_service.dart';
 import 'theme/app_colors.dart';
 import 'widgets/idle_timeout_wrapper.dart';
 import 'theme/app_fonts.dart';
@@ -50,15 +48,7 @@ void main() async {
     unawaited(() async {
       await GlobalReadingsListener().initialize();
     }());
-    // Start background device listener (continues regardless of screen state)
-    DeviceService().initialize();
-    // Start in-app periodic prediction service (computes fallback forecasts and
-    // writes them to RTDB). Interval default: 6 hours.
-    unawaited(() async {
-      try {
-        await PredictionService().initialize();
-      } catch (_) {}
-    }());
+    // Forecasts are written only by tools/train_and_push.py; the app reads them.
     // Initialize home screen widget
     await HomeWidgetService.initialize();
     unawaited(() async {
@@ -111,15 +101,7 @@ Future<void> _initializeMobileWeb() async {
   unawaited(() async {
     await GlobalReadingsListener().initialize();
   }());
-  // Start background device listener (continues regardless of screen state)
-  DeviceService().initialize();
-  // Start in-app periodic prediction service (computes fallback forecasts and
-  // writes them to RTDB). Interval default: 6 hours.
-  unawaited(() async {
-    try {
-      await PredictionService().initialize();
-    } catch (_) {}
-  }());
+  // Forecasts are written only by tools/train_and_push.py; the app reads them.
   unawaited(() async {
     await UpdateNotificationService.checkAndNotifyIfNewRelease();
   }());

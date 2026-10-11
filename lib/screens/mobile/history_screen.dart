@@ -12,10 +12,14 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/device_live.dart';
+import '../../services/device_registry.dart';
+import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
 import '../../services/forecast_models.dart';
 import '../../utils/last_seen.dart';
+import '../../widgets/history_start_notice.dart';
 import '../../widgets/app_bottom_sheet.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/app_chip.dart';
@@ -134,44 +138,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Map<String, int> _buildingFloors = {};
   double _electricityRate = 11.52;
 
-  // Kept for the Excel export only (legacy `history/{daily,weekly,monthly,
-  // yearly}` aggregate buckets -- a different, older aggregation than the
-  // per-device `history/daily/*/devices` node the rest of this screen reads
-  // via [parseDaily]). See the class doc and the final report for why both
-  // still coexist.
-  Map<String, double> _utilityTotals = {};
-  Map<String, double> _buildingTotals = {};
   int _onlineCount = 0;
   int _offlineCount = 0;
   bool _exporting = false;
 
+  /// `energy_summaries/daily` in the legacy `history/daily` shape.
   Object? _historyDailyRaw;
-  Set<String> _deletedDaily = const {};
 
   Object? _rowsCacheSrc;
   Map<String, DeviceMeta>? _rowsCacheMeta;
-  Set<String>? _rowsCacheDeleted;
   Object? _rowsCacheRateLog;
   double? _rowsCacheRate;
   List<UsageRow> _rowsCache = const [];
 
-  /// Every parsed `history/daily` row (all dates, all devices), cached so
-  /// repeated calls within one build don't re-walk the raw snapshot.
+  /// Every parsed daily row (all dates, all devices), cached so repeated
+  /// calls within one build don't re-walk the raw snapshot.
   List<UsageRow> get _allRows {
     final src = _historyDailyRaw;
     if (!identical(src, _rowsCacheSrc) ||
         !identical(_meta, _rowsCacheMeta) ||
-        !identical(_deletedDaily, _rowsCacheDeleted) ||
         !identical(_rateLog.value, _rowsCacheRateLog) ||
         _electricityRate != _rowsCacheRate) {
       _rowsCacheSrc = src;
       _rowsCacheMeta = _meta;
-      _rowsCacheDeleted = _deletedDaily;
       _rowsCacheRateLog = _rateLog.value;
       _rowsCacheRate = _electricityRate;
       _rowsCache = parseDaily(src, _meta,
-          rates: RateHistory.instance.timeline(_electricityRate),
-          deleted: _deletedDaily);
+          rates: RateHistory.instance.timeline(_electricityRate));
     }
     return _rowsCache;
   }
@@ -269,8 +262,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref('history/daily').onValue,
-      FirebaseDatabase.instance.ref('history/deleted/daily').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.analyticsDays)
+          .onValue,
+      FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -296,33 +294,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
   /// [_listenAll] only so it can be wrapped in a try/catch there -- this
   /// must be called from inside a `setState(() { ... })`.
   void _applyListenAllEvents(List<DatabaseEvent> events) {
-    final devicesRaw = events[0].snapshot.value;
-    if (devicesRaw is Map) {
+    final devicesRaw =
+        DeviceLive.merge(events[0].snapshot.value, events[5].snapshot.value);
+    if (devicesRaw.isNotEmpty || !_isLoading) {
       final data = Map<String, dynamic>.from(devicesRaw);
       _meta = DeviceMeta.parseAll(data);
-      final utilityTotals = <String, double>{};
-      final buildingTotals = <String, double>{};
       int online = 0, offline = 0;
+      final registry = events[4].snapshot.value;
       data.forEach((id, val) {
-        if (val is! Map) return;
-        final device = Map<String, dynamic>.from(val);
-        final utility = (device['utility'] ?? 'Unknown').toString();
-        final building = (device['building'] ?? 'Unknown').toString();
-        final kwh = (device['kwh'] ?? 0.0) as num;
-        utilityTotals[utility] = (utilityTotals[utility] ?? 0) + kwh.toDouble();
-        buildingTotals[building] =
-            (buildingTotals[building] ?? 0) + kwh.toDouble();
-        final isOnline = isRecentlySeen(device['last_seen']);
+        if (val is! Map || !DeviceRegistry.isRegistered(registry, id)) return;
+        final isOnline = isDeviceOnline(val);
         isOnline ? online++ : offline++;
       });
-      _utilityTotals = utilityTotals;
-      _buildingTotals = buildingTotals;
       _onlineCount = online;
       _offlineCount = offline;
     } else if (_isLoading) {
       _meta = {};
-      _utilityTotals = {};
-      _buildingTotals = {};
       _onlineCount = 0;
       _offlineCount = 0;
     }
@@ -352,15 +339,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _electricityRate = 11.52;
     }
 
-    _historyDailyRaw = events[3].snapshot.value;
-
-    final deletedRaw = events[4].snapshot.value;
-    if (deletedRaw is Map) {
-      _deletedDaily =
-          Set<String>.from(Map<String, dynamic>.from(deletedRaw).keys);
-    } else if (_isLoading) {
-      _deletedDaily = const {};
-    }
+    _historyDailyRaw = EnergyHistory.legacyRange(events[3].snapshot.value);
 
     _isLoading = false;
     _errorText = null;
@@ -681,10 +660,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final compareTotal = compareRows == null ? null : _metric(compareRows, f);
     final ds = _devicesInScope(f);
 
-    final header = _buildHeader(
-      f.rangeName,
-      '${spanText(span)} · ${_scopeLabel(f)}${f.hasUtility ? ' · ${f.utilityName}' : ''}',
-    );
+    final header = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _buildHeader(
+        f.rangeName,
+        '${spanText(span)} · ${_scopeLabel(f)}${f.hasUtility ? ' · ${f.utilityName}' : ''}',
+      ),
+      HistoryStartNotice(
+          rangeStart: span.start, padding: const EdgeInsets.only(top: 8)),
+    ]);
 
     if (ds.isEmpty || total == 0) {
       return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1837,9 +1820,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     });
   }
 
-  // ── Excel export (unchanged behavior from the pre-redesign screen; reads
-  // the legacy `history/{daily,weekly,monthly,yearly}` aggregate node fresh
-  // via `.get()`, independent of the per-device model used above) ─────────
+  // ── Excel export: reads the daily/weekly/monthly/yearly summaries fresh
+  // via `.get()`, independent of the per-device model used above ──────────
 
   double _asDouble(dynamic value) {
     if (value is num) return value.toDouble();
@@ -1880,91 +1862,53 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  DateTime? _rawEntryTimestamp(Map<String, dynamic> entry, String fallbackKey) {
-    final rawTs = entry['ts'] ?? entry['last_update'] ?? entry['timestamp'];
-    if (rawTs is num) return DateTime.fromMillisecondsSinceEpoch(rawTs.toInt());
-    if (rawTs is String) {
-      final asInt = int.tryParse(rawTs);
-      if (asInt != null) return DateTime.fromMillisecondsSinceEpoch(asInt);
-      return DateTime.tryParse(rawTs);
-    }
-    final prefix = fallbackKey.contains('_')
-        ? fallbackKey.substring(0, fallbackKey.indexOf('_'))
-        : fallbackKey;
-    final keyTs = int.tryParse(prefix);
-    if (keyTs != null) return DateTime.fromMillisecondsSinceEpoch(keyTs);
-    return null;
-  }
-
-  String _rangeLabel(DateTime timestamp, String rangeKey) {
-    switch (rangeKey) {
-      case 'daily':
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-      case 'weekly':
-        return '${timestamp.year}-W${_pad(_isoWeek(timestamp))}';
-      case 'monthly':
-        return '${timestamp.year}-${_pad(timestamp.month)}';
-      case 'yearly':
-        return '${timestamp.year}';
-      default:
-        return '${timestamp.year}-${_pad(timestamp.month)}-${_pad(timestamp.day)}';
-    }
-  }
-
+  /// One range of [root] as `{label, kwh, cost}` rows, oldest first.
   List<Map<String, dynamic>> _parseRangeEntries(
-      Map<String, dynamic> root, String rangeKey,
-      [Set<String>? deleted]) {
-    final deletedEntries = deleted ?? const <String>{};
-    final directRangeNode = root[rangeKey];
-    final hasDirectRangeNode = directRangeNode is Map &&
-        _matchingKeyCount(
-                Map<String, dynamic>.from(directRangeNode), rangeKey) >
-            0;
-    final data = hasDirectRangeNode
-        ? Map<String, dynamic>.from(directRangeNode)
-        : _pickRangeNode(root, rangeKey);
+      Map<String, dynamic> root, String rangeKey) {
     final list = <Map<String, dynamic>>[];
-
-    data.forEach((key, val) {
+    _pickRangeNode(root, rangeKey).forEach((key, val) {
       if (val is! Map) return;
-      if (deletedEntries.contains(key)) return;
-      final entry = Map<String, dynamic>.from(val);
       list.add({
         'label': key,
-        'kwh': _asDouble(entry['kwh'] ?? entry['total_kwh']),
-        'cost': _asDouble(entry['cost'] ?? entry['total_cost']),
+        'kwh': _asDouble(val['total_kwh']),
+        'cost': _asDouble(val['total_cost']),
       });
     });
+    list.sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
+    return list;
+  }
 
-    if (list.isNotEmpty || hasDirectRangeNode) {
-      list.sort(
-          (a, b) => a['label'].toString().compareTo(b['label'].toString()));
-      return list;
+  /// All recorded energy (the yearly summaries added up) per building and
+  /// per utility, for the export's breakdown sheets.
+  ({Map<String, double> buildings, Map<String, double> utilities})
+      _recordedBreakdown(Map<String, dynamic> root) {
+    final buildings = <String, double>{};
+    final utilities = <String, double>{};
+    final years = root['yearly'];
+    if (years is Map) {
+      for (final year in years.values) {
+        if (year is! Map) continue;
+        final b = year['buildings'];
+        if (b is Map) {
+          b.forEach((code, node) {
+            final kwh = node is Map ? node['kwh'] : null;
+            if (kwh is num) {
+              buildings['$code'] = (buildings['$code'] ?? 0) + kwh.toDouble();
+            }
+          });
+        }
+        final d = year['devices'];
+        if (d is Map) {
+          d.forEach((id, node) {
+            final kwh = node is Map ? node['kwh'] : null;
+            if (kwh is! num) return;
+            final utility = _meta['$id']?.utility ?? 'Unknown';
+            utilities[utility] = (utilities[utility] ?? 0) + kwh.toDouble();
+          });
+        }
+      }
     }
-
-    final rawRoot = root['raw'];
-    if (rawRoot is! Map) return list;
-
-    final grouped = <String, Map<String, dynamic>>{};
-    final rawMap = Map<String, dynamic>.from(rawRoot);
-
-    rawMap.forEach((key, val) {
-      if (val is! Map) return;
-      final entry = Map<String, dynamic>.from(val);
-      final timestamp = _rawEntryTimestamp(entry, key.toString());
-      if (timestamp == null) return;
-      final label = _rangeLabel(timestamp, rangeKey);
-      final kwh = _asDouble(entry['kwh']);
-      final cost = _asDouble(entry['cost']);
-      final bucket = grouped.putIfAbsent(
-          label, () => {'label': label, 'kwh': 0.0, 'cost': 0.0});
-      bucket['kwh'] = (bucket['kwh'] as double) + kwh;
-      bucket['cost'] = (bucket['cost'] as double) + cost;
-    });
-
-    final groupedList = grouped.values.toList()
-      ..sort((a, b) => a['label'].toString().compareTo(b['label'].toString()));
-    return groupedList;
+    return (buildings: buildings, utilities: utilities);
   }
 
   String _levelIndicator(double value, double average) {
@@ -2002,37 +1946,26 @@ class _HistoryScreenState extends State<HistoryScreen> {
     setState(() => _exporting = true);
 
     try {
-      final snapshot = await FirebaseDatabase.instance.ref('history').get();
-      final raw = snapshot.value;
-      if (raw is! Map) {
-        if (mounted) TopToast.threshold(context, 'No history data to export.');
-        return;
-      }
-
-      final historyRoot = Map<String, dynamic>.from(raw);
-
-      const exportRanges = ['daily', 'weekly', 'monthly', 'yearly'];
-      final exportDeletedSnapshots = await Future.wait(exportRanges.map(
-          (range) =>
-              FirebaseDatabase.instance.ref('history/deleted/$range').get()));
-      final deletedMap = <String, Set<String>>{};
-      for (var i = 0; i < exportRanges.length; i++) {
-        final deleted = <String>{};
-        final value = exportDeletedSnapshots[i].value;
-        if (value is Map) deleted.addAll(Map<String, dynamic>.from(value).keys);
-        deletedMap[exportRanges[i]] = deleted;
-      }
+      final snapshots = await Future.wait(EnergyHistory.ranges.map((range) =>
+          // Bounded like every history read (the rules require it).
+          FirebaseDatabase.instance
+              .ref(EnergyHistory.path(range))
+              .orderByKey()
+              .limitToLast(EnergyHistory.analyticsDays)
+              .get()));
+      final historyRoot = <String, dynamic>{
+        for (var i = 0; i < EnergyHistory.ranges.length; i++)
+          EnergyHistory.ranges[i]:
+              EnergyHistory.legacyRange(snapshots[i].value),
+      };
 
       final clustered = <String, List<Map<String, dynamic>>>{
-        'yearly': _parseRangeEntries(
-            historyRoot, 'yearly', deletedMap['yearly'] ?? {}),
-        'monthly': _parseRangeEntries(
-            historyRoot, 'monthly', deletedMap['monthly'] ?? {}),
-        'weekly': _parseRangeEntries(
-            historyRoot, 'weekly', deletedMap['weekly'] ?? {}),
-        'daily':
-            _parseRangeEntries(historyRoot, 'daily', deletedMap['daily'] ?? {}),
+        'yearly': _parseRangeEntries(historyRoot, 'yearly'),
+        'monthly': _parseRangeEntries(historyRoot, 'monthly'),
+        'weekly': _parseRangeEntries(historyRoot, 'weekly'),
+        'daily': _parseRangeEntries(historyRoot, 'daily'),
       };
+      final breakdown = _recordedBreakdown(historyRoot);
 
       final hasData = clustered.values.any((list) => list.isNotEmpty);
       if (!hasData) {
@@ -2244,7 +2177,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       writeRow(buildingsSheet, br++, ['Building Breakdown'], style: titleStyle);
       writeRow(buildingsSheet, br++, ['Institute', 'Energy (kWh)'],
           style: headerStyle);
-      final sortedBuildings = _buildingTotals.entries.toList()
+      final sortedBuildings = breakdown.buildings.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
       for (final e in sortedBuildings) {
         writeRow(buildingsSheet, br++, [e.key, e.value.toStringAsFixed(2)]);
@@ -2256,7 +2189,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       writeRow(utilitiesSheet, ur++, ['Utility Breakdown'], style: titleStyle);
       writeRow(utilitiesSheet, ur++, ['Utility', 'Energy (kWh)'],
           style: headerStyle);
-      final sortedUtilities = _utilityTotals.entries.toList()
+      final sortedUtilities = breakdown.utilities.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
       for (final e in sortedUtilities) {
         writeRow(utilitiesSheet, ur++, [e.key, e.value.toStringAsFixed(2)]);
@@ -2288,13 +2221,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _pad(int n) => n.toString().padLeft(2, '0');
-  int _isoWeek(DateTime date) {
-    final startOfYear = DateTime(date.year, 1, 1);
-    final firstMonday = startOfYear.weekday;
-    final dayOfYear = date.difference(startOfYear).inDays + 1;
-    final weekNumber = ((dayOfYear + firstMonday - 2) / 7).ceil();
-    return weekNumber < 1 ? 1 : weekNumber;
-  }
 
   String _capitalizeFirst(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1).toLowerCase();

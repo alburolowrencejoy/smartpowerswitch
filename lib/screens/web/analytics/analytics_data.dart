@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../services/rate_timeline.dart';
 import 'analytics_filter.dart';
+import '../../../utils/last_seen.dart';
 
 /// Live facts about one device from the `devices` node.
 @immutable
@@ -27,13 +28,9 @@ class DeviceMeta {
   static Map<String, DeviceMeta> parseAll(Object? raw) {
     final out = <String, DeviceMeta>{};
     if (raw is! Map) return out;
-    final now = DateTime.now().millisecondsSinceEpoch;
     raw.forEach((id, val) {
       if (val is! Map) return;
-      final lastSeen = val['last_seen'];
-      final online = lastSeen is num && lastSeen > 0
-          ? now - lastSeen.toInt() < 2 * 60 * 1000
-          : false;
+      final online = isDeviceOnline(val);
       out[id.toString()] = DeviceMeta(
         id: id.toString(),
         building: (val['building'] ?? '').toString(),
@@ -87,25 +84,25 @@ double _num(Object? v) {
 
 final _dayKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 
-/// Flattens a `history/daily` snapshot (`{yyyy-MM-dd: {devices: {id: {kwh,
+/// Flattens a daily snapshot in the legacy `history/daily` shape (see
+/// `EnergyHistory.legacyRange`: `{yyyy-MM-dd: {devices: {id: {kwh, cost,
 /// building}}, buildings: {...}, total_kwh}}`) into per-device rows.
 /// Days without per-device entries fall back to per-building totals, then
-/// to the day total, so old data still counts toward campus-wide numbers.
+/// to the day total.
 List<UsageRow> parseDaily(
   Object? raw,
   Map<String, DeviceMeta> meta, {
   required RateTimeline rates,
-  Set<String> deleted = const {},
   DateTime? until,
 }) {
   final rows = <UsageRow>[];
   // Stored cost when the record has one; otherwise kWh at that day's rate.
   double costOf(Object? stored, double kwh, DateTime date) =>
-      stored is num ? stored.toDouble() : kwh * rates.rateForDay(date);
+      rates.costOf(stored, kwh, date);
   if (raw is! Map) return rows;
   raw.forEach((key, val) {
     final k = key.toString();
-    if (!_dayKeyPattern.hasMatch(k) || deleted.contains(k) || val is! Map) {
+    if (!_dayKeyPattern.hasMatch(k) || val is! Map) {
       return;
     }
     final date = DateTime.tryParse(k);

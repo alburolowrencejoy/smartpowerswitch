@@ -6,256 +6,37 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 
 admin.initializeApp();
 
-function parseBoolean(value) {
-  if (typeof value === 'boolean') return value;
-  return String(value).toLowerCase().trim() === 'true';
-}
-
-function normalizeText(value) {
-  return String(value ?? '').trim();
-}
-
-function canonicalUtility(value) {
-  const normalized = String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
-
-  switch (normalized) {
-    case 'light':
-    case 'lights':
-      return 'lights';
-    case 'outlet':
-    case 'outlets':
-      return 'outlets';
-    case 'ac':
-    case 'aircon':
-    case 'airconditioner':
-    case 'airconditioners':
-    case 'airconditioning':
-      return 'ac';
-    case 'all':
-    case '':
-      return 'all';
-    default:
-      return normalized;
-  }
-}
-
-function dayLabelFromWeekday(weekday) {
-  switch (weekday) {
-    case 1: return 'Mon';
-    case 2: return 'Tue';
-    case 3: return 'Wed';
-    case 4: return 'Thu';
-    case 5: return 'Fri';
-    case 6: return 'Sat';
-    case 7: return 'Sun';
-    default: return 'Mon';
-  }
-}
-
-function previousDayLabel(day) {
-  switch (day) {
-    case 'Mon': return 'Sun';
-    case 'Tue': return 'Mon';
-    case 'Wed': return 'Tue';
-    case 'Thu': return 'Wed';
-    case 'Fri': return 'Thu';
-    case 'Sat': return 'Fri';
-    case 'Sun': return 'Sat';
-    default: return 'Sun';
-  }
-}
-
-function getClockParts(timeZone) {
-  try {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-
-    const parts = formatter.formatToParts(new Date());
-    const values = {};
-    for (const part of parts) {
-      values[part.type] = part.value;
-    }
-
-    return {
-      day: values.weekday,
-      hour: Number(values.hour),
-      minute: Number(values.minute),
-    };
-  } catch (error) {
-    console.log(`[AutomationScheduler] invalid timezone "${timeZone}", falling back to UTC: ${error.message}`);
-    const fallback = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'UTC',
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-
-    const parts = fallback.formatToParts(new Date());
-    const values = {};
-    for (const part of parts) {
-      values[part.type] = part.value;
-    }
-
-    return {
-      day: values.weekday,
-      hour: Number(values.hour),
-      minute: Number(values.minute),
-    };
-  }
-}
-
-function parseMinutes(value) {
-  const parts = String(value ?? '').split(':');
-  if (parts.length !== 2) return null;
-
-  const hour = Number(parts[0]);
-  const minute = Number(parts[1]);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-
-  return hour * 60 + minute;
-}
-
-function parseAutomationSchedule(id, data) {
-  const rawDays = data.days;
-  let days = [];
-  if (Array.isArray(rawDays)) {
-    days = rawDays.map((day) => String(day));
-  } else if (rawDays && typeof rawDays === 'object') {
-    days = Object.values(rawDays).map((day) => String(day));
-  }
-
-  const legacyAction = String(data.action ?? '').toLowerCase();
-  const legacyTime = String(data.time ?? '');
-
-  let onTime = String(data.onTime ?? '');
-  let offTime = String(data.offTime ?? '');
-
-  if (!onTime && legacyAction === 'on' && legacyTime) onTime = legacyTime;
-  if (!offTime && legacyAction === 'off' && legacyTime) offTime = legacyTime;
-  if (!onTime) onTime = '08:00';
-  if (!offTime) offTime = '18:00';
-
-  return {
-    id,
-    scope: String(data.scope ?? 'global'),
-    target: String(data.target ?? 'all'),
-    utility: String(data.utility ?? 'All'),
-    onTime,
-    offTime,
-    days,
-    enabled: parseBoolean(data.enabled ?? true),
-  };
-}
-
-function isBuildingMatch(expected, actual) {
-  return normalizeText(expected).toUpperCase() === normalizeText(actual).toUpperCase();
-}
-
-function isUtilityMatch(expected, actual) {
-  const normalizedExpected = canonicalUtility(expected);
-  if (normalizedExpected === 'all') return true;
-  return normalizedExpected === canonicalUtility(actual);
-}
-
-function matchesScheduleWindow(schedule, day, currentMinutes) {
-  const onMinutes = parseMinutes(schedule.onTime);
-  const offMinutes = parseMinutes(schedule.offTime);
-  if (onMinutes == null || offMinutes == null) return null;
-
-  const activeDay = schedule.days.includes(day);
-  const previousDay = schedule.days.includes(previousDayLabel(day));
-
-  if (activeDay && currentMinutes === onMinutes) {
-    return 'on';
-  }
-
-  if (currentMinutes !== offMinutes) {
-    return null;
-  }
-
-  if (onMinutes > offMinutes) {
-    return previousDay ? 'off' : null;
-  }
-
-  return activeDay ? 'off' : null;
-}
-
-async function mirrorRelay(deviceId, building, floor, relay) {
-  if (!building || !floor) return;
-
-  await admin
-    .database()
-    .ref(`buildings/${building}/floorData/${floor}/devices/${deviceId}/relay`)
-    .set(relay);
-}
+// ── Automation schedules ────────────────────────────────────────────
+// The schedule rules live in schedule_logic.js (ported from the app's
+// scheduler, so calendar date ranges, multiple windows and overnight
+// windows all run on the server).
+const { planRelayChanges } = require('./schedule_logic');
 
 async function runAutomationSchedules() {
-  const timezoneSnap = await admin.database().ref('settings/timezone').get();
-  const timezone = String(timezoneSnap.val() ?? 'Asia/Manila');
-  const clock = getClockParts(timezone);
-  const currentMinutes = clock.hour * 60 + clock.minute;
-  const day = clock.day || 'Mon';
-
-  const [automationSnap, deviceSnap] = await Promise.all([
+  const [timezoneSnap, automationSnap, deviceSnap] = await Promise.all([
+    admin.database().ref('settings/timezone').get(),
     admin.database().ref('automations').get(),
     admin.database().ref('devices').get(),
   ]);
 
-  const automationRaw = automationSnap.val();
-  const deviceRaw = deviceSnap.val();
+  const changes = planRelayChanges({
+    automations: automationSnap.val(),
+    devices: deviceSnap.val(),
+    nowMs: Date.now(),
+    timeZone: String(timezoneSnap.val() ?? 'Asia/Manila'),
+  });
 
-  if (!automationRaw || typeof automationRaw !== 'object') return;
-  if (!deviceRaw || typeof deviceRaw !== 'object') return;
-
-  const automations = Object.entries(automationRaw)
-    .filter(([, value]) => value && typeof value === 'object')
-    .map(([id, value]) => parseAutomationSchedule(id, value));
-
-  const devices = Object.entries(deviceRaw)
-    .filter(([, value]) => value && typeof value === 'object')
-    .map(([deviceId, value]) => [deviceId, value]);
-
-  for (const schedule of automations) {
-    if (!schedule.enabled) continue;
-
-    const action = matchesScheduleWindow(schedule, day, currentMinutes);
-    if (!action) continue;
-
-    const desiredRelay = action === 'on';
-    for (const [deviceId, device] of devices) {
-      const scope = schedule.scope;
-      const target = schedule.target;
-      const utility = schedule.utility;
-
-      let matches = false;
-      if (scope === 'global') {
-        matches = isUtilityMatch(utility, device.utility);
-      } else if (scope === 'building') {
-        matches = isBuildingMatch(target, device.building) && isUtilityMatch(utility, device.utility);
-      } else if (scope === 'utility') {
-        matches = isUtilityMatch(target, device.utility);
-      } else if (scope === 'device') {
-        matches = normalizeText(deviceId) === normalizeText(target);
-      }
-
-      if (!matches) continue;
-
-      const currentRelay = parseBoolean(device.relay);
-      if (currentRelay === desiredRelay) continue;
-
-      await admin.database().ref(`devices/${deviceId}/relay`).set(desiredRelay);
-      await mirrorRelay(deviceId, normalizeText(device.building), normalizeText(device.floor), desiredRelay);
-      console.log(`[AutomationScheduler] ${deviceId} -> ${desiredRelay ? 'ON' : 'OFF'}`);
-    }
+  // Each change is a command (device_commands); the old relay field is
+  // written too while boards still run the old firmware (Phase 5 transition).
+  for (const { deviceId, relay } of changes) {
+    await admin.database().ref().update({
+      [`device_commands/${deviceId}/desiredRelay`]: relay,
+      [`device_commands/${deviceId}/commandId`]: `${Date.now()}-sched`,
+      [`device_commands/${deviceId}/issuedAt`]: admin.database.ServerValue.TIMESTAMP,
+      [`device_commands/${deviceId}/issuedBy`]: 'scheduler',
+      [`devices/${deviceId}/relay`]: relay,
+    });
+    console.log(`[AutomationScheduler] ${deviceId} -> ${relay ? 'ON' : 'OFF'}`);
   }
 }
 
@@ -279,9 +60,13 @@ async function assertCanManageUser(callerUid, targetUid) {
     return;
   }
 
+  // Institute admins: faculty and institute admins of their own institute,
+  // never a main-admin tier (same limit as the users/{uid} database rule).
   if (callerRole === 'institute_admin' && caller.institute) {
     const target = targetSnap.val() || {};
-    if (target.institute === caller.institute) {
+    if (target.institute === caller.institute &&
+        (target.role === 'faculty' || target.role === 'institute_admin') &&
+        target.isMainAdmin !== true) {
       return;
     }
   }
@@ -307,7 +92,7 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
       'invalid-argument', 'uid and newPassword are required.');
   }
 
-  if (newPassword.length < 6) {
+  if (typeof uid !== 'string' || typeof newPassword !== 'string' || newPassword.length < 6) {
     throw new functions.https.HttpsError(
       'invalid-argument', 'Password must be at least 6 characters.');
   }
@@ -315,8 +100,11 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   // 3. Must be an admin tier authorized to manage this target user
   await assertCanManageUser(callerUid, uid);
 
-  // 4. Update password using Admin SDK
+  // 4. Update password using Admin SDK, then sign the user out everywhere:
+  // revoking refresh tokens stops new ID tokens; the current one expires
+  // within an hour.
   await admin.auth().updateUser(uid, { password: newPassword });
+  await admin.auth().revokeRefreshTokens(uid);
 
   // 5. Clean up the passwordReset flag in DB if it exists
   await admin.database().ref(`users/${uid}/passwordReset`).remove();
@@ -331,53 +119,15 @@ exports.watchDavaoLight = davaoLight.watchDavaoLight;
 exports.checkDavaoLightNow = davaoLight.checkDavaoLightNow;
 exports.verifyAdvisoryText = davaoLight.verifyAdvisoryText;
 
-// ── Auto-write PZEM history when device kwh changes ─────────────
-const { writeHistoryForDevice } = require('./history_writer');
+// ── Energy history: once-a-minute rollup (the only history writer) ──
+// Replaces onDeviceKwhChange, which added the meter's lifetime total on
+// every reading. See energy_rollup.js / energy_math.js.
+exports.rollupEnergy = require('./energy_rollup').rollupEnergy;
 
-exports.onDeviceKwhChange = functions.database
-  .ref('devices/{deviceId}/kwh')
-  .onWrite(async (change, context) => {
-    const deviceId = context.params.deviceId;
-    const oldKwh = change.before.val();
-    const newKwh = change.after.val();
-
-    // Only process if new kwh value exists and is valid
-    if (typeof newKwh !== 'number' || newKwh < 0) {
-      return;
-    }
-
-    // Skip if this is the first write (oldKwh is null/undefined) or value hasn't changed
-    // This prevents duplicate history entries from re-listens or reconnects
-    if (oldKwh === null || oldKwh === undefined || oldKwh === newKwh) {
-      return;
-    }
-
-    try {
-      // Get device building info and relay status
-      const deviceSnap = await admin.database().ref(`devices/${deviceId}`).get();
-      const device = deviceSnap.val();
-
-      if (!device || !device.building) {
-        return;
-      }
-
-      // ⚠️ CRITICAL: Only write history if relay is ON (device actively consuming power)
-      // This prevents history logging when device UI is opened but device is powered off
-      const relayOn = device.relay === true;
-      if (!relayOn) {
-        console.log(`[onDeviceKwhChange] Skipping ${deviceId}: relay is OFF`);
-        return;
-      }
-
-      const building = String(device.building).trim();
-      const kwh = parseFloat(newKwh);
-
-      // Write the kwh change to history only if device is actively running
-      await writeHistoryForDevice(deviceId, building, kwh);
-    } catch (error) {
-      console.error(`[onDeviceKwhChange] Error processing ${deviceId}: ${error.message}`);
-    }
-  });
+// ── Energy history retention + monitoring (Phase 6) ──────────────────
+const energyMaintenance = require('./energy_maintenance');
+exports.pruneHistory = energyMaintenance.pruneHistory;
+exports.checkEnergyHealth = energyMaintenance.checkEnergyHealth;
 
 // ── Run automation scheduler every minute ─────────────────────────
 exports.runAutomationScheduler = onSchedule('* * * * *', runAutomationSchedules);
@@ -405,7 +155,10 @@ exports.deleteUser = functions.https.onCall(async (data, context) => {
 
   await assertCanManageUser(callerUid, uid);
 
-  // Delete from Firebase Auth
+  // Sign the user out everywhere, then delete from Firebase Auth. (Removing
+  // users/{uid} below also ends their database access at once: every rule
+  // looks up the caller's role there.)
+  await admin.auth().revokeRefreshTokens(uid);
   await admin.auth().deleteUser(uid);
 
   // Delete from Realtime Database

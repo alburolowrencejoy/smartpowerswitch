@@ -2,6 +2,11 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'device_live.dart';
+import 'energy_history.dart';
+import 'history_clock.dart';
+import 'history_keys.dart';
+
 /// Service to manage home screen widget updates
 class HomeWidgetService {
   /// Initialize home widget updates
@@ -30,24 +35,36 @@ class HomeWidgetService {
         return;
       }
 
-      // Fetch device data from Firebase
-      final ref = FirebaseDatabase.instance.ref('devices/$deviceId');
-      final snapshot = await ref.get();
-
-      if (!snapshot.exists) {
+      // Live readings: device_live (firmware 2.0+) merged over devices.
+      final snaps = await Future.wait([
+        FirebaseDatabase.instance.ref('devices/$deviceId').get(),
+        FirebaseDatabase.instance.ref('device_live/$deviceId').get(),
+      ]);
+      final data = DeviceLive.mergeOne(snaps[0].value, snaps[1].value);
+      if (data == null) {
         await _updateWidgetOffline('Device Not Found');
         return;
       }
 
-      final data = Map<String, dynamic>.from(snapshot.value as Map);
+      // Today's energy and its stored cost, from the daily summary written
+      // by the server (`devices/{id}/kwh` is the meter's lifetime total).
+      final today = HistoryClock.realNow();
+      final todaySnap = await FirebaseDatabase.instance
+          .ref('${EnergyHistory.path('daily', HistoryKeys.dailyKey(today.year, today.month, today.day))}'
+              '/devices/$deviceId')
+          .get();
+      final todayNode = todaySnap.value;
+      final kwh = todayNode is Map && todayNode['kwh'] is num
+          ? (todayNode['kwh'] as num).toDouble()
+          : 0.0;
+      final cost = (todayNode is Map && todayNode['cost'] is num
+              ? (todayNode['cost'] as num).toDouble()
+              : 0.0)
+          .toStringAsFixed(2);
 
-      // Extract metrics
-      final kwh = (data['kwh'] as num?)?.toDouble() ?? 0.0;
       final voltage = (data['voltage'] as num?)?.toDouble() ?? 0.0;
       final power = (data['power'] as num?)?.toDouble() ?? 0.0;
       final status = (data['status'] as String?) ?? 'offline';
-      const rate = 11.5; // PHP per kWh
-      final cost = (kwh * rate).toStringAsFixed(2);
 
       // Determine voltage status
       final voltageStatus = _getVoltageStatus(voltage);
