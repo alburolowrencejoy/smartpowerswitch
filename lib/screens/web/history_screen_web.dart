@@ -25,6 +25,7 @@ import 'history_trend_panel.dart';
 import 'web_theme.dart';
 import 'web_trend_chart.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -323,13 +324,16 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
       setState(() {
         _applyRate(events[0].snapshot.value);
-        _applyDevices(events[1].snapshot.value, events[3].snapshot.value);
+        _applyDevices(
+            DeviceLive.merge(events[1].snapshot.value, events[4].snapshot.value),
+            events[3].snapshot.value);
         _applyHistory(events[2].snapshot.value);
         _hasLoadedOnce = true;
         _isLoading = false;

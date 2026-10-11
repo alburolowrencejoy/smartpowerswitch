@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/institute_colors.dart';
@@ -77,6 +78,7 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
   @override
   void dispose() {
     _devicesSub?.cancel();
+    _liveV2Sub?.cancel();
     _masterSub?.cancel();
     super.dispose();
   }
@@ -90,12 +92,14 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
   /// Latest `master_devices` (the registry) and `devices` (live readings);
   /// [_devices] is rebuilt from both whenever either changes.
   Object? _masterRaw;
-  Object? _liveRaw;
+  Object? _liveRaw; // devices (old firmware)
+  Object? _liveV2Raw; // device_live (firmware 2.0+)
+  StreamSubscription<DatabaseEvent>? _liveV2Sub;
 
   void _rebuildDevices() {
     _devices = {
       for (final d in DeviceRegistry.inPlace(
-          DeviceRegistry.parse(_masterRaw, _liveRaw),
+          DeviceRegistry.parse(_masterRaw, DeviceLive.merge(_liveRaw, _liveV2Raw)),
           building: widget.buildingCode,
           floor: widget.floor))
         d.id: <String, dynamic>{
@@ -108,8 +112,17 @@ class _RoomDevicesPanelState extends State<RoomDevicesPanel> {
     };
   }
 
-  /// Live readings (relay, status) for the device grid.
+  /// Live readings (relay, status) for the device grid, from both the old
+  /// `devices` record and `device_live` (see [DeviceLive]).
   void _listenDevices() {
+    _liveV2Sub =
+        FirebaseDatabase.instance.ref('device_live').onValue.listen((event) {
+      if (!mounted) return;
+      setState(() {
+        _liveV2Raw = event.snapshot.value;
+        _rebuildDevices();
+      });
+    }, onError: (Object _) {});
     _devicesSub =
         FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
       if (!mounted) return;

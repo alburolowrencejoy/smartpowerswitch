@@ -5,6 +5,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -266,6 +267,7 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
     _devicesSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       var online = 0;
@@ -273,7 +275,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
       final utilityById = <String, String>{};
       final rooms = <String, _RoomInfo>{};
       for (final d in DeviceRegistry.parse(
-          events[0].snapshot.value, events[1].snapshot.value)) {
+          events[0].snapshot.value,
+          DeviceLive.merge(events[1].snapshot.value, events[2].snapshot.value))) {
         if (code != null && d.building != code) continue;
         if (code != null && d.room.isNotEmpty) {
           final floor = d.floor == 0 ? 1 : d.floor;

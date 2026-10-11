@@ -29,6 +29,7 @@ import '../shared/campus_map_screen.dart';
 import '../web/history_trend_panel.dart';
 import '../../widgets/app_text_field.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -400,6 +401,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -462,8 +464,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // ── devices (per-building online/on signals). Energy comes from
         // the daily summary below: `devices/{id}/kwh` is a lifetime meter
         // total, not today's use. ─────────────────────────────────────
-        final devicesRaw = events[2].snapshot.value;
-        if (devicesRaw is Map) {
+        final devicesRaw =
+            DeviceLive.merge(events[2].snapshot.value, events[6].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final data = Map<String, dynamic>.from(devicesRaw);
           int onlineCount = 0;
           Map<String, int> buildingOnline = {};
@@ -611,6 +614,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseDatabase.instance
           .ref('${EnergyHistory.path('daily', keys.daily)}/devices')
           .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       setState(() {
@@ -629,8 +633,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // grouping for the Home tab's "Room load" section (handoff §5) --
         // grouped by whichever room each live device reports, with each
         // device's energy from today's summary. ─────────────────────────
-        final devicesRaw = events[0].snapshot.value;
-        if (devicesRaw is Map) {
+        final devicesRaw =
+            DeviceLive.merge(events[0].snapshot.value, events[4].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final data = Map<String, dynamic>.from(devicesRaw);
           double kwh = 0;
           int online = 0;

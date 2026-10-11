@@ -12,6 +12,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
@@ -263,6 +264,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref(EnergyHistory.path('daily')).onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -288,8 +290,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
   /// [_listenAll] only so it can be wrapped in a try/catch there -- this
   /// must be called from inside a `setState(() { ... })`.
   void _applyListenAllEvents(List<DatabaseEvent> events) {
-    final devicesRaw = events[0].snapshot.value;
-    if (devicesRaw is Map) {
+    final devicesRaw =
+        DeviceLive.merge(events[0].snapshot.value, events[5].snapshot.value);
+    if (devicesRaw.isNotEmpty || !_isLoading) {
       final data = Map<String, dynamic>.from(devicesRaw);
       _meta = DeviceMeta.parseAll(data);
       int online = 0, offline = 0;

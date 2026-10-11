@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../services/device_live.dart';
 import '../services/energy_history.dart';
 import '../services/history_clock.dart';
 import '../services/history_keys.dart';
@@ -135,10 +136,12 @@ class DashboardViewModel extends ChangeNotifier {
           .orderByChild('timestamp')
           .limitToLast(100)
           .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       _applyBuildings(events[0].snapshot.value);
       _applyMasterDevices(events[1].snapshot.value);
-      _applyEnergyData(events[2].snapshot.value);
+      _applyEnergyData(
+          DeviceLive.merge(events[2].snapshot.value, events[6].snapshot.value));
       _applyRate(events[3].snapshot.value);
       _applyHistory(events[4].snapshot.value);
       _applyNotifications(events[5].snapshot.value);

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/foundation.dart';
+import 'package:rxdart/rxdart.dart';
+import 'device_live.dart';
 import 'home_widget_service.dart';
 
 /// Global service that maintains a persistent Firebase listener
@@ -66,17 +68,18 @@ class GlobalReadingsListener {
     _realIotDeviceIds = ids;
   }
 
-  /// Single persistent listener on the whole `devices` node -- covers every
-  /// real-IoT device with one subscription instead of one listener per
-  /// device (which also never noticed devices registered after startup).
+  /// One persistent listener on `devices` + `device_live` (merged, see
+  /// [DeviceLive]) -- covers every real-IoT device with one subscription
+  /// instead of one listener per device.
   void _startListening() {
     if (_devicesSub != null) return;
 
-    _devicesSub =
-        FirebaseDatabase.instance.ref('devices').onValue.listen((event) {
-      final raw = event.snapshot.value;
-      if (raw is! Map) return;
-      final devices = Map<String, dynamic>.from(raw);
+    _devicesSub = Rx.combineLatestList<DatabaseEvent>([
+      FirebaseDatabase.instance.ref('devices').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
+    ]).listen((events) {
+      final devices =
+          DeviceLive.merge(events[0].snapshot.value, events[1].snapshot.value);
 
       for (final deviceId in _realIotDeviceIds) {
         final val = devices[deviceId];

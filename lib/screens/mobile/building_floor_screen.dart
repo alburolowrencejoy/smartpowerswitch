@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:rxdart/rxdart.dart';
+import '../../services/device_live.dart';
 import '../../services/device_commands.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
@@ -272,13 +273,15 @@ class _BuildingFloorScreenState extends State<BuildingFloorScreen> {
       FirebaseDatabase.instance
           .ref('${EnergyHistory.path('daily', HistoryKeys.of(HistoryClock.instance.now()).daily)}/devices')
           .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
         // ── flat devices node: live telemetry + online state ───────
-        final devicesRaw = events[1].snapshot.value;
-        if (devicesRaw is Map) {
+        final devicesRaw =
+            DeviceLive.merge(events[1].snapshot.value, events[3].snapshot.value);
+        if (devicesRaw.isNotEmpty || !_isLoading) {
           final liveDevices = <String, dynamic>{};
           devicesRaw.forEach((id, val) {
             if (val is! Map) return;

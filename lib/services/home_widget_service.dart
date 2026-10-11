@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'device_live.dart';
 import 'energy_history.dart';
 import 'history_clock.dart';
 import 'history_keys.dart';
@@ -34,16 +35,16 @@ class HomeWidgetService {
         return;
       }
 
-      // Fetch device data from Firebase
-      final ref = FirebaseDatabase.instance.ref('devices/$deviceId');
-      final snapshot = await ref.get();
-
-      if (!snapshot.exists) {
+      // Live readings: device_live (firmware 2.0+) merged over devices.
+      final snaps = await Future.wait([
+        FirebaseDatabase.instance.ref('devices/$deviceId').get(),
+        FirebaseDatabase.instance.ref('device_live/$deviceId').get(),
+      ]);
+      final data = DeviceLive.mergeOne(snaps[0].value, snaps[1].value);
+      if (data == null) {
         await _updateWidgetOffline('Device Not Found');
         return;
       }
-
-      final data = Map<String, dynamic>.from(snapshot.value as Map);
 
       // Today's energy and its stored cost, from the daily summary written
       // by the server (`devices/{id}/kwh` is the meter's lifetime total).

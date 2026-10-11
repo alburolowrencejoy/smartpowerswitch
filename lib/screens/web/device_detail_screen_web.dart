@@ -10,6 +10,8 @@ import '../../widgets/screen_skeleton.dart';
 import '../../widgets/delete_flow.dart';
 import '../../widgets/delete_row_transition.dart';
 import '../../widgets/top_toast.dart';
+import '../../widgets/command_status_note.dart';
+import '../../services/device_live.dart';
 import '../../services/device_commands.dart';
 import '../../services/home_widget_service.dart';
 import 'web_theme.dart';
@@ -61,6 +63,28 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   bool _toggling = false;
   double _ratePhp = 11.5;
   int? _lastRecordedSeen;
+
+  /// Last command sent to this board (`device_commands/{id}`) and the
+  /// board's acknowledgement (`device_live/{id}/state`), for the
+  /// "waiting / didn't confirm" note (see [DeviceCommands.statusOf]).
+  Object? _commandRaw;
+  Object? _liveStateRaw;
+  Timer? _commandTimer;
+
+  CommandStatus get _commandStatus =>
+      DeviceCommands.statusOf(_commandRaw, _liveStateRaw, now: DateTime.now());
+
+  /// Rebuilds once the confirm timeout has passed, so a pending command
+  /// turns into "didn't confirm" even if nothing else changes.
+  void _armCommandTimer() {
+    _commandTimer?.cancel();
+    if (_commandStatus == CommandStatus.pending) {
+      _commandTimer = Timer(const Duration(seconds: 31), () {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
   DateTime? _lastToggleTime;
 
   /// True until the combined device+rate stream's first emission. The
@@ -123,6 +147,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
   @override
   void dispose() {
     _timeoutTimer?.cancel();
+    _commandTimer?.cancel();
     _combinedSub?.cancel();
     _weekSub?.cancel();
     _monthSub?.cancel();
@@ -156,9 +181,18 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('devices/${widget.deviceId}').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
+      FirebaseDatabase.instance.ref('device_live/${widget.deviceId}').onValue,
+      FirebaseDatabase.instance
+          .ref('device_commands/${widget.deviceId}')
+          .onValue,
     ]).listen((events) {
       if (!mounted) return;
-      _applyDevice(events[0].snapshot.value);
+      // Firmware 2.0+ reports to device_live; merged over the old record.
+      final liveV2 = events[2].snapshot.value;
+      _applyDevice(DeviceLive.mergeOne(events[0].snapshot.value, liveV2));
+      _liveStateRaw = liveV2 is Map ? liveV2['state'] : null;
+      _commandRaw = events[3].snapshot.value;
+      _armCommandTimer();
       _applyRate(events[1].snapshot.value);
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
@@ -805,6 +839,7 @@ class _DeviceDetailScreenWebState extends State<DeviceDetailScreenWeb> {
             ),
           ],
         ]),
+        CommandStatusNote(status: _commandStatus),
         if (warning != null) ...[
           const SizedBox(height: 12),
           Container(

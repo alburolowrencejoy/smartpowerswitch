@@ -13,6 +13,7 @@ import '../../widgets/top_toast.dart';
 import 'web_theme.dart';
 import 'web_widgets.dart';
 import '../../theme/app_fonts.dart';
+import '../../services/device_live.dart';
 import '../../services/device_commands.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
@@ -238,12 +239,15 @@ class _BuildingFloorScreenWebState extends State<BuildingFloorScreenWeb> {
       FirebaseDatabase.instance
           .ref('${EnergyHistory.path('daily', keys.daily)}/devices')
           .onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _applyMasterDevices(events[0].snapshot.value);
       _applyHistoryKwh(events[2].snapshot.value);
-      _applyDevicesSnapshot(events[1].snapshot.value);
-      _applyFloorDevices(events[0].snapshot.value, events[1].snapshot.value);
+      final live =
+          DeviceLive.merge(events[1].snapshot.value, events[4].snapshot.value);
+      _applyDevicesSnapshot(live);
+      _applyFloorDevices(events[0].snapshot.value, live);
       _applyTodayDevices(events[3].snapshot.value);
 
       _timeoutTimer?.cancel();

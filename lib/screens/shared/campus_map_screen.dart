@@ -10,6 +10,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_text_styles.dart';
 import '../../theme/institute_colors.dart';
+import '../../services/device_live.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../widgets/app_button.dart';
@@ -335,12 +336,14 @@ class _CampusMapScreenState extends State<CampusMapScreen> {
           .onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('hotspots').onValue,
+      FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
       setState(() {
         _applyBuildings(events[2].snapshot.value);
-        _applyDevices(events[0].snapshot.value);
+        _applyDevices(
+            DeviceLive.merge(events[0].snapshot.value, events[4].snapshot.value));
         _applyHistory(events[1].snapshot.value);
         _applyZones(events[3].snapshot.value);
         _isLoading = false;
