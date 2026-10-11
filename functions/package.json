@@ -9,7 +9,8 @@
     "logs": "firebase functions:log",
     "test": "node --test",
     "test:emulator": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 energy_rollup.emulator.js\"",
-    "test:rules": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 database_rules.emulator.js\""
+    "test:rules": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 database_rules.emulator.js\"",
+    "test:restore": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test restore_backup.emulator.js\""
   },
   "engines": {
     "node": "22"
