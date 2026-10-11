@@ -25,7 +25,22 @@
     "buildings": {
       ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
       "$code": {
-        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ($code === root.child('users').child(auth.uid).child('institute').val()))"
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ($code === root.child('users').child(auth.uid).child('institute').val()))",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length <= 80"
+        },
+        "floors": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 50"
+        },
+        "floorData": {
+          "$floor": {
+            "rooms": {
+              "$i": {
+                ".validate": "newData.isString() && newData.val().length <= 60"
+              }
+            }
+          }
+        }
       }
     },
     "hotspots": {
@@ -196,15 +211,23 @@
       ".write": false
     },
     "energy_summaries": {
-      ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
-      ".write": false
+      ".write": false,
+      "$range": {
+        ".read": "((auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))) && (query.orderByKey) && ((query.limitToLast != null && query.limitToLast <= 1100) || (query.limitToFirst != null && query.limitToFirst <= 1100) || (query.startAt != null && query.endAt != null))",
+        "$key": {
+          ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))"
+        }
+      }
     },
     "notifications": {
       ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
-      ".write": "(auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))",
+      ".write": "(auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))",
       ".indexOn": [
         "timestamp"
-      ]
+      ],
+      "$id": {
+        ".write": "(((auth != null) && (((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin'))) && (!data.exists()) && (newData.child('type').val() === 'app_update')) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && (!newData.exists()) && (data.child('building').val() === root.child('users').child(auth.uid).child('institute').val()))"
+      }
     },
     "rate_changes": {
       ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
@@ -225,7 +248,64 @@
     "automations": {
       ".read": "(auth != null) && ((((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph') || root.child('users').child(auth.uid).child('role').val() === 'institute_admin') || root.child('users').child(auth.uid).child('role').val() === 'faculty'))",
       "$id": {
-        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((!data.exists()) || ((data.child('scope').val() === 'building') && (data.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((data.child('scope').val() === 'device') && ((data.child('target').isString()) && ((root.child('master_devices').child(data.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(data.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))) && ((!newData.exists()) || ((newData.child('scope').val() === 'building') && (newData.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((newData.child('scope').val() === 'device') && ((newData.child('target').isString()) && ((root.child('master_devices').child(newData.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(newData.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))))"
+        ".write": "((auth != null) && ((root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'main_admin' || root.child('users').child(auth.uid).child('role').val() === 'super_admin' || root.child('users').child(auth.uid).child('isMainAdmin').val() === true || auth.token.email === 'admin@dnsc.edu.ph'))) || (((auth != null) && (root.child('users').child(auth.uid).child('role').val() === 'institute_admin')) && ((!data.exists()) || ((data.child('scope').val() === 'building') && (data.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((data.child('scope').val() === 'device') && ((data.child('target').isString()) && ((root.child('master_devices').child(data.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(data.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))) && ((!newData.exists()) || ((newData.child('scope').val() === 'building') && (newData.child('target').val() === root.child('users').child(auth.uid).child('institute').val())) || ((newData.child('scope').val() === 'device') && ((newData.child('target').isString()) && ((root.child('master_devices').child(newData.child('target').val()).child('assignedTo').isString() && root.child('master_devices').child(newData.child('target').val()).child('assignedTo').val().beginsWith(root.child('users').child(auth.uid).child('institute').val() + '/')))))))",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length <= 80"
+        },
+        "scope": {
+          ".validate": "newData.val() === 'global' || newData.val() === 'building' || newData.val() === 'utility' || newData.val() === 'device'"
+        },
+        "target": {
+          ".validate": "newData.isString() && newData.val().length <= 64"
+        },
+        "utility": {
+          ".validate": "newData.isString() && newData.val().length <= 40"
+        },
+        "onTime": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "offTime": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "time": {
+          ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+        },
+        "action": {
+          ".validate": "newData.val() === 'on' || newData.val() === 'off'"
+        },
+        "enabled": {
+          ".validate": "newData.isBoolean()"
+        },
+        "scheduleMode": {
+          ".validate": "newData.val() === 'weekly' || newData.val() === 'calendar'"
+        },
+        "startDate": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        },
+        "endDate": {
+          ".validate": "newData.isString() && newData.val().matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)"
+        },
+        "days": {
+          "$i": {
+            ".validate": "newData.val() === 'Mon' || newData.val() === 'Tue' || newData.val() === 'Wed' || newData.val() === 'Thu' || newData.val() === 'Fri' || newData.val() === 'Sat' || newData.val() === 'Sun'"
+          }
+        },
+        "windows": {
+          "$i": {
+            "on": {
+              ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+            },
+            "until": {
+              ".validate": "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
       }
     },
     "davao_light": {

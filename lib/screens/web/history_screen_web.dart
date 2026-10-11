@@ -528,7 +528,12 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
     try {
       final snapshots = await Future.wait(EnergyHistory.ranges.map((range) =>
-          FirebaseDatabase.instance.ref(EnergyHistory.path(range)).get()));
+          // Bounded like every history read (the rules require it).
+          FirebaseDatabase.instance
+              .ref(EnergyHistory.path(range))
+              .orderByKey()
+              .limitToLast(EnergyHistory.analyticsDays)
+              .get()));
       final historyRoot = <String, dynamic>{
         for (var i = 0; i < EnergyHistory.ranges.length; i++)
           EnergyHistory.ranges[i]:

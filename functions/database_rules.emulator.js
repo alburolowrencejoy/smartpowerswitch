@@ -207,7 +207,7 @@ test('nobody but the server writes history, summaries, meter state or alerts', a
     await assertFails(db.ref('anomalies/x').set({}));
     await assertFails(db.ref('rollup/lock').set({}));
   }
-  await assertSucceeds(as('fac').ref('energy_summaries/daily').get());
+  await assertSucceeds(as('fac').ref('energy_summaries/daily').orderByKey().limitToLast(8).get());
   await assertFails(as('fac').ref('meterState').get());
 });
 
@@ -215,4 +215,56 @@ test('deletion log is append-only', async () => {
   await assertSucceeds(as('ic').ref('deletion_log/d2').set({ type: 'room', timestamp: 2 }));
   await assertFails(as('main').ref('deletion_log/d1').remove());
   await assertFails(as('main').ref('deletion_log/d1/type').set('edited'));
+});
+
+// ── Leftover review items: query limits, notifications, shapes ───────────
+
+test('history lists: only bounded, key-ordered queries; single periods always', async () => {
+  const db = as('fac');
+  await assertFails(db.ref('energy_summaries/daily').get()); // whole tree
+  await assertFails(db.ref('energy_summaries/daily').orderByKey().limitToLast(5000).get());
+  await assertSucceeds(db.ref('energy_summaries/daily').orderByKey().limitToLast(8).get());
+  await assertSucceeds(db.ref('energy_summaries/daily').orderByKey().limitToFirst(1).get());
+  await assertSucceeds(db.ref('energy_summaries/daily').orderByKey()
+    .startAt('2026-10-01').endAt('2026-10-31').get());
+  await assertSucceeds(db.ref('energy_summaries/daily/2026-10-11').get());
+  await assertSucceeds(db.ref('energy_summaries/daily/2026-10-11/campus/kwh').get());
+});
+
+test('notifications: institute admins clear only their own; any admin posts app updates', async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.database().ref('notifications').set({
+      n1: { type: 'device_offline', building: 'IC', timestamp: 1 },
+      n2: { type: 'device_offline', building: 'ITED', timestamp: 1 },
+      n3: { type: 'rate_change', timestamp: 1 }, // campus-wide
+    });
+  });
+  await assertSucceeds(as('ic').ref('notifications/n1').remove());
+  await assertFails(as('ic').ref('notifications/n2').remove());
+  await assertFails(as('ic').ref('notifications/n3').remove());
+  await assertFails(as('ic').ref('notifications').remove());
+  await assertSucceeds(as('ic').ref('notifications/u1').set({ type: 'app_update', message: 'v2', timestamp: 2 }));
+  await assertFails(as('ic').ref('notifications/x1').set({ type: 'rate_change', message: 'fake' }));
+  await assertSucceeds(as('main').ref('notifications').remove());
+});
+
+test('schedules must have a valid shape', async () => {
+  const ok = { scope: 'building', target: 'IC', utility: 'All', onTime: '08:00', offTime: '18:00',
+    days: ['Mon', 'Tue'], enabled: true, scheduleMode: 'weekly', name: 'Lights',
+    windows: [{ on: '08:00', until: '11:59' }] };
+  await assertSucceeds(as('main').ref('automations/s1').set(ok));
+  await assertSucceeds(as('main').ref('automations/s2').set({ ...ok, scheduleMode: 'calendar',
+    startDate: '2026-10-01', endDate: '2026-10-16' }));
+  await assertFails(as('main').ref('automations/s3').set({ ...ok, onTime: '25:00' }));
+  await assertFails(as('main').ref('automations/s4').set({ ...ok, scope: 'everything' }));
+  await assertFails(as('main').ref('automations/s5').set({ ...ok, days: ['Funday'] }));
+  await assertFails(as('main').ref('automations/s6').set({ ...ok, startDate: '10/01/2026' }));
+  await assertFails(as('main').ref('automations/s7').set({ ...ok, extra: 1 }));
+});
+
+test('buildings: sane name, floor count and room names', async () => {
+  await assertSucceeds(as('main').ref('buildings/NEW').set({ name: 'New', floors: 2,
+    floorData: [null, { rooms: ['Room 101'] }] }));
+  await assertFails(as('main').ref('buildings/NEW/floors').set(0));
+  await assertFails(as('main').ref('buildings/NEW/floorData/1/rooms/0').set(42));
 });

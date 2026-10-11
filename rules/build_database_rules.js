@@ -52,6 +52,20 @@ const num = (min, max) => `newData.isNumber() && newData.val() >= ${min} && newD
 const numOrNull = (min, max) => `!newData.exists() || (${num(min, max)})`;
 const strOrNull = (maxLen) => `!newData.exists() || (newData.isString() && newData.val().length <= ${maxLen})`;
 const boolOnly = 'newData.isBoolean()';
+const hhmm = "newData.isString() && newData.val().matches(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)";
+const isoDate = "newData.isString() && newData.val().matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)";
+const str = (maxLen) => `newData.isString() && newData.val().length <= ${maxLen}`;
+const oneOf = (...vals) => vals.map((v) => `newData.val() === '${v}'`).join(' || ');
+
+// Energy history lists: only bounded, key-ordered queries (newest N, or a
+// date range); one period at a time is always readable. Stops a client from
+// downloading the whole, ever-growing tree (screens use these bounds).
+const MAX_KEYS = 1100;
+const boundedQuery = or(
+  `query.limitToLast != null && query.limitToLast <= ${MAX_KEYS}`,
+  `query.limitToFirst != null && query.limitToFirst <= ${MAX_KEYS}`,
+  'query.startAt != null && query.endAt != null',
+);
 const ms = numOrNull(0, 9999999999999);
 
 // Firmware readings (PZEM-004T 100 A; ranges the firmware itself accepts).
@@ -122,7 +136,12 @@ const rules = {
 
     buildings: {
       '.read': members,
-      $code: { '.write': or(mainAdmins, and(instAdmin, `$code === ${inst}`)) },
+      $code: {
+        '.write': or(mainAdmins, and(instAdmin, `$code === ${inst}`)),
+        name: { '.validate': str(80) },
+        floors: { '.validate': 'newData.isNumber() && newData.val() >= 1 && newData.val() <= 50' },
+        floorData: { $floor: { rooms: { $i: { '.validate': str(60) } } } },
+      },
     },
 
     hotspots: {
@@ -228,12 +247,28 @@ const rules = {
     // Energy history: written only by the server (rollupEnergy, the
     // forecast script). history/ only holds history/predictions now.
     history: { '.read': members, '.write': false },
-    energy_summaries: { '.read': members, '.write': false },
+    energy_summaries: {
+      '.write': false,
+      $range: {
+        '.read': and(members, 'query.orderByKey', boundedQuery),
+        $key: { '.read': members },
+      },
+    },
 
     notifications: {
       '.read': members,
-      '.write': admins,
+      // "Clear all" of the whole list: main admins only.
+      '.write': mainAdmins,
       '.indexOn': ['timestamp'],
+      $id: {
+        '.write': or(
+          // Any admin's app may post the app-update notice.
+          and(admins, '!data.exists()', "newData.child('type').val() === 'app_update'"),
+          // Institute admins clear only their own institute's notifications
+          // (no building = campus-wide, main admins only).
+          and(instAdmin, '!newData.exists()', `data.child('building').val() === ${inst}`),
+        ),
+      },
     },
 
     rate_changes: {
@@ -258,6 +293,27 @@ const rules = {
           // one of their own devices (before and after the change).
           and(instAdmin, scheduleInMyInst('data'), scheduleInMyInst('newData')),
         ),
+        name: { '.validate': str(80) },
+        scope: { '.validate': oneOf('global', 'building', 'utility', 'device') },
+        target: { '.validate': str(64) },
+        utility: { '.validate': str(40) },
+        onTime: { '.validate': hhmm },
+        offTime: { '.validate': hhmm },
+        time: { '.validate': hhmm },
+        action: { '.validate': oneOf('on', 'off') },
+        enabled: { '.validate': boolOnly },
+        scheduleMode: { '.validate': oneOf('weekly', 'calendar') },
+        startDate: { '.validate': isoDate },
+        endDate: { '.validate': isoDate },
+        days: { $i: { '.validate': oneOf('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') } },
+        windows: {
+          $i: {
+            on: { '.validate': hhmm },
+            until: { '.validate': hhmm },
+            $other: { '.validate': false },
+          },
+        },
+        $other: { '.validate': false },
       },
     },
 
