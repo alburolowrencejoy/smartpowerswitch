@@ -21,6 +21,19 @@ class EnergyHistory {
 
   static const String root = 'energy_summaries';
 
+  /// Read bounds (master plan Phase 6): screens query the newest keys of
+  /// each range they show instead of downloading the whole tree.
+  /// Dashboards: today + the previous 7 days, this week + last, this month
+  /// + the two before, and the newest 24 hourly records.
+  static const int dashboardDays = 8;
+  static const int dashboardWeeks = 2;
+  static const int dashboardMonths = 3;
+  static const int dashboardHours = 24;
+
+  /// History / Analytics (filters, forecasts, year comparison): the newest
+  /// three years of daily summaries.
+  static const int analyticsDays = 1096;
+
   /// Ranges the screens list and chart. `hourly` is left out of [legacyRoot]
   /// readers on purpose: only the Home sparkline/peak hour needs it.
   static const List<String> ranges = ['daily', 'weekly', 'monthly', 'yearly'];

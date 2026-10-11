@@ -399,9 +399,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardDays)
+          .onValue,
       FirebaseDatabase.instance.ref('automations').onValue,
       FirebaseDatabase.instance.ref('device_live').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('weekly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardWeeks)
+          .onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('monthly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardMonths)
+          .onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('hourly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardHours)
+          .onValue,
     ]).listen((events) {
       if (!mounted) return;
       _loadTimeoutTimer?.cancel();
@@ -527,7 +546,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // ── history: today, this month and per-building energy ────
         // Nothing recorded yet (null) is real "0 kWh", so it is applied
         // too, not only while loading.
-        final historyRaw = events[4].snapshot.value;
+        final historyRaw = {
+          'daily': events[4].snapshot.value,
+          'weekly': events[7].snapshot.value,
+          'monthly': events[8].snapshot.value,
+          'hourly': events[9].snapshot.value,
+        };
         _historyRoot = EnergyHistory.legacyRoot(historyRaw);
         _buildingEnergy = _currentMonthBuildingEnergy(_historyRoot);
         _updateMonthlyTotals(_historyRoot);

@@ -85,6 +85,11 @@ async function runRollup(db, {
     return { status: 'skipped-locked' };
   }
   try {
+    // Hourly heartbeat for the health check (energy_maintenance.js); kept
+    // to once an hour so a quiet system still writes almost nothing.
+    if (new Date(nowMs).getUTCMinutes() === 0) {
+      await db.ref('rollup/heartbeat').set(nowMs);
+    }
     const plan = planRollup({ ...(await readInputs(db)), nowMs });
     if (!plan.ok) {
       console.error(`[rollupEnergy] not written: ${plan.reason} (settings/electricityRate)`);

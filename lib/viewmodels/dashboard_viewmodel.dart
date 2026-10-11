@@ -130,20 +130,32 @@ class DashboardViewModel extends ChangeNotifier {
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardDays)
+          .onValue,
       FirebaseDatabase.instance
           .ref('notifications')
           .orderByChild('timestamp')
           .limitToLast(100)
           .onValue,
       FirebaseDatabase.instance.ref('device_live').onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('monthly'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.dashboardMonths)
+          .onValue,
     ]).listen((events) {
       _applyBuildings(events[0].snapshot.value);
       _applyMasterDevices(events[1].snapshot.value);
       _applyEnergyData(
           DeviceLive.merge(events[2].snapshot.value, events[6].snapshot.value));
       _applyRate(events[3].snapshot.value);
-      _applyHistory(events[4].snapshot.value);
+      _applyHistory({
+        'daily': events[4].snapshot.value,
+        'monthly': events[7].snapshot.value,
+      });
       _applyNotifications(events[5].snapshot.value);
 
       _hasLoadedOnce = true;

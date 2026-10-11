@@ -117,6 +117,11 @@ exports.verifyAdvisoryText = davaoLight.verifyAdvisoryText;
 // every reading. See energy_rollup.js / energy_math.js.
 exports.rollupEnergy = require('./energy_rollup').rollupEnergy;
 
+// ── Energy history retention + monitoring (Phase 6) ──────────────────
+const energyMaintenance = require('./energy_maintenance');
+exports.pruneHistory = energyMaintenance.pruneHistory;
+exports.checkEnergyHealth = energyMaintenance.checkEnergyHealth;
+
 // ── Run automation scheduler every minute ─────────────────────────
 exports.runAutomationScheduler = onSchedule('* * * * *', runAutomationSchedules);
 

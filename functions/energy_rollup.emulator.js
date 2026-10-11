@@ -189,3 +189,42 @@ test('two runs started together: exactly one counts the energy', async () => {
   assert.ok(statuses.includes('written'), `one run should write: ${statuses}`);
   close(await get('energy_summaries/daily/2026-10-10/campus/kwh'), 0.4, 'counted exactly once');
 });
+
+// ── Phase 6: retention and health check ──────────────────────────────────
+const { runRetention, runHealthCheck } = require('./energy_maintenance');
+const NOW6 = Date.UTC(2027, 9, 11, 2, 30); // 2027-10-11 10:30 PH
+
+test('retention deletes hourly and anomalies older than a year, keeps the rest', async () => {
+  await db.ref().set({
+    energy_summaries: {
+      hourly: { '2026-10-10-23': { campus: { kwh: 1 } }, '2027-10-11-09': { campus: { kwh: 1 } } },
+      daily: { '2025-01-01': { campus: { kwh: 1 } } }, // daily is kept forever
+    },
+    anomalies: {
+      [`${NOW6 - 400 * 24 * 3600 * 1000}_ESP32-A`]: { reason: 'spike' },
+      [`${NOW6 - 5 * 24 * 3600 * 1000}_ESP32-A`]: { reason: 'spike' },
+    },
+  });
+  assert.strictEqual(await runRetention(db, NOW6), 2);
+  assert.deepStrictEqual(Object.keys(await get('energy_summaries/hourly')), ['2027-10-11-09']);
+  assert.ok(await get('energy_summaries/daily/2025-01-01'));
+  assert.strictEqual(Object.keys(await get('anomalies')).length, 1);
+});
+
+test('health check notifies once per problem and records the check', async () => {
+  await db.ref().set({
+    master_devices: { 'ESP32-A': { source: 'real_iot', assignedTo: 'IC/1/R1' } },
+    meterState: { 'ESP32-A': { flag: { reason: 'drop', at: 5, frozen: true } } },
+    rollup: { heartbeat: NOW6 - 10 * 60 * 1000 },
+  });
+  const first = await runHealthCheck(db, NOW6);
+  assert.deepStrictEqual(first.map((a) => a.subtype), ['device_frozen']);
+  const notes = Object.values(await get('notifications'));
+  assert.strictEqual(notes.length, 1);
+  assert.strictEqual(notes[0].type, 'system_alert');
+  assert.strictEqual(notes[0].deviceId, 'ESP32-A');
+  assert.strictEqual((await get('system_health/lastCheck')).alerts, 1);
+  // Next hour, same problem: no second notification.
+  assert.deepStrictEqual(await runHealthCheck(db, NOW6 + 3600 * 1000), []);
+  assert.strictEqual(Object.keys(await get('notifications')).length, 1);
+});

@@ -322,7 +322,11 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _combinedSub = Rx.combineLatestList<DatabaseEvent>([
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
       FirebaseDatabase.instance.ref('devices').onValue,
-      FirebaseDatabase.instance.ref(EnergyHistory.root).onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.analyticsDays)
+          .onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
@@ -334,7 +338,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         _applyDevices(
             DeviceLive.merge(events[1].snapshot.value, events[4].snapshot.value),
             events[3].snapshot.value);
-        _applyHistory(events[2].snapshot.value);
+        _applyHistory({'daily': events[2].snapshot.value});
         _hasLoadedOnce = true;
         _isLoading = false;
         _errorText = null;

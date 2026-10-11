@@ -262,7 +262,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
       FirebaseDatabase.instance.ref('devices').onValue,
       FirebaseDatabase.instance.ref('buildings').onValue,
       FirebaseDatabase.instance.ref('settings/electricityRate').onValue,
-      FirebaseDatabase.instance.ref(EnergyHistory.path('daily')).onValue,
+      FirebaseDatabase.instance
+          .ref(EnergyHistory.path('daily'))
+          .orderByKey()
+          .limitToLast(EnergyHistory.analyticsDays)
+          .onValue,
       FirebaseDatabase.instance.ref('master_devices').onValue,
       FirebaseDatabase.instance.ref('device_live').onValue,
     ]).listen((events) {
