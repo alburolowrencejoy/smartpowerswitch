@@ -96,8 +96,11 @@ exports.changeUserPassword = functions.https.onCall(async (data, context) => {
   // 3. Must be an admin tier authorized to manage this target user
   await assertCanManageUser(callerUid, uid);
 
-  // 4. Update password using Admin SDK
+  // 4. Update password using Admin SDK, then sign the user out everywhere:
+  // revoking refresh tokens stops new ID tokens; the current one expires
+  // within an hour.
   await admin.auth().updateUser(uid, { password: newPassword });
+  await admin.auth().revokeRefreshTokens(uid);
 
   // 5. Clean up the passwordReset flag in DB if it exists
   await admin.database().ref(`users/${uid}/passwordReset`).remove();
@@ -148,7 +151,10 @@ exports.deleteUser = functions.https.onCall(async (data, context) => {
 
   await assertCanManageUser(callerUid, uid);
 
-  // Delete from Firebase Auth
+  // Sign the user out everywhere, then delete from Firebase Auth. (Removing
+  // users/{uid} below also ends their database access at once: every rule
+  // looks up the caller's role there.)
+  await admin.auth().revokeRefreshTokens(uid);
   await admin.auth().deleteUser(uid);
 
   // Delete from Realtime Database

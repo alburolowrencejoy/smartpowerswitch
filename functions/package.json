@@ -8,7 +8,8 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "test": "node --test",
-    "test:emulator": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 energy_rollup.emulator.js\""
+    "test:emulator": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 energy_rollup.emulator.js\"",
+    "test:rules": "npx --yes firebase-tools@13 emulators:exec --only database --project demo-smartswitch \"node --test --test-concurrency=1 database_rules.emulator.js\""
   },
   "engines": {
     "node": "22"
@@ -19,6 +20,8 @@
     "firebase-functions": "^7.0.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.10.0",
     "firebase-functions-test": "^3.4.1"
   },
   "private": true

@@ -10,6 +10,8 @@
          acknowledgement). No longer reads or writes /devices/<ID>, runs
          schedules itself (the server does) or mirrors the relay under
          /buildings. Needs the Phase 5 database rules.
+         Also removed: the history/raw write and electricity-rate read after
+         each push (the server computes history and cost).
   1.3.3  Reports the connected WiFi network (wifi_ssid, wifi_rssi) so the app
          can show it on the device page and disconnect it from there.
   1.3.2  Setup page moved to portal_html.h (fixes page not responding to taps:
@@ -109,8 +111,6 @@ static const bool SSR_ACTIVE_HIGH = true;
 static const uint32_t RELAY_POLL_MS = 1000;
 static const uint32_t TELEMETRY_PUSH_MS = 3000;
 static const uint32_t WIFI_RETRY_MS = 10000;
-static const uint32_t AUTOMATION_POLL_MS = 15000;
-static const uint32_t TIMEZONE_REFRESH_MS = 300000;
 static const uint32_t PZEM_UART_BAUD = 9600;
 static const uint32_t PZEM_PROBE_RETRY_MS = 15000;
 
@@ -126,19 +126,15 @@ String lastCommandId = "";
 uint64_t lastCommandAtMs = 0;
 bool pzemReady = false;
 // Track last seen energy reading so we can write per-interval history deltas
-float lastReportedEnergyKwh = -1.0f;
 
 uint32_t lastRelayPollMs = 0;
 uint32_t lastTelemetryPushMs = 0;
 uint32_t lastWifiRetryMs = 0;
-uint32_t lastAutomationPollMs = 0;
-uint32_t lastTimezoneRefreshMs = 0;
 uint32_t lastPzemProbeMs = 0;
 wl_status_t lastWifiStatus = WL_DISCONNECTED;  // Track WiFi status changes
 
 uint64_t bootEpochMs = 0;
 uint32_t bootMillisAtSync = 0;
-int32_t scheduleTimezoneOffsetMinutes = 480;
 
 // ===================== FORWARD DECLARATIONS =====================
 // Functions used before they are defined. Declared by hand because the
@@ -177,11 +173,6 @@ uint8_t scanFailCount = 0;
 uint32_t lastScanMs = 0;
 
 // Setup page HTML lives in portal_html.h (see note there).
-
-struct ScheduleClock {
-  String day;
-  int minutes;
-};
 
 static inline float roundTo(float value, int places) {
   float scale = 1.0f;
@@ -222,203 +213,6 @@ static inline bool isPlausiblePzemReading(float voltage,
          isFiniteReading(powerFactor) && powerFactor >= 0.0f && powerFactor <= 1.0f;
 }
 
-static inline String compactText(String value) {
-  value.toLowerCase();
-  String out;
-  out.reserve(value.length());
-  for (size_t i = 0; i < value.length(); i++) {
-    const char c = value[i];
-    if (isalnum(static_cast<unsigned char>(c))) {
-      out += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    }
-  }
-  return out;
-}
-
-static inline String canonicalUtility(String value) {
-  value = compactText(value);
-  if (value == "light" || value == "lights") return "lights";
-  if (value == "outlet" || value == "outlets") return "outlets";
-  if (value == "ac" || value == "aircon" || value == "airconditioner" ||
-      value == "airconditioners" || value == "airconditioning") {
-    return "ac";
-  }
-  if (value == "all" || value.isEmpty()) return "all";
-  return value;
-}
-
-static inline bool utilityMatches(const String& expected, const String& actual) {
-  const String normalizedExpected = canonicalUtility(String(expected));
-  if (normalizedExpected == "all") return true;
-  return normalizedExpected == canonicalUtility(String(actual));
-}
-
-static inline bool buildingMatches(const String& expected, const String& actual) {
-  return compactText(String(expected)) == compactText(String(actual));
-}
-
-static inline String dayLabelFromWeekday(int weekday) {
-  switch (weekday) {
-    case 0: return "Sun";
-    case 1: return "Mon";
-    case 2: return "Tue";
-    case 3: return "Wed";
-    case 4: return "Thu";
-    case 5: return "Fri";
-    case 6: return "Sat";
-    default: return "Mon";
-  }
-}
-
-static inline String previousDayLabel(const String& day) {
-  if (day == "Mon") return "Sun";
-  if (day == "Tue") return "Mon";
-  if (day == "Wed") return "Tue";
-  if (day == "Thu") return "Wed";
-  if (day == "Fri") return "Thu";
-  if (day == "Sat") return "Fri";
-  if (day == "Sun") return "Sat";
-  return "Sun";
-}
-
-static inline int parseMinutes(const String& value) {
-  const int colon = value.indexOf(':');
-  if (colon < 0) return -1;
-
-  const int hour = value.substring(0, colon).toInt();
-  const int minute = value.substring(colon + 1).toInt();
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return -1;
-  return hour * 60 + minute;
-}
-
-static inline int32_t parseTimezoneOffsetMinutes(String value) {
-  value.trim();
-  value.replace("\"", "");
-  const String lowered = compactText(value);
-
-  if (lowered.isEmpty() || lowered.indexOf("asiamanila") >= 0 || lowered.indexOf("philippines") >= 0) {
-    return 8 * 60;
-  }
-
-  if (lowered.indexOf("utc") >= 0 || lowered.indexOf("gmt") >= 0) {
-    int signIndex = value.indexOf('+');
-    int sign = 1;
-    if (signIndex < 0) {
-      signIndex = value.indexOf('-');
-      sign = -1;
-    }
-
-    if (signIndex >= 0) {
-      String hoursPart = value.substring(signIndex + 1);
-      hoursPart.trim();
-      hoursPart.replace("h", "");
-      hoursPart.replace("H", "");
-      const int hours = hoursPart.toInt();
-      if (hours > 0 || hoursPart == "0") {
-        return sign * hours * 60;
-      }
-    }
-
-    return 0;
-  }
-
-  return 8 * 60;
-}
-
-static inline ScheduleClock getScheduleClock() {
-  time_t now = time(nullptr);
-  if (now <= 1700000000) {
-    now = (time_t)(nowMs() / 1000ULL);
-  }
-
-  const time_t adjusted = now + (time_t)(scheduleTimezoneOffsetMinutes * 60L);
-  struct tm tm;
-  gmtime_r(&adjusted, &tm);
-
-  ScheduleClock clock;
-  clock.day = dayLabelFromWeekday(tm.tm_wday);
-  clock.minutes = tm.tm_hour * 60 + tm.tm_min;
-  return clock;
-}
-
-static inline bool scheduleHasDay(JsonVariant daysValue, const String& day) {
-  const String target = compactText(String(day));
-
-  if (daysValue.is<JsonArray>()) {
-    JsonArray daysArray = daysValue.as<JsonArray>();
-    for (JsonVariant value : daysArray) {
-      const char* raw = value.as<const char*>();
-      if (raw != nullptr && compactText(String(raw)) == target) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  if (daysValue.is<JsonObject>()) {
-    JsonObject daysObject = daysValue.as<JsonObject>();
-    for (JsonPair pair : daysObject) {
-      const char* raw = pair.value().as<const char*>();
-      if (raw != nullptr && compactText(String(raw)) == target) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  const char* raw = daysValue.as<const char*>();
-  return raw != nullptr && compactText(String(raw)) == target;
-}
-
-static inline String automationActionFor(JsonObject schedule, const ScheduleClock& clock) {
-  const String onTime = String(schedule["onTime"] | "08:00");
-  const String offTime = String(schedule["offTime"] | "18:00");
-  const int onMinutes = parseMinutes(onTime);
-  const int offMinutes = parseMinutes(offTime);
-  if (onMinutes < 0 || offMinutes < 0) return "";
-
-  const JsonVariant daysValue = schedule["days"];
-  const bool activeDay = scheduleHasDay(daysValue, clock.day);
-  const bool previousDay = scheduleHasDay(daysValue, previousDayLabel(clock.day));
-
-  if (activeDay && clock.minutes == onMinutes) {
-    return "on";
-  }
-
-  if (clock.minutes != offMinutes) {
-    return "";
-  }
-
-  if (onMinutes > offMinutes) {
-    return previousDay ? "off" : "";
-  }
-
-  return activeDay ? "off" : "";
-}
-
-static inline bool scheduleTargetsThisDevice(JsonObject schedule,
-                                            const String& deviceId,
-                                            const String& building,
-                                            const String& utility) {
-  const String scope = String(schedule["scope"] | "global");
-  const String target = String(schedule["target"] | "all");
-  const String scheduleUtility = String(schedule["utility"] | "All");
-
-  if (scope == "global") {
-    return utilityMatches(scheduleUtility, utility);
-  }
-  if (scope == "building") {
-    return buildingMatches(target, building) && utilityMatches(scheduleUtility, utility);
-  }
-  if (scope == "utility") {
-    return utilityMatches(target, utility);
-  }
-  if (scope == "device") {
-    return compactText(target) == compactText(deviceId);
-  }
-  return false;
-}
-
 static inline bool parseBoolean(JsonVariant value) {
   if (value.is<bool>()) {
     return value.as<bool>();
@@ -437,91 +231,6 @@ static inline bool parseBoolean(JsonVariant value) {
   normalized.trim();
   normalized.toLowerCase();
   return normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on";
-}
-
-static inline void mirrorRelayToBuilding(const String& building,
-                                         const String& floor,
-                                         bool relay) {
-  if (building.isEmpty() || floor.isEmpty()) return;
-
-  DynamicJsonDocument mirrorDoc(64);
-  mirrorDoc["relay"] = relay;
-
-  String payload;
-  serializeJson(mirrorDoc, payload);
-
-  int code = 0;
-  firebasePatch(String("/buildings/") + building + "/floorData/" + floor + "/devices/" + DEVICE_ID + ".json",
-                payload,
-                code);
-}
-
-static inline void refreshScheduleTimezone(bool force = false) {
-  const uint32_t now = millis();
-  if (!force && lastTimezoneRefreshMs != 0 && (now - lastTimezoneRefreshMs) < TIMEZONE_REFRESH_MS) {
-    return;
-  }
-
-  lastTimezoneRefreshMs = now;
-
-  String body;
-  int code = 0;
-  if (!firebaseGet(String("/settings/timezone.json"), body, code) || code != 200 || body == "null") {
-    return;
-  }
-
-  scheduleTimezoneOffsetMinutes = parseTimezoneOffsetMinutes(body);
-}
-
-static inline bool applyAutomationIfNeeded(const String& deviceId,
-                                          const String& building,
-                                          const String& utility,
-                                          bool currentRelay,
-                                          bool& desiredRelay) {
-  const uint32_t now = millis();
-  if (lastAutomationPollMs != 0 && (now - lastAutomationPollMs) < AUTOMATION_POLL_MS) {
-    return false;
-  }
-  lastAutomationPollMs = now;
-
-  refreshScheduleTimezone(false);
-
-  String body;
-  int code = 0;
-  if (!firebaseGet(String("/automations.json"), body, code) || code != 200 || body == "null") {
-    return false;
-  }
-
-  DynamicJsonDocument doc(8192);
-  const DeserializationError err = deserializeJson(doc, body);
-  if (err) {
-    Serial.print("[Automation] JSON parse error: ");
-    Serial.println(err.c_str());
-    return false;
-  }
-
-  const ScheduleClock clock = getScheduleClock();
-  bool matched = false;
-  desiredRelay = currentRelay;
-
-  JsonObject root = doc.as<JsonObject>();
-  for (JsonPair pair : root) {
-    JsonObject schedule = pair.value().as<JsonObject>();
-    if (schedule.isNull()) continue;
-    const bool enabled = schedule.containsKey("enabled")
-        ? parseBoolean(schedule["enabled"])
-        : true;
-    if (!enabled) continue;
-    if (!scheduleTargetsThisDevice(schedule, deviceId, building, utility)) continue;
-
-    const String action = automationActionFor(schedule, clock);
-    if (action.isEmpty()) continue;
-
-    matched = true;
-    desiredRelay = action == "on";
-  }
-
-  return matched;
 }
 
 static inline uint8_t relayPinLevel(bool on) {
@@ -855,64 +564,6 @@ void pushTelemetry() {
     return;
   }
   
-  // Compute delta from PZEM energy meter and write raw history entry (includes cost)
-  if (pzemOk) {
-    float delta = 0.0f;
-    if (lastReportedEnergyKwh < 0.0f) {
-      lastReportedEnergyKwh = energyKwh; // initialize on first valid reading
-    } else {
-      delta = energyKwh - lastReportedEnergyKwh;
-      if (delta < 0.0f) {
-        // meter may have reset — use current reading as delta
-        delta = energyKwh;
-      }
-    }
-
-    // Only write if delta is meaningful (avoid noise)
-    if (delta >= 0.000001f) {
-      // Fetch rate (best-effort)
-      String rateBody;
-      int rateCode = 0;
-      double rate = 11.5;
-      if (firebaseGet(String("/settings/electricityRate.json"), rateBody, rateCode) && rateCode == 200 && rateBody != "null") {
-        rate = atof(rateBody.c_str());
-      }
-
-      // Write a single daily raw summary (overwrite, do not append incremental entries)
-      DynamicJsonDocument hdoc(384);
-      hdoc["deviceId"] = DEVICE_ID;
-      // cumulative total from the meter (not delta)
-      hdoc["kwh_total"] = roundTo(energyKwh, 4);
-      hdoc["cost_total"] = roundTo((float)(energyKwh * rate), 4);
-      hdoc["ts"] = (uint64_t)t; // epoch ms
-
-      // Build daily key YYYY-MM-DD
-      time_t secs = (time_t)(t / 1000ULL);
-      struct tm tm;
-      localtime_r(&secs, &tm);
-      char daybuf[16];
-      snprintf(daybuf, sizeof(daybuf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-
-      String hpayload;
-      serializeJson(hdoc, hpayload);
-
-      int hcode = 0;
-      // Overwrite daily raw summary: history/raw/<YYYY-MM-DD>_<deviceId>.json
-      String hpath = String("/history/raw/") + String(daybuf) + "_" + DEVICE_ID + ".json";
-      const bool hok = firebasePatch(hpath, hpayload, hcode);
-      if (!hok) {
-        Serial.print("[History] Failed to write daily raw summary (HTTP ");
-        Serial.print(hcode);
-        Serial.println(")");
-      } else {
-        Serial.print("[History] Daily raw summary written (HTTP ");
-        Serial.print(hcode);
-        Serial.println(")");
-      }
-
-      lastReportedEnergyKwh = energyKwh;
-    }
-  }
 }
 
 // ===================== WIFI SETUP PORTAL =====================
@@ -971,7 +622,6 @@ void onWifiUp() {
   Serial.print(". IP: ");
   Serial.println(WiFi.localIP());
   syncTimeIfPossible();
-  refreshScheduleTimezone(true);
   lastTelemetryPushMs = millis();
   lastWifiStatus = WiFi.status();
   offlineSinceMs = 0;
