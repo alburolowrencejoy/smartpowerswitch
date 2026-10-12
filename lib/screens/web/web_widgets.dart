@@ -130,6 +130,8 @@ Future<bool> showWebFormDialog({
   final palette = context.institutePalette;
   final ok = await showDialog<bool>(
     context: context,
+    // The preview's green-tinted backdrop, rgba(14,46,26,.35).
+    barrierColor: const Color(0x590E2E1A),
     builder: (_) => Theme(
       data: Theme.of(context),
       child: _WebFormDialog(
@@ -220,76 +222,113 @@ class _WebFormDialogState extends State<_WebFormDialog> {
     });
   }
 
+  // Matches the redesign preview's `.modal`: a 400px white card, 22px
+  // padding, 18px title, 14px secondary text, and a right-aligned footer
+  // with an outlined Cancel and a solid (or red) action, both 12px radius.
+  static const _danger = Color(0xFFC43D3D);
+
   @override
   Widget build(BuildContext context) {
     final p = widget.palette;
     final general = _errors[''];
-    return AlertDialog(
+    final busy = _busy;
+    return Dialog(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
-      contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 8),
-      actionsPadding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(widget.title,
-              style: const TextStyle(
-                  fontFamily: AppFonts.family,
-                  fontSize: 19,
-                  fontWeight: FontWeight.w700,
-                  color: WebColors.ink)),
-          if (widget.subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(widget.subtitle!,
-                style: const TextStyle(fontSize: 13.5, color: WebColors.muted)),
-          ],
-        ],
-      ),
-      content: SizedBox(
-        width: 400,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final f in widget.fields) ...[
-              _field(f, p),
-              const SizedBox(height: 14),
-            ],
-            if (general != null)
-              ShakeOnChange(
-                trigger: _shake,
-                child: Text(general,
-                    style:
-                        const TextStyle(fontSize: 13, color: AppColors.errorText)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(widget.title,
+                  style: const TextStyle(
+                      fontFamily: AppFonts.family,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: WebColors.ink)),
+              const SizedBox(height: 6),
+              if (widget.subtitle != null) ...[
+                Text(widget.subtitle!,
+                    style: const TextStyle(
+                        fontFamily: AppFonts.family,
+                        fontSize: 14,
+                        height: 1.45,
+                        color: WebColors.mid)),
+                const SizedBox(height: 16),
+              ] else
+                const SizedBox(height: 10),
+              for (final f in widget.fields) ...[
+                _field(f, p),
+                const SizedBox(height: 14),
+              ],
+              if (general != null) ...[
+                ShakeOnChange(
+                  trigger: _shake,
+                  child: Text(general,
+                      style: const TextStyle(
+                          fontFamily: AppFonts.family,
+                          fontSize: 13,
+                          color: AppColors.errorText)),
+                ),
+                const SizedBox(height: 12),
+              ],
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton(
+                    onPressed:
+                        busy ? null : () => Navigator.pop(context, false),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: p.dark,
+                      side: BorderSide(color: p.mid.withAlpha(89)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      textStyle: _buttonText,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(
+                    onPressed: busy ? null : _submit,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: widget.danger ? _danger : p.dark,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor:
+                          (widget.danger ? _danger : p.dark).withAlpha(150),
+                      disabledForegroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      textStyle: _buttonText,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: busy
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : Text(widget.okLabel),
+                  ),
+                ],
               ),
-          ],
+            ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.pop(context, false),
-          child: const Text('Cancel', style: TextStyle(color: WebColors.mid)),
-        ),
-        ElevatedButton(
-          onPressed: _busy ? null : _submit,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: widget.danger ? AppColors.error : p.dark,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-          child: _busy
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white))
-              : Text(widget.okLabel),
-        ),
-      ],
     );
   }
+
+  static const _buttonText = TextStyle(
+      fontFamily: AppFonts.family, fontSize: 14, fontWeight: FontWeight.w600);
 
   Widget _field(WebField f, InstitutePalette p) {
     final err = _errors[f.id];
