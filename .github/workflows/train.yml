@@ -1,8 +1,8 @@
-name: Train LSTM and Publish Forecast
+name: Train Forecast Models and Publish Comparison
 
 on:
   schedule:
-    - cron: '0 2 * * *' # daily at 02:00 UTC
+    - cron: '0 2 * * *' # daily at 02:00 UTC (10:00 Philippine time)
   workflow_dispatch: {}
 
 jobs:
@@ -19,7 +19,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run training script
+      - name: Test the forecast job
+        run: python -m pytest tools/test_forecast_comparison.py -q
+      - name: Run ARIMA / XGBoost / GRU / LSTM comparison
         env:
           # A service-account key that can read/write the Realtime Database
           # of project smartpowerswitch-e90d0. Preferred: FIREBASE_TRAINER_KEY
@@ -29,13 +31,12 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_TRAINER_KEY || secrets.FIREBASE_SERVICE_ACCOUNT_SMARTPOWERSWITCH_E90D0 }}
           # The database URL isn't secret; the secret, if set, still wins.
           FIREBASE_DB_URL: ${{ secrets.FIREBASE_DB_URL || 'https://smartpowerswitch-e90d0-default-rtdb.asia-southeast1.firebasedatabase.app' }}
-          FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
         run: |
-          python tools/train_and_push.py
-      - name: Upload TFLite artifact
+          python tools/forecast_comparison.py
+      - name: Upload comparison tables
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: forecast-model
-          path: models/forecast.tflite
+          name: model-comparison
+          path: outputs/*.csv
           if-no-files-found: ignore

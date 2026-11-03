@@ -1,0 +1,189 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:smart_power_switch/screens/web/web_forecast_cards.dart';
+import 'package:smart_power_switch/services/forecast_comparison.dart';
+import 'package:smart_power_switch/theme/app_fonts.dart';
+import 'package:smart_power_switch/theme/institute_colors.dart';
+
+/// What tools/forecast_comparison.py writes for one series.
+Map<String, Object?> payload({String best = 'gru'}) => {
+      'series': 'campus',
+      'generated_at': 1793000000000,
+      'mode': 'rolling',
+      'days': 10,
+      'incomplete_days': 1,
+      'train': {'start': '2026-01-01', 'end': '2026-01-08', 'days': 8},
+      'test': {'start': '2026-01-09', 'end': '2026-01-10', 'days': 2},
+      'actual': {
+        'labels': ['2026-01-09', '2026-01-10'],
+        'values': [10.0, 12.0],
+      },
+      'next_day_label': '2026-01-11',
+      'best': best,
+      'models': {
+        'arima': {
+          'mae': 2.0,
+          'mse': 4.0,
+          'rmse': 2.0,
+          'mape': 18.0,
+          'r2': 0.4,
+          'rank': 3,
+          'values': [12.0, 14.0],
+          'next_day': 13.0,
+          'order': [7, 1, 3],
+        },
+        'xgboost': {
+          'mae': 1.0,
+          'mse': 1.0,
+          'rmse': 1.0,
+          'mape': 9.0,
+          'r2': 0.8,
+          'rank': 2,
+          'values': [11.0, 13.0],
+          'next_day': 12.5,
+        },
+        'gru': {
+          'mae': 0.5, 'mse': 0.25, 'rmse': 0.5, 'mape': 4.5, 'r2': 0.95,
+          'rank': 1,
+          // RTDB drops a null entry, so a hole can come back as a map.
+          'values': {'1': 12.5}, 'next_day': 12.2,
+        },
+        'lstm': {'unavailable': 'Training failed: boom'},
+      },
+    };
+
+void main() {
+  group('SeriesComparison.fromMap', () {
+    test('reads every field the job writes', () {
+      final s = SeriesComparison.fromMap('campus', payload())!;
+      expect(s.generatedAt, DateTime.fromMillisecondsSinceEpoch(1793000000000));
+      expect(s.days, 10);
+      expect(s.incompleteDays, 1);
+      expect(s.trainDays, 8);
+      expect(s.testStart, DateTime(2026, 1, 9));
+      expect(s.testEnd, DateTime(2026, 1, 10));
+      expect(s.labels, [DateTime(2026, 1, 9), DateTime(2026, 1, 10)]);
+      expect(s.actual, [10.0, 12.0]);
+      expect(s.nextDay, DateTime(2026, 1, 11));
+      expect(s.best, 'gru');
+      expect(s.bestModel!.nextDay, 12.2);
+
+      final arima = s.models['arima']!;
+      expect(arima.order, [7, 1, 3]);
+      expect([arima.mae, arima.mse, arima.rmse, arima.mape, arima.r2],
+          [2, 4, 2, 18, 0.4]);
+      expect(s.models['gru']!.values, [null, 12.5]);
+      expect(s.models['lstm']!.ok, isFalse);
+      expect(s.models['lstm']!.unavailable, contains('boom'));
+    });
+
+    test('ranked lists trained models by RMSE', () {
+      final s = SeriesComparison.fromMap('campus', payload())!;
+      expect(s.ranked.map((m) => m.key), ['gru', 'xgboost', 'arima']);
+    });
+
+    test('an unavailable series keeps its reason', () {
+      final s = SeriesComparison.fromMap('IC', {
+        'series': 'IC',
+        'unavailable': 'Needs at least 60 days of history (has 12).'
+      })!;
+      expect(s.models, isEmpty);
+      expect(s.unavailable, contains('60 days'));
+    });
+
+    test('parseAll skips junk', () {
+      final all = ForecastComparisons.parseAll({'campus': payload(), 'bad': 5});
+      expect(all.keys, ['campus']);
+      expect(ForecastComparisons.parseAll(null), isEmpty);
+    });
+  });
+
+  group('ForecastComparisons.seriesFor', () {
+    test('campus with no scope, one institute when exactly one is picked', () {
+      expect(ForecastComparisons.seriesFor(buildings: const []), 'campus');
+      expect(ForecastComparisons.seriesFor(buildings: const ['IC']), 'IC');
+      expect(
+          ForecastComparisons.seriesFor(
+              buildings: const [],
+              utilities: const ['Lights', 'Outlets', 'AC']),
+          'campus');
+    });
+
+    test('nothing for a narrower filter', () {
+      expect(ForecastComparisons.seriesFor(buildings: const ['IC', 'ITED']),
+          isNull);
+      expect(ForecastComparisons.seriesFor(buildings: const ['IC'], floor: 2),
+          isNull);
+      expect(ForecastComparisons.seriesFor(buildings: const ['IC'], room: 'R1'),
+          isNull);
+      expect(ForecastComparisons.seriesFor(buildings: const [], device: 'd1'),
+          isNull);
+      expect(
+          ForecastComparisons.seriesFor(
+              buildings: const [], utilities: const ['AC']),
+          isNull);
+    });
+  });
+
+  group('web ForecastComparison', () {
+    Future<StreamController<Map<String, SeriesComparison>>> pump(
+        WidgetTester tester,
+        {String? series = 'campus',
+        Object? data}) async {
+      tester.view.physicalSize = const Size(1400, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final source = StreamController<Map<String, SeriesComparison>>();
+      addTearDown(source.close);
+      await tester.pumpWidget(MaterialApp(
+        theme: ThemeData(fontFamily: AppFonts.family),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ForecastComparison(
+              palette: InstituteColors.ic,
+              rate: 10,
+              series: series,
+              seriesName: 'Whole campus',
+              source: source.stream,
+            ),
+          ),
+        ),
+      ));
+      if (data != null) {
+        source.add(ForecastComparisons.parseAll(data));
+        await tester.pump();
+      }
+      return source;
+    }
+
+    testWidgets('shows the table, the best model and tomorrow', (tester) async {
+      await pump(tester, data: {'campus': payload()});
+      expect(find.text('Model comparison'), findsOneWidget);
+      expect(find.text('ARIMA(7, 1, 3)'), findsOneWidget);
+      expect(find.text('Training failed: boom'), findsOneWidget);
+      expect(
+          find.text('12.20 kWh'), findsWidgets); // GRU, the best, for tomorrow
+      expect(find.text('About ₱ 122.00 at ₱10.00/kWh'), findsOneWidget);
+      expect(find.text('Best model · GRU'), findsOneWidget);
+      expect(find.text('Sun, Jan 11, 2026'), findsOneWidget);
+      expect(find.text('0.950'), findsOneWidget); // GRU R²
+    });
+
+    testWidgets('explains a filter with no comparison', (tester) async {
+      await pump(tester, series: null);
+      expect(find.textContaining('whole campus and for each institute'),
+          findsOneWidget);
+    });
+
+    testWidgets('waits for the data, then says when a series is missing',
+        (tester) async {
+      final source = await pump(tester);
+      expect(find.text('Loading…'), findsOneWidget);
+      source.add(ForecastComparisons.parseAll({'IC': payload()}));
+      await tester.pump();
+      expect(find.textContaining('Not trained yet'), findsOneWidget);
+    });
+  });
+}

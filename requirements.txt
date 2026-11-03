@@ -3,5 +3,6 @@ pandas
 numpy
 scikit-learn
 firebase-admin
-openpyxl
 xgboost
+pmdarima
+pytest
