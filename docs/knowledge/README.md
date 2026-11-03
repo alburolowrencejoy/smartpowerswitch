@@ -24,6 +24,7 @@ they're usually the most important part.
 | [`device-count-sources.md`](device-count-sources.md) | Browser test findings, 2026-10-08 | Device counts disagree between screens, or deciding whether `devices` or `master_devices` is the real device list. Open decision. |
 | [`backup.md`](backup.md) | `BACKUP_README.md` | Someone asks for "a backup" — clarifies whole-repo ZIP backup (`scripts/backup.ps1`/`.sh`) vs. RTDB data backup (covered in `deployment.md`), which are easy to conflate. |
 | [`web-white-screen.md`](web-white-screen.md) | `WEB_WHITE_SCREEN_ISSUE.md` | A "web app is blank/broken" report — likely this known, diagnosed-but-unfixed slow-first-paint issue, not a new bug. |
+| [`forecasting.md`](forecasting.md) | `tools/forecast_comparison.py`, the research notebook | Touching the forecast models, `train.yml`, `history/predictions/comparison`, or the Analytics forecast screens. The methods must match the notebook. |
 | [`work-history.md`](work-history.md) | `WORK_SUMMARY.md`, `WORK_SUMMARY_2026-09-03.md`, `WORK_SUMMARY_2026-09-09.md`, `WORK_SUMMARY_2026-09-13.md` | Wanting the "how did we get here" chronology, or checking whether a specific gap/bug was already found and left unfixed on purpose. |
 
 ## Skills that pair with this knowledge base

@@ -48,7 +48,7 @@ void main() async {
     unawaited(() async {
       await GlobalReadingsListener().initialize();
     }());
-    // Forecasts are written only by tools/train_and_push.py; the app reads them.
+    // Forecasts are written only by tools/forecast_comparison.py; the app reads them.
     // Initialize home screen widget
     await HomeWidgetService.initialize();
     unawaited(() async {
@@ -101,7 +101,7 @@ Future<void> _initializeMobileWeb() async {
   unawaited(() async {
     await GlobalReadingsListener().initialize();
   }());
-  // Forecasts are written only by tools/train_and_push.py; the app reads them.
+  // Forecasts are written only by tools/forecast_comparison.py; the app reads them.
   unawaited(() async {
     await UpdateNotificationService.checkAndNotifyIfNewRelease();
   }());

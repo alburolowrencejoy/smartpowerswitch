@@ -56,3 +56,6 @@ backups/
 e2e/.venv/
 e2e/.browsers/
 e2e/screenshots/
+
+# Forecast comparison tables (tools/forecast_comparison.py)
+outputs/

@@ -28,6 +28,7 @@ import '../../theme/app_fonts.dart';
 import '../../services/device_live.dart';
 import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
+import '../../services/forecast_comparison.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
 import '../../utils/last_seen.dart';
@@ -840,9 +841,6 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
 
   // ── Build (desktop grid layout) ───────────────────────────────────────────
 
-  /// Days of history a scope needs before it gets a forecast.
-  static const _forecastMinDays = 28;
-
   /// The full daily history as rows (for the forecasts), reparsed only when
   /// the history or device list change.
   List<UsageRow> _forecastRows() {
@@ -995,7 +993,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                   const SizedBox(height: 22),
                   KeyedSubtree(
                     key: _keyFor(AnalyticsSection.forecast),
-                    child: _buildForecasts(today),
+                    child: _buildForecasts(),
                   ),
                   if (!empty) ...[
                     const SizedBox(height: 22),
@@ -1522,30 +1520,28 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     ]);
   }
 
-  /// ARIMA (left) and a model picker (right). Uses only the scope and
-  /// utility filters, and always trains on the full history up to
-  /// yesterday; the horizon follows the selected range.
-  Widget _buildForecasts(DateTime today) {
+  /// ARIMA / XGBoost / GRU / LSTM comparison for the campus or the one
+  /// institute in scope, as published by the daily training job. It always
+  /// covers the full history, so the date range doesn't change it.
+  Widget _buildForecasts() {
     final f = _filter;
-    final yesterday = DateTime(today.year, today.month, today.day - 1);
-    final series = dailySeries(f, _forecastRows(), yesterday);
-    final days = f.days;
-    final horizon = days <= 10 ? 7 : (days <= 45 ? 30 : 90);
-    final enough = series.daysWithData >= _forecastMinDays;
-    final scoped = f.hasScope || f.hasUtility;
+    final series = ForecastComparisons.seriesFor(
+      buildings: f.buildings,
+      floor: f.floor,
+      room: f.room,
+      device: f.device,
+      utilities: f.utilities,
+      allUtilities: kUtilities.length,
+    );
     return ForecastComparison(
       palette: _palette,
-      daily: series.values,
-      lastDate: series.last ?? yesterday,
       rate: _electricityRate,
-      horizon: horizon,
-      remoteModelsApply: !scoped,
-      unavailableReason: enough
-          ? null
-          : 'Not enough data for a forecast. '
-              '${scoped ? 'This scope has' : 'There are'} ${series.daysWithData} '
-              'day${series.daysWithData == 1 ? '' : 's'} of history; a '
-              'forecast needs at least $_forecastMinDays.',
+      series: series,
+      seriesName: series == null
+          ? 'This filter'
+          : series == 'campus'
+              ? 'Whole campus'
+              : _buildingName(series),
     );
   }
 

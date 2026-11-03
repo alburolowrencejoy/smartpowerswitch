@@ -272,24 +272,3 @@ List<Bucket> bucketize(AnalyticsFilter f, List<UsageRow> rows,
   }
   return out;
 }
-
-/// Daily kWh series for the forecasts: every day from the first day with
-/// data in scope up to [until], missing days as 0. Also returns how many of
-/// those days actually had data.
-({List<double> values, DateTime? last, int daysWithData}) dailySeries(
-    AnalyticsFilter f, List<UsageRow> rows, DateTime until) {
-  final byDay = <DateTime, double>{};
-  for (final r in rows) {
-    if (r.date.isAfter(until) || !inScope(f, r)) continue;
-    byDay[r.date] = (byDay[r.date] ?? 0) + r.kwh;
-  }
-  if (byDay.isEmpty) return (values: const [], last: null, daysWithData: 0);
-  final first = byDay.keys.reduce((a, b) => a.isBefore(b) ? a : b);
-  final values = <double>[];
-  for (var d = first;
-      !d.isAfter(until);
-      d = DateTime(d.year, d.month, d.day + 1)) {
-    values.add(byDay[d] ?? 0);
-  }
-  return (values: values, last: until, daysWithData: byDay.length);
-}

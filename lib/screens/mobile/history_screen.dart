@@ -17,7 +17,9 @@ import '../../services/device_registry.dart';
 import '../../services/energy_history.dart';
 import '../../services/history_clock.dart';
 import '../../services/rate_timeline.dart';
-import '../../services/forecast_models.dart';
+import '../../services/forecast_comparison.dart';
+import '../../widgets/forecast_comparison_chart.dart';
+import '../web/web_forecast_cards.dart' show kForecastColors;
 import '../../utils/last_seen.dart';
 import '../../widgets/history_start_notice.dart';
 import '../../widgets/app_bottom_sheet.dart';
@@ -43,9 +45,10 @@ import '../web/web_trend_chart.dart';
 ///
 /// Reuses the web's non-widget analytics models/logic directly:
 /// [AnalyticsFilter], [DeviceMeta], [UsageRow], [parseDaily]/[applyFilter]/
-/// [bucketize]/[groupSum]/[dailySeries] (`analytics/analytics_data.dart`,
-/// `analytics/analytics_filter.dart`), and the ARIMA/backtest forecaster
-/// (`services/forecast_models.dart`). Also reuses two self-contained web
+/// [bucketize]/[groupSum] (`analytics/analytics_data.dart`,
+/// `analytics/analytics_filter.dart`), and the forecast comparison published
+/// by the daily training job (`services/forecast_comparison.dart`). Also
+/// reuses two self-contained web
 /// widgets verbatim: [HistoryTrendPanel] (History section) and
 /// [WebTrendChart] (consumption-trend / forecast charts) -- both work fine
 /// embedded in a phone-width column and are explicitly listed as reusable in
@@ -124,13 +127,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
   int _tabIndex = 0; // 0 = Usage, 1 = Forecast
   bool _trendBars = false;
   int? _trendSelected;
-  int? _forecastSelected;
 
   /// 0/1/2 = Institutes/Rooms/Devices for a campus admin; an institute
   /// admin never sees "Institutes" (handoff §5), so their segmented control
   /// only has Rooms(0)/Devices(1) and this is offset by +1 when read.
   int _topSegment = 0;
-  String _compareModel = 'xgboost';
+  String _forecastModel = 'arima';
 
   // ── Firebase-backed data ────────────────────────────────────────────────
   Map<String, DeviceMeta> _meta = {};
@@ -174,10 +176,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Timer? _loadTimeoutTimer;
   bool _postLoadErrorNotified = false;
   StreamSubscription? _combinedSub;
-  StreamSubscription<DatabaseEvent>? _predictionsSub;
+  StreamSubscription<Map<String, SeriesComparison>>? _predictionsSub;
 
-  Map<String, dynamic> _remoteModels = {};
-  bool _remoteModelsLoaded = false;
+  Map<String, SeriesComparison> _comparisons = const {};
+  bool _comparisonsLoaded = false;
 
   bool _isPermissionDenied(Object error) {
     final text = error.toString().toLowerCase();
@@ -346,36 +348,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _postLoadErrorNotified = false;
   }
 
-  /// XGBoost / LSTM, trained daily by the Python job and published to
-  /// `history/predictions/models` -- loaded independently of the main
-  /// combined listener (matches `web_forecast_cards.dart`'s
-  /// `ForecastComparison`), so a slow/failed load here only affects the
-  /// Forecast tab's "Compare with" column, not the whole screen.
+  /// The forecast comparison published by the daily training job --
+  /// loaded independently of the main combined listener, so a slow/failed
+  /// load here only affects the Forecast tab.
   void _listenPredictions() {
-    _predictionsSub = FirebaseDatabase.instance
-        .ref('history/predictions/models')
-        .onValue
-        .listen((e) {
+    _predictionsSub = ForecastComparisons.watch().listen((v) {
       if (!mounted) return;
-      try {
-        setState(() {
-          final v = e.snapshot.value;
-          _remoteModels = v is Map ? Map<String, dynamic>.from(v) : {};
-          _remoteModelsLoaded = true;
-        });
-      } catch (error, stack) {
-        // Same reasoning as `_listenAll`: a throw from inside this onData
-        // callback (as opposed to a stream-level error) is not caught by
-        // `onError` below. Without this, an unexpected shape under
-        // `history/predictions/models` would leave the Forecast tab's
-        // "Compare with" column stuck on "Loading…" forever instead of
-        // degrading to "Not trained yet" once loaded is (correctly) true.
-        debugPrint(
-            '[Analytics] _listenPredictions setState threw: $error\n$stack');
-        if (mounted) setState(() => _remoteModelsLoaded = true);
-      }
+      setState(() {
+        _comparisons = v;
+        _comparisonsLoaded = true;
+      });
     }, onError: (_) {
-      if (mounted) setState(() => _remoteModelsLoaded = true);
+      if (mounted) setState(() => _comparisonsLoaded = true);
     });
   }
 
@@ -1353,37 +1337,52 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   // ═══════════════════════════ Forecast tab ══════════════════════════════
 
+  /// ARIMA / XGBoost / GRU / LSTM as published by the daily training job
+  /// (`tools/forecast_comparison.py`) for the campus or the one institute
+  /// in scope. Nothing is trained on the phone.
   Widget _buildForecastTab() {
     final f = _filter;
-    final today = dateOnly(HistoryClock.instance.now());
-    final yesterday = today.subtract(const Duration(days: 1));
-    final days = f.days;
-    final horizon = days <= 10 ? 7 : (days <= 45 ? 30 : 90);
-    final scoped = f.hasScope || (f.hasUtility && f.utilities.length < 3);
+    final key = ForecastComparisons.seriesFor(
+      buildings: f.buildings,
+      floor: f.floor,
+      room: f.room,
+      device: f.device,
+      utilities: f.utilities,
+      allUtilities: kUtilities.length,
+    );
+    final c = key == null ? null : _comparisons[key];
 
-    final series = dailySeries(f, _allRows, yesterday);
-    final daily = series.values;
-
-    final header = _buildHeader('Next $horizon days',
-        'From ${_fmtDate(today)} · ${_scopeLabel(f)} · based on history to ${_fmtDate(yesterday)}');
-
-    final window = daily.length > 90 ? daily.sublist(daily.length - 90) : daily;
-    final arima = _arimaModel(window, horizon);
-    final compareKey = scoped ? null : _compareModel;
-    final compareColor = compareKey == 'lstm'
-        ? const Color(0xFFA15208)
-        : const Color(0xFF2E669E);
-    final compareModel = compareKey == null
-        ? null
-        : _remoteModel(compareKey, compareKey == 'lstm' ? 'LSTM' : 'XGBoost',
-            compareColor, horizon, !scoped);
-
-    final best = _bestModel(arima, compareModel);
-    final arimaTotal =
-        (arima.values ?? const []).fold<double>(0, (a, b) => a + b);
+    final String? message;
+    if (key == null) {
+      message = 'Forecasts are made for the whole campus and for each institute. '
+          'Clear the floor, room, device and utility filters to see them.';
+    } else if (!_comparisonsLoaded) {
+      message = 'Loading…';
+    } else if (c == null) {
+      message = 'Not trained yet. The daily training job publishes the '
+          'forecast comparison every morning.';
+    } else if (c.unavailable != null || c.models.isEmpty) {
+      message = c.unavailable ?? 'No model has been trained yet.';
+    } else {
+      message = null;
+    }
+    if (message != null) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildHeader('Forecast', _scopeLabel(f)),
+        const SizedBox(height: 4),
+        _noteBox(message),
+      ]);
+    }
+    final s = c!;
+    final best = s.bestModel;
+    final selected = s.models[_forecastModel]?.ok == true
+        ? s.models[_forecastModel]!
+        : (best ?? s.models.values.first);
+    final kwh = best?.nextDay;
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      header,
+      _buildHeader('Tomorrow',
+          '${s.nextDay == null ? 'Next day' : _fmtDate(s.nextDay!)} · ${_scopeLabel(f)} · day-ahead forecast'),
       const SizedBox(height: 4),
       Container(
         padding: const EdgeInsets.all(16),
@@ -1395,74 +1394,110 @@ class _HistoryScreenState extends State<HistoryScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Text('Expected energy',
-                style:
-                    AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
-            if (best == 'arima') ...[
+                style: AppTextStyles.caption.copyWith(color: AppColors.inkMuted)),
+            if (best != null) ...[
               const SizedBox(width: 6),
-              Text('★ ARIMA · best',
+              Text('★ ${best.name} · best',
                   style: AppTextStyles.captionSmall.copyWith(
-                      color: AppColors.warningText,
-                      fontWeight: FontWeight.w700)),
+                      color: AppColors.warningText, fontWeight: FontWeight.w700)),
             ],
           ]),
           const SizedBox(height: 4),
           Text.rich(TextSpan(children: [
             TextSpan(
-                text: _fmtKwh(arimaTotal),
-                style: AppTextStyles.displayTabular
-                    .copyWith(color: AppColors.ink)),
+                text: kwh == null ? '—' : kwh.toStringAsFixed(2),
+                style: AppTextStyles.displayTabular.copyWith(color: AppColors.ink)),
             TextSpan(
                 text: ' kWh',
-                style:
-                    AppTextStyles.subtitle.copyWith(color: AppColors.inkMuted)),
+                style: AppTextStyles.subtitle.copyWith(color: AppColors.inkMuted)),
           ])),
-          const SizedBox(height: 4),
-          Text.rich(TextSpan(children: [
-            TextSpan(
-                text: 'About ',
-                style:
-                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
-            TextSpan(
-                text: _fmtMoney(arimaTotal * _electricityRate),
-                style: AppTextStyles.bodySm.copyWith(
-                    color: AppColors.ink, fontWeight: FontWeight.w700)),
-            TextSpan(
-                text:
-                    ' on the bill at ₱${_electricityRate.toStringAsFixed(2)} per kWh',
-                style:
-                    AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
-          ])),
+          if (kwh != null) ...[
+            const SizedBox(height: 4),
+            Text.rich(TextSpan(children: [
+              TextSpan(
+                  text: 'About ',
+                  style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+              TextSpan(
+                  text: '₱${(kwh * _electricityRate).toStringAsFixed(2)}',
+                  style: AppTextStyles.bodySm
+                      .copyWith(color: AppColors.ink, fontWeight: FontWeight.w700)),
+              TextSpan(
+                  text: ' on the bill at ₱${_electricityRate.toStringAsFixed(2)} per kWh',
+                  style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            ])),
+          ],
         ]),
       ),
       const SizedBox(height: 28),
-      _sectionHead(scoped ? 'Forecast model' : 'Compare models',
-          scoped ? 'ARIMA for this scope' : 'ARIMA against one other model'),
+      _sectionHead(
+          'Actual vs forecast',
+          s.testStart == null || s.testEnd == null
+              ? '${s.testDays} test days'
+              : 'Test period ${_fmtDate(s.testStart!)} – ${_fmtDate(s.testEnd!)} · ${s.testDays} days'),
       const SizedBox(height: 12),
-      if (scoped)
-        _noteBox(
-          _lockCode != null
-              ? 'XGBoost and LSTM are trained on campus totals only, so ARIMA is the forecast for ${_buildingName(_lockCode!)}.'
-              : 'XGBoost and LSTM are trained on the whole campus. Clear the building and utility filters to compare them.',
-        )
-      else
-        AppSegmentedControl(
-          segments: const [
-            AppSegment(label: 'XGBoost'),
-            AppSegment(label: 'LSTM')
-          ],
-          selectedIndex: _compareModel == 'lstm' ? 1 : 0,
-          onChanged: (i) =>
-              setState(() => _compareModel = i == 1 ? 'lstm' : 'xgboost'),
-          palette: _palette,
+      AppSegmentedControl(
+        segments: [
+          for (final k in ForecastComparisons.models)
+            AppSegment(label: ForecastComparisons.names[k]!),
+        ],
+        selectedIndex: ForecastComparisons.models.indexOf(selected.key),
+        onChanged: (i) => setState(() => _forecastModel = ForecastComparisons.models[i]),
+        palette: _palette,
+      ),
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.fromLTRB(8, 16, 12, 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _palette.line),
         ),
-      const SizedBox(height: 12),
-      _buildForecastChart(arima, compareModel, today, horizon),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (selected.ok)
+            ForecastComparisonChart(
+              labels: s.labels,
+              actual: s.actual,
+              lines: [
+                ForecastLine(selected.name, kForecastColors[selected.key]!, selected.values),
+              ],
+              actualColor: AppColors.ink,
+              axisColor: AppColors.inkMuted,
+              tooltipColor: AppColors.ink,
+              height: 220,
+            )
+          else
+            Container(
+              height: 120,
+              alignment: Alignment.center,
+              child: Text(selected.unavailable ?? 'Not available.',
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
+            ),
+          const SizedBox(height: 10),
+          Wrap(spacing: 16, runSpacing: 4, children: [
+            _legendItem(AppColors.ink, false, 'Actual'),
+            _legendItem(kForecastColors[selected.key]!, false, '${selected.name} · day-ahead'),
+          ]),
+        ]),
+      ),
       const SizedBox(height: 28),
-      _buildForecastComparison(arima, compareModel, arimaTotal, horizon, best),
-      const SizedBox(height: 24),
+      _sectionHead('Model comparison', 'Sorted by lowest RMSE'),
+      const SizedBox(height: 12),
+      for (final m in [
+        ...s.ranked,
+        for (final k in ForecastComparisons.models)
+          if (s.models[k] case final x? when !x.ok) x,
+      ]) ...[
+        _modelRow(m, isBest: m.key == s.best, isSelected: m.key == selected.key),
+        const SizedBox(height: 10),
+      ],
+      const SizedBox(height: 14),
       _noteBox(
-        'How to read this. Error is MAPE, the average % a model missed by over the last 14 days. '
-        'Lower is better. The forecast length follows your time range: up to 10 days → 7, up to 45 → 30, longer → 90.',
+        'How to read this. Each model trains on the first ${s.trainDays} days and is tested on the last '
+        '${s.testDays}: every test day is predicted from the real readings up to the day before. '
+        'RMSE and MAPE show how far off it was (lower is better); R² closer to 1 is better.'
+        '${s.incompleteDays > 0 ? ' ${s.incompleteDays} of ${s.days} days had no readings (meter offline) and were filled in.' : ''}'
+        '${s.generatedAt != null ? ' Trained ${_ago(s.generatedAt!)}.' : ''}',
         icon: Icons.help_outline,
       ),
     ]);
@@ -1473,7 +1508,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _palette.line),
       ),
@@ -1493,212 +1527,70 @@ class _HistoryScreenState extends State<HistoryScreen> {
   ];
   String _fmtDate(DateTime d) => '${_months[d.month - 1]} ${d.day}';
 
-  _ModelResult _arimaModel(List<double> window, int horizon) {
-    if (window.length < 2) {
-      return const _ModelResult(
-          key: 'arima',
-          name: 'ARIMA',
-          unavailable: 'Needs at least 2 days of daily history.');
-    }
-    return _ModelResult(
-      key: 'arima',
-      name: 'ARIMA',
-      values: arimaForecast(window, horizon),
-      error: backtest(window, (y, h) => arimaForecast(y, h)),
-    );
-  }
-
-  _ModelResult _remoteModel(
-      String key, String name, Color color, int horizon, bool applies) {
-    if (!applies) {
-      return _ModelResult(
-        key: key,
-        name: name,
-        color: color,
-        unavailable:
-            '$name is trained on campus-wide totals only. Clear the Scope and '
-            'Utility filters to compare it with ARIMA.',
-      );
-    }
-    if (!_remoteModelsLoaded) {
-      return _ModelResult(
-          key: key, name: name, color: color, unavailable: 'Loading…');
-    }
-    final raw = _remoteModels[key];
-    if (raw is! Map || raw['values'] is! List) {
-      return _ModelResult(
-        key: key,
-        name: name,
-        color: color,
-        unavailable:
-            'Not trained yet. The daily training job publishes it once there are '
-            'at least 35 days of history.',
-      );
-    }
-    final values = [
-      for (final v in raw['values'] as List) v is num ? v.toDouble() : 0.0
-    ];
-    final gen = raw['generated_at'];
-    return _ModelResult(
-      key: key,
-      name: name,
-      color: color,
-      values: values.take(horizon).toList(),
-      error: ForecastError.fromMap(raw['backtest']),
-      trainedAt:
-          gen is num ? DateTime.fromMillisecondsSinceEpoch(gen.toInt()) : null,
-    );
-  }
-
-  String _bestModel(_ModelResult arima, _ModelResult? compare) {
-    var best = 'arima';
-    final bestMape = arima.error?.mape;
-    if (compare?.error != null && compare?.values != null) {
-      if (bestMape == null || compare!.error!.mape < bestMape) {
-        best = compare!.key;
-      }
-    }
-    return best;
-  }
-
-  Widget _buildForecastChart(
-      _ModelResult arima, _ModelResult? compare, DateTime today, int horizon) {
-    final values = arima.values;
-    if (values == null) {
-      return Container(
-        height: 200,
-        alignment: Alignment.center,
-        padding: const EdgeInsets.all(20),
+  Widget _modelRow(ModelScore m, {required bool isBest, required bool isSelected}) {
+    String f(double? v, int digits) => v == null ? '—' : v.toStringAsFixed(digits);
+    return InkWell(
+      onTap: m.ok ? () => setState(() => _forecastModel = m.key) : null,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _palette.line)),
-        child: Text(arima.unavailable ?? 'Not available.',
-            textAlign: TextAlign.center,
-            style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted)),
-      );
-    }
-    final points = [
-      for (var i = 0; i < values.length; i++)
-        TrendPoint(
-            _fmtDate(today.add(Duration(days: i + 1))),
-            '${_fmtDate(today.add(Duration(days: i + 1)))} · ${values[i].toStringAsFixed(1)} kWh',
-            values[i])
-    ];
-    final compareValues = compare?.values;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(8, 16, 12, 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _palette.line),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        WebTrendChart(
-          points: points,
-          bars: false,
-          color: _palette.dark,
-          height: 220,
-          compare:
-              compareValues != null && compareValues.length == points.length
-                  ? compareValues
-                  : null,
-          compareColor: compare?.color ?? const Color(0xFF8A9A90),
-          selected: _forecastSelected,
-          onSelect: (i) => setState(() => _forecastSelected = i),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: isSelected ? _palette.dark : _palette.line,
+              width: isSelected ? 1.5 : 1),
         ),
-        const SizedBox(height: 10),
-        Wrap(spacing: 16, runSpacing: 4, children: [
-          _legendItem(_palette.dark, false, 'ARIMA · next $horizon days'),
-          if (compare != null && compare.values != null)
-            _legendItem(compare.color ?? const Color(0xFF8A9A90), true,
-                '${compare.name} · same days'),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            SizedBox(
+              width: 22,
+              child: Text(m.rank?.toString() ?? '—',
+                  style: AppTextStyles.subtitle.copyWith(color: AppColors.inkMuted)),
+            ),
+            Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                    color: kForecastColors[m.key], borderRadius: BorderRadius.circular(3))),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(
+                    m.order != null ? '${m.name} (${m.order!.join(',')})' : m.name,
+                    style: AppTextStyles.subtitle.copyWith(color: AppColors.ink))),
+            if (isBest)
+              const Text('★ Best',
+                  style: TextStyle(
+                      color: AppColors.warningText, fontWeight: FontWeight.w700)),
+          ]),
+          const SizedBox(height: 8),
+          if (!m.ok)
+            Text(m.unavailable ?? 'Not available.',
+                style: AppTextStyles.bodySm.copyWith(color: AppColors.inkMuted))
+          else
+            Row(children: [
+              Expanded(child: _scoreCell('RMSE', '${f(m.rmse, 2)} kWh')),
+              Expanded(
+                  child: _scoreCell(
+                      'MAPE', m.mape == null ? '—' : '${m.mape!.toStringAsFixed(1)}%')),
+              Expanded(child: _scoreCell('R²', f(m.r2, 3))),
+              Expanded(child: _scoreCell('Tomorrow', '${f(m.nextDay, 1)} kWh')),
+            ]),
         ]),
-      ]),
+      ),
     );
   }
 
-  Widget _buildForecastComparison(_ModelResult arima, _ModelResult? compare,
-      double arimaTotal, int horizon, String best) {
-    if (compare == null || compare.values == null) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _sectionHead('ARIMA details', 'Next $horizon days'),
-        const SizedBox(height: 12),
-        _modelColumn(arima, arimaTotal, true),
-      ]);
-    }
-    final compareTotal = compare.values!.fold<double>(0, (a, b) => a + b);
-    final pctDiff =
-        arimaTotal <= 0 ? 0.0 : (compareTotal - arimaTotal) / arimaTotal * 100;
-    final errDiff = (compare.error?.mape ?? 0) - (arima.error?.mape ?? 0);
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _sectionHead('Side by side', 'Next $horizon days'),
-      const SizedBox(height: 12),
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(child: _modelColumn(arima, arimaTotal, best == 'arima')),
-        const SizedBox(width: 12),
-        Expanded(
-            child: _modelColumn(compare, compareTotal, best == compare.key)),
-      ]),
-      const SizedBox(height: 16),
-      _noteBox(
-        '${compare.name} expects ${pctDiff.abs().toStringAsFixed(1)}% ${pctDiff >= 0 ? 'more' : 'less'} '
-        'energy than ARIMA (${pctDiff >= 0 ? '+' : '−'}${_fmtMoney((compareTotal - arimaTotal).abs() * _electricityRate)}). '
-        'Its error is ${errDiff.abs().toStringAsFixed(1)} points ${errDiff >= 0 ? 'higher' : 'lower'}, so '
-        '${best == 'arima' ? 'ARIMA stays' : '${compare.name} looks like'} the better guess.',
-        icon: Icons.insights_outlined,
-      ),
-    ]);
-  }
-
-  Widget _modelColumn(_ModelResult m, double total, bool isBest) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-            color: isBest ? _palette.dark : _palette.line,
-            width: isBest ? 1.5 : 1),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                  color: m.color ?? _palette.dark,
-                  borderRadius: BorderRadius.circular(3))),
-          const SizedBox(width: 8),
-          Expanded(
-              child: Text(m.name,
-                  style:
-                      AppTextStyles.subtitle.copyWith(color: AppColors.ink))),
-          if (isBest)
-            const Text('★',
-                style: TextStyle(
-                    color: AppColors.warningText, fontWeight: FontWeight.w700)),
-        ]),
-        const SizedBox(height: 10),
-        _mrow('Energy', '${_fmtKwh(total)} kWh'),
-        _mrow('Est. bill', _fmtMoney(total * _electricityRate)),
-        _mrow('Error',
-            m.error == null ? '—' : '${m.error!.mape.toStringAsFixed(1)}%'),
-        _mrow('Trained', m.trainedAt == null ? '—' : _ago(m.trainedAt!)),
-      ]),
-    );
-  }
-
-  Widget _mrow(String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child:
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+  Widget _scoreCell(String label, String value) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Text(label,
-              style: AppTextStyles.captionSmall
-                  .copyWith(color: AppColors.inkMuted)),
+              style: AppTextStyles.captionSmall.copyWith(color: AppColors.inkMuted)),
+          const SizedBox(height: 2),
           Text(value,
               style: AppTextStyles.bodySm
                   .copyWith(color: AppColors.ink, fontWeight: FontWeight.w700)),
-        ]),
+        ],
       );
 
   String _ago(DateTime t) {
@@ -2227,26 +2119,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
 }
 
 // ═══════════════════════════ Small helper widgets ═══════════════════════
-
-class _ModelResult {
-  final String key;
-  final String name;
-  final Color? color;
-  final List<double>? values;
-  final ForecastError? error;
-  final DateTime? trainedAt;
-  final String? unavailable;
-
-  const _ModelResult({
-    required this.key,
-    required this.name,
-    this.color,
-    this.values,
-    this.error,
-    this.trainedAt,
-    this.unavailable,
-  });
-}
 
 class _FiltersButton extends StatelessWidget {
   const _FiltersButton(

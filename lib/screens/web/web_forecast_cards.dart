@@ -1,110 +1,75 @@
 import 'dart:async';
-import 'dart:math' as math;
 
-import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
-import '../../services/forecast_models.dart';
+import '../../services/forecast_comparison.dart';
 import '../../theme/app_colors.dart';
-import '../../theme/institute_colors.dart';
-import 'web_theme.dart';
 import '../../theme/app_fonts.dart';
+import '../../theme/institute_colors.dart';
+import '../../widgets/forecast_comparison_chart.dart';
+import 'web_theme.dart';
 
-/// Two half-width forecast cards for the web Analytics screen.
+/// Model colours (the notebook's chart colours; LSTM keeps its old blue).
+const kForecastColors = {
+  'arima': Color(0xFF55A868),
+  'xgboost': Color(0xFFC44E52),
+  'gru': Color(0xFF8172B2),
+  'lstm': Color(0xFF3B6FD8),
+};
+
+/// The forecast section of the web Analytics screen: ARIMA, XGBoost, GRU
+/// and LSTM, compared the way the research notebook does it.
 ///
-/// Left: ARIMA, computed here from the daily history. Right: a picker to
-/// compare against XGBoost or LSTM, which the Python job
-/// (tools/train_and_push.py) trains daily and writes to
-/// `history/predictions/models/{xgboost,lstm}`, or ARIMA itself.
-///
-/// Every model is scored by the same backtest (trained without the last 14
-/// days, then compared with them); the lowest MAPE gets a ★ Best badge.
-/// Both charts show only the next 30 days, on the same scale.
+/// Everything comes from `history/predictions/comparison/{series}`, written
+/// daily by `tools/forecast_comparison.py`; nothing is trained here. The
+/// chart shows the test days (the last 20 % of the history): what was
+/// actually used and what each model predicted for it from the real
+/// readings up to the day before. The table ranks the models by RMSE, and
+/// "Tomorrow" is each model's forecast for the next day.
 class ForecastComparison extends StatefulWidget {
   final InstitutePalette palette;
-
-  /// Daily kWh, oldest first.
-  final List<double> daily;
-
-  /// Date of the last value in [daily], used to label the forecast days.
-  final DateTime? lastDate;
   final double rate;
 
-  /// Days to forecast.
-  final int horizon;
+  /// 'campus', an institute code, or null when the Analytics filter is
+  /// narrower than any published series.
+  final String? series;
 
-  /// When set, both cards show this message instead of a forecast (e.g.
-  /// "Not enough data for a forecast").
-  final String? unavailableReason;
+  /// Shown in titles, e.g. "Whole campus" or "IC Building".
+  final String seriesName;
 
-  /// XGBoost / LSTM are trained campus-wide by the Python job; when the
-  /// Analytics scope or utility filter is narrower they can't be shown.
-  final bool remoteModelsApply;
+  /// Defaults to the live database; tests pass a fixed stream.
+  final Stream<Map<String, SeriesComparison>>? source;
 
   const ForecastComparison({
     super.key,
     required this.palette,
-    required this.daily,
-    required this.lastDate,
     required this.rate,
-    this.horizon = 30,
-    this.unavailableReason,
-    this.remoteModelsApply = true,
+    required this.series,
+    required this.seriesName,
+    this.source,
   });
 
   @override
   State<ForecastComparison> createState() => _ForecastComparisonState();
 }
 
-class _Model {
-  final String key;
-  final String name;
-  final String blurb;
-  final Color color;
-  final List<double>? values;
-  final ForecastError? error;
-  final DateTime? trainedAt;
-
-  /// Why [values] is missing, if it is.
-  final String? unavailable;
-
-  const _Model({
-    required this.key,
-    required this.name,
-    required this.blurb,
-    required this.color,
-    this.values,
-    this.error,
-    this.trainedAt,
-    this.unavailable,
-  });
-}
-
-const _arimaColor = Color(0xFF2E9E52);
-const _xgbColor = Color(0xFFE8922A);
-const _lstmColor = Color(0xFF3B6FD8);
-
 class _ForecastComparisonState extends State<ForecastComparison> {
-  StreamSubscription<DatabaseEvent>? _sub;
-  Map<String, dynamic> _remote = {};
-  bool _remoteLoaded = false;
-  String _compare = 'xgboost';
+  StreamSubscription<Map<String, SeriesComparison>>? _sub;
+  Map<String, SeriesComparison> _all = const {};
+  bool _loaded = false;
+  final Set<String> _hidden = {};
 
   @override
   void initState() {
     super.initState();
-    _sub = FirebaseDatabase.instance
-        .ref('history/predictions/models')
-        .onValue
-        .listen((e) {
+    _sub = (widget.source ?? ForecastComparisons.watch()).listen((v) {
       if (!mounted) return;
       setState(() {
-        final v = e.snapshot.value;
-        _remote = v is Map ? Map<String, dynamic>.from(v) : {};
-        _remoteLoaded = true;
+        _all = v;
+        _loaded = true;
       });
     }, onError: (_) {
-      if (mounted) setState(() => _remoteLoaded = true);
+      if (mounted) setState(() => _loaded = true);
     });
   }
 
@@ -114,237 +79,313 @@ class _ForecastComparisonState extends State<ForecastComparison> {
     super.dispose();
   }
 
-  List<double> get _window => widget.daily.length > 90
-      ? widget.daily.sublist(widget.daily.length - 90)
-      : widget.daily;
-
-  _Model _arima() {
-    final w = _window;
-    final reason = widget.unavailableReason;
-    if (reason != null) {
-      return _Model(
-        key: 'arima',
-        name: 'ARIMA',
-        blurb: 'Seasonal time-series model',
-        color: _arimaColor,
-        unavailable: reason,
-      );
-    }
-    if (w.length < 2) {
-      return const _Model(
-        key: 'arima',
-        name: 'ARIMA',
-        blurb: 'Seasonal time-series model',
-        color: _arimaColor,
-        unavailable: 'Needs at least 2 days of daily history.',
-      );
-    }
-    return _Model(
-      key: 'arima',
-      name: 'ARIMA',
-      blurb: 'Seasonal time-series model',
-      color: _arimaColor,
-      values: arimaForecast(w, widget.horizon),
-      error: backtest(w, (y, h) => arimaForecast(y, h)),
-    );
-  }
-
-  _Model _remoteModel(String key, String name, String blurb, Color color) {
-    final raw = _remote[key];
-    final reason = widget.unavailableReason;
-    if (reason != null) {
-      return _Model(
-          key: key, name: name, blurb: blurb, color: color,
-          unavailable: reason);
-    }
-    if (!widget.remoteModelsApply) {
-      return _Model(
-        key: key,
-        name: name,
-        blurb: blurb,
-        color: color,
-        unavailable: '$name is trained on campus-wide totals only. Clear the '
-            'Scope and Utility filters to compare it with ARIMA.',
-      );
-    }
-    if (!_remoteLoaded) {
-      return _Model(
-          key: key, name: name, blurb: blurb, color: color,
-          unavailable: 'Loading…');
-    }
-    if (raw is! Map || raw['values'] is! List) {
-      return _Model(
-        key: key,
-        name: name,
-        blurb: blurb,
-        color: color,
-        unavailable: 'Not trained yet. The daily training job '
-            '(Train LSTM and Publish Forecast) publishes it once there are '
-            'at least 35 days of history.',
-      );
-    }
-    final values = [
-      for (final v in raw['values'] as List) v is num ? v.toDouble() : 0.0
-    ];
-    final gen = raw['generated_at'];
-    return _Model(
-      key: key,
-      name: name,
-      blurb: blurb,
-      color: color,
-      values: values.take(widget.horizon).toList(),
-      error: ForecastError.fromMap(raw['backtest']),
-      trainedAt:
-          gen is num ? DateTime.fromMillisecondsSinceEpoch(gen.toInt()) : null,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final models = {
-      'arima': _arima(),
-      'xgboost': _remoteModel(
-          'xgboost', 'XGBoost', 'Gradient-boosted trees', _xgbColor),
-      'lstm': _remoteModel('lstm', 'LSTM', 'Recurrent neural network', _lstmColor),
-    };
-    String? best;
-    for (final m in models.values) {
-      final e = m.error;
-      if (e == null || m.values == null) continue;
-      if (best == null || e.mape < models[best]!.error!.mape) best = m.key;
+    final key = widget.series;
+    final String? message;
+    final s = key == null ? null : _all[key];
+    if (key == null) {
+      message =
+          'Forecasts are made for the whole campus and for each institute. '
+          'Clear the floor, room, device and utility filters to see them.';
+    } else if (!_loaded) {
+      message = 'Loading…';
+    } else if (s == null) {
+      message = 'Not trained yet. The daily job (Train Forecast Models and '
+          'Publish Comparison) publishes the comparison every morning.';
+    } else if (s.unavailable != null || s.models.isEmpty) {
+      message = s.unavailable ?? 'No model has been trained yet.';
+    } else {
+      message = null;
     }
-    final left = models['arima']!;
-    final right = models[_compare]!;
+    if (message != null) {
+      return _card(
+        title: 'Forecast',
+        subtitle: widget.seriesName,
+        child: Container(
+          height: 160,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.all(20),
+          child: Text(message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 14, color: WebColors.mid)),
+        ),
+      );
+    }
+    final c = s!;
 
-    final all = [...?left.values, ...?right.values]
-        .where((v) => v.isFinite)
-        .toList();
-    final maxV = _niceMax(all.isEmpty ? 0 : all.reduce(math.max));
-    final h = widget.horizon;
-    final labels = List.generate(h, (i) {
-      final d = widget.lastDate?.add(Duration(days: i + 1));
-      return d;
-    });
-
-    final leftCard = _card(
-      title: 'ARIMA Forecast',
-      subtitle: '${left.blurb} · next $h days',
-      trailing: best == 'arima' ? const _BestChip(big: true) : null,
-      model: left,
-      labels: labels,
-      maxV: maxV,
+    final chart = _card(
+      title: 'Actual vs day-ahead forecast',
+      subtitle:
+          '${widget.seriesName} · test period ${_range(c.testStart, c.testEnd)} '
+          '(${c.testDays} days)',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        _legend(c),
+        const SizedBox(height: 12),
+        ForecastComparisonChart(
+          labels: c.labels,
+          actual: c.actual,
+          lines: [
+            for (final k in ForecastComparisons.models)
+              if (!_hidden.contains(k) && (c.models[k]?.ok ?? false))
+                ForecastLine(c.models[k]!.name, kForecastColors[k]!,
+                    c.models[k]!.values),
+          ],
+          actualColor: WebColors.ink,
+          axisColor: WebColors.muted,
+          tooltipColor: WebColors.ink,
+          height: 280,
+        ),
+      ]),
     );
-    final rightCard = _card(
-      title: 'Compare with',
-      subtitle: '${right.blurb} · next $h days',
-      trailing: _picker(models, best),
-      model: right,
-      labels: labels,
-      maxV: maxV,
-    );
+    final tomorrow = _tomorrowCard(c);
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      LayoutBuilder(builder: (context, c) {
-        if (c.maxWidth < kWebWideContent) {
-          return Column(children: [leftCard, const SizedBox(height: 16), rightCard]);
+      LayoutBuilder(builder: (context, box) {
+        if (box.maxWidth < kWebWideContent) {
+          return Column(
+              children: [chart, const SizedBox(height: 16), tomorrow]);
         }
-        // No IntrinsicHeight: the charts use LayoutBuilder, which it can't
-        // measure. Both cards have the same fixed-height sections anyway.
         return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(child: leftCard),
+          Expanded(flex: 2, child: chart),
           const SizedBox(width: 16),
-          Expanded(child: rightCard),
+          Expanded(child: tomorrow),
         ]);
       }),
+      const SizedBox(height: 16),
+      _tableCard(c),
       const SizedBox(height: 8),
       Text(
-        'Both charts show the next $h days on the same scale. Error is a '
-        'backtest: each model is trained without the last 14 days and its '
-        'predictions are compared with what actually happened. Lower is better.',
+        'Each model is trained on the first ${c.trainDays} days '
+        '(${_range(c.trainStart, c.trainEnd)}) and tested on the last ${c.testDays}: '
+        'every test day is predicted from the real readings up to the day before. '
+        'Lower MAE, RMSE and MAPE are better; R² closer to 1 is better.'
+        '${c.incompleteDays > 0 ? ' ${c.incompleteDays} of ${c.days} days had no readings (meter offline) and were filled in from the days around them.' : ''}'
+        '${c.generatedAt != null ? ' Trained ${_ago(c.generatedAt!)}.' : ''}',
         style: const TextStyle(fontSize: 12.5, color: WebColors.muted),
       ),
     ]);
   }
 
-  Widget _picker(Map<String, _Model> models, String? best) {
-    final p = widget.palette;
-    final cur = models[_compare]!;
-    return PopupMenuButton<String>(
-      tooltip: 'Choose a model to compare',
-      initialValue: _compare,
-      onSelected: (v) => setState(() => _compare = v),
-      position: PopupMenuPosition.under,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      itemBuilder: (_) => [
-        for (final m in models.values)
-          PopupMenuItem(
-            value: m.key,
-            child: SizedBox(
-              width: 260,
+  Widget _legend(SeriesComparison c) {
+    return Wrap(spacing: 6, runSpacing: 6, children: [
+      _chip(WebColors.ink, 'Actual', true, null),
+      for (final k in ForecastComparisons.models)
+        if (c.models[k]?.ok ?? false)
+          _chip(
+              kForecastColors[k]!,
+              c.models[k]!.name,
+              !_hidden.contains(k),
+              () => setState(() =>
+                  _hidden.contains(k) ? _hidden.remove(k) : _hidden.add(k))),
+    ]);
+  }
+
+  Widget _chip(Color color, String label, bool on, VoidCallback? onTap) {
+    return Tooltip(
+      message: onTap == null ? '' : (on ? 'Hide $label' : 'Show $label'),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: on ? color.withAlpha(140) : WebColors.outline),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                    color: on ? color : WebColors.outline,
+                    borderRadius: BorderRadius.circular(3))),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: on ? WebColors.ink : WebColors.muted)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _tomorrowCard(SeriesComparison c) {
+    final best = c.bestModel;
+    final kwh = best?.nextDay;
+    return _card(
+      title: 'Tomorrow',
+      subtitle: c.nextDay == null ? 'Next day' : _longDate(c.nextDay!),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: WebColors.outline),
+          ),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text('Best model · ${best?.name ?? '—'}',
+                  style:
+                      const TextStyle(fontSize: 12.5, color: WebColors.muted)),
+              const SizedBox(width: 6),
+              if (best != null) const _BestChip(),
+            ]),
+            const SizedBox(height: 6),
+            Text(kwh == null ? '—' : '${kwh.toStringAsFixed(2)} kWh',
+                style: const TextStyle(
+                    fontFamily: AppFonts.family,
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: WebColors.ink)),
+            const SizedBox(height: 2),
+            Text(
+                kwh == null
+                    ? ''
+                    : 'About ₱ ${(kwh * widget.rate).toStringAsFixed(2)} at ₱${widget.rate.toStringAsFixed(2)}/kWh',
+                style: const TextStyle(fontSize: 13, color: WebColors.mid)),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        for (final k in ForecastComparisons.models)
+          if (c.models[k] case final m?)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
               child: Row(children: [
-                _Swatch(m.color),
+                Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                        color: kForecastColors[k],
+                        borderRadius: BorderRadius.circular(3))),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(m.name,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600, color: WebColors.ink)),
-                ),
+                    child: Text(m.name,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: WebColors.ink))),
                 Text(
-                  m.error != null
-                      ? '${m.error!.mape.toStringAsFixed(1)}% error'
-                      : m.values != null
-                          ? 'No backtest'
-                          : 'Not available',
-                  style: const TextStyle(fontSize: 12.5, color: WebColors.muted),
-                ),
-                const SizedBox(width: 8),
-                SizedBox(
-                    width: 58,
-                    child: best == m.key ? const _BestChip() : null),
+                    m.ok && m.nextDay != null
+                        ? '${m.nextDay!.toStringAsFixed(2)} kWh'
+                        : 'Not available',
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: m.ok ? FontWeight.w700 : FontWeight.w400,
+                        color: m.ok ? WebColors.ink : WebColors.muted)),
               ]),
             ),
+      ]),
+    );
+  }
+
+  Widget _tableCard(SeriesComparison c) {
+    const head = TextStyle(
+        fontSize: 12.5, fontWeight: FontWeight.w600, color: WebColors.muted);
+    const cell = TextStyle(
+        fontFamily: AppFonts.family,
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: WebColors.ink);
+    String f(double? v, int digits) =>
+        v == null ? '—' : v.toStringAsFixed(digits);
+    final rows = [
+      ...c.ranked,
+      for (final k in ForecastComparisons.models)
+        if (c.models[k] case final m? when !m.ok) m,
+    ];
+    Widget num(String s, {TextStyle style = cell}) =>
+        Expanded(child: Text(s, textAlign: TextAlign.right, style: style));
+    return _card(
+      title: 'Model comparison',
+      subtitle: 'Sorted by lowest RMSE · ${widget.seriesName}',
+      child: LayoutBuilder(builder: (context, box) {
+        // Too narrow for seven columns: scroll sideways instead of squeezing.
+        const minWidth = 680.0;
+        final table = Column(children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(children: [
+              const SizedBox(width: 44, child: Text('Rank', style: head)),
+              const Expanded(flex: 3, child: Text('Model', style: head)),
+              num('MAE (kWh)', style: head),
+              num('MSE', style: head),
+              num('RMSE (kWh)', style: head),
+              num('MAPE', style: head),
+              num('R²', style: head),
+            ]),
           ),
-        const PopupMenuItem(
-          enabled: false,
-          height: 30,
-          child: Text('Best = lowest error on the last 14 days',
-              style: TextStyle(fontSize: 12, color: WebColors.muted)),
-        ),
-      ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: p.mid.withAlpha(80)),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          _Swatch(cur.color),
-          const SizedBox(width: 8),
-          Text(cur.name,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w700, color: WebColors.ink)),
-          if (best == cur.key) ...[
-            const SizedBox(width: 6),
-            const _BestChip(),
-          ],
-          const SizedBox(width: 4),
-          const Icon(Icons.expand_more_rounded, size: 18, color: WebColors.mid),
-        ]),
-      ),
+          for (final m in rows)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                color: m.key == c.best ? const Color(0xFFFFF8E6) : null,
+                border: const Border(top: BorderSide(color: WebColors.outline)),
+              ),
+              child: Row(children: [
+                SizedBox(
+                    width: 44,
+                    child: Text(m.rank?.toString() ?? '—', style: cell)),
+                Expanded(
+                  flex: 3,
+                  child: Row(children: [
+                    Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                            color: kForecastColors[m.key],
+                            borderRadius: BorderRadius.circular(3))),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(m.name, style: cell),
+                            Text(
+                                m.unavailable ??
+                                    (m.order != null
+                                        ? 'ARIMA(${m.order!.join(', ')})'
+                                        : ForecastComparisons.blurbs[m.key] ??
+                                            ''),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12, color: WebColors.muted)),
+                          ]),
+                    ),
+                    if (m.key == c.best) ...[
+                      const SizedBox(width: 8),
+                      const _BestChip()
+                    ],
+                  ]),
+                ),
+                num(f(m.mae, 2)),
+                num(f(m.mse, 2)),
+                num(f(m.rmse, 2)),
+                num(m.mape == null ? '—' : '${m.mape!.toStringAsFixed(1)}%'),
+                num(f(m.r2, 3)),
+              ]),
+            ),
+        ]);
+        if (box.maxWidth >= minWidth) return table;
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(width: minWidth, child: table),
+        );
+      }),
     );
   }
 
   Widget _card({
     required String title,
     required String subtitle,
-    required Widget? trailing,
-    required _Model model,
-    required List<DateTime?> labels,
-    required double maxV,
+    Widget? trailing,
+    required Widget child,
   }) {
-    final p = widget.palette;
-    final values = model.values;
-    final total = values?.fold<double>(0, (a, b) => a + b) ?? 0;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -355,7 +396,8 @@ class _ForecastComparisonState extends State<ForecastComparison> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(title,
                   style: const TextStyle(
                       fontFamily: AppFonts.family,
@@ -367,65 +409,28 @@ class _ForecastComparisonState extends State<ForecastComparison> {
                   style: const TextStyle(fontSize: 13, color: WebColors.muted)),
             ]),
           ),
-          if (trailing != null) trailing,
+          if (trailing != null) ...[
+            const SizedBox(width: 12),
+            Flexible(child: trailing)
+          ],
         ]),
         const SizedBox(height: 16),
-        if (values == null)
-          Container(
-            height: 230,
-            alignment: Alignment.center,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: p.mid.withAlpha(60)),
-            ),
-            child: Text(model.unavailable ?? 'Not available.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 14, color: WebColors.mid)),
-          )
-        else ...[
-          SizedBox(
-            height: 230,
-            child: _ForecastChart(
-                values: values, labels: labels, color: model.color, maxV: maxV),
-          ),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-                child: _Box('Projected ${values.length}-day kWh',
-                    total.toStringAsFixed(2))),
-            const SizedBox(width: 10),
-            Expanded(
-                child: _Box('Estimated bill',
-                    '₱ ${(total * widget.rate).toStringAsFixed(2)}')),
-          ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-              child: _Box(
-                  'Avg error (MAE)',
-                  model.error == null
-                      ? '—'
-                      : '${model.error!.mae.toStringAsFixed(2)} kWh/day'),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _Box(
-                  'Error % (MAPE)',
-                  model.error == null
-                      ? 'Needs 22+ days'
-                      : '${model.error!.mape.toStringAsFixed(1)}%'),
-            ),
-          ]),
-          if (model.trainedAt != null) ...[
-            const SizedBox(height: 8),
-            Text('Trained ${_ago(model.trainedAt!)}',
-                style: const TextStyle(fontSize: 12, color: WebColors.muted)),
-          ],
-        ],
+        child,
       ]),
     );
   }
+
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  static const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  static String _short(DateTime d) => '${_months[d.month - 1]} ${d.day}';
+  static String _longDate(DateTime d) =>
+      '${_weekdays[d.weekday - 1]}, ${_months[d.month - 1]} ${d.day}, ${d.year}';
+  static String _range(DateTime? a, DateTime? b) =>
+      a == null || b == null ? '—' : '${_short(a)} – ${_short(b)}, ${b.year}';
 
   static String _ago(DateTime t) {
     final d = DateTime.now().difference(t);
@@ -435,253 +440,23 @@ class _ForecastComparisonState extends State<ForecastComparison> {
   }
 }
 
-double _niceMax(double v) {
-  if (!v.isFinite || v <= 0) return 10;
-  final e = math.pow(10, (math.log(v) / math.ln10).floor()).toDouble();
-  final f = v / e;
-  final n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
-  return n * e;
-}
-
-class _Swatch extends StatelessWidget {
-  final Color color;
-  const _Swatch(this.color);
-
-  @override
-  Widget build(BuildContext context) => Container(
-      width: 10,
-      height: 10,
-      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3)));
-}
-
 class _BestChip extends StatelessWidget {
-  final bool big;
-  const _BestChip({this.big = false});
+  const _BestChip();
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: big ? 10 : 7, vertical: big ? 5 : 2),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
         color: const Color(0xFFFFF3D6),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0xFFE8B84A)),
       ),
-      child: Text('★ Best',
+      child: const Text('★ Best',
           style: TextStyle(
-              fontSize: big ? 12.5 : 11,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: const Color(0xFF8A5A00))),
+              color: Color(0xFF8A5A00))),
     );
   }
-}
-
-class _Box extends StatelessWidget {
-  final String label;
-  final String value;
-  const _Box(this.label, this.value);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: WebColors.outline),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
-        const SizedBox(height: 4),
-        Text(value,
-            style: const TextStyle(
-                fontFamily: AppFonts.family,
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-                color: WebColors.ink)),
-      ]),
-    );
-  }
-}
-
-/// Area chart of the forecast only, with a hover crosshair and tooltip.
-class _ForecastChart extends StatefulWidget {
-  final List<double> values;
-  final List<DateTime?> labels;
-  final Color color;
-  final double maxV;
-
-  const _ForecastChart({
-    required this.values,
-    required this.labels,
-    required this.color,
-    required this.maxV,
-  });
-
-  @override
-  State<_ForecastChart> createState() => _ForecastChartState();
-}
-
-class _ForecastChartState extends State<_ForecastChart> {
-  int? _hover;
-
-  static const _left = 44.0, _right = 12.0, _top = 12.0, _bottom = 26.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, c) {
-      final n = widget.values.length;
-      final pw = c.maxWidth - _left - _right;
-      double xOf(int i) => _left + (n < 2 ? pw / 2 : pw * i / (n - 1));
-      return MouseRegion(
-        onHover: (e) {
-          if (n == 0) return;
-          final i = n < 2
-              ? 0
-              : ((e.localPosition.dx - _left) / (pw / (n - 1))).round().clamp(0, n - 1);
-          if (i != _hover) setState(() => _hover = i);
-        },
-        onExit: (_) => setState(() => _hover = null),
-        child: Stack(clipBehavior: Clip.none, children: [
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _ForecastPainter(
-                values: widget.values,
-                labels: widget.labels,
-                color: widget.color,
-                maxV: widget.maxV,
-                hover: _hover,
-              ),
-            ),
-          ),
-          if (_hover != null)
-            Positioned(
-              left: (xOf(_hover!) - 80).clamp(0.0, math.max(0.0, c.maxWidth - 160)),
-              top: 0,
-              child: IgnorePointer(
-                child: Container(
-                  width: 160,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: WebColors.ink,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${_fmtDate(widget.labels[_hover!])} · '
-                    '${widget.values[_hover!].toStringAsFixed(1)} kWh',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white),
-                  ),
-                ),
-              ),
-            ),
-        ]),
-      );
-    });
-  }
-}
-
-const _months = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-];
-
-String _fmtDate(DateTime? d) => d == null ? '' : '${_months[d.month - 1]} ${d.day}';
-
-class _ForecastPainter extends CustomPainter {
-  final List<double> values;
-  final List<DateTime?> labels;
-  final Color color;
-  final double maxV;
-  final int? hover;
-
-  _ForecastPainter({
-    required this.values,
-    required this.labels,
-    required this.color,
-    required this.maxV,
-    required this.hover,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const l = _ForecastChartState._left, r = _ForecastChartState._right;
-    const t = _ForecastChartState._top, b = _ForecastChartState._bottom;
-    final pw = size.width - l - r, ph = size.height - t - b, base = t + ph;
-    final n = values.length;
-    double x(int i) => l + (n < 2 ? pw / 2 : pw * i / (n - 1));
-    double y(double v) =>
-        t + ph * (1 - (v.isFinite ? v / maxV : 0.0).clamp(0.0, 1.0));
-
-    final grid = Paint()..color = const Color(0x244F6A58);
-    for (var g = 0; g <= 4; g++) {
-      final gy = t + ph * g / 4;
-      canvas.drawLine(Offset(l, gy), Offset(size.width - r, gy), grid);
-      final v = maxV * (4 - g) / 4;
-      _text(canvas, v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1),
-          Offset(l - 6, gy), align: 1);
-    }
-    if (n == 0) return;
-
-    final line = Path()..moveTo(x(0), y(values[0]));
-    for (var i = 1; i < n; i++) {
-      line.lineTo(x(i), y(values[i]));
-    }
-    final area = Path.from(line)
-      ..lineTo(x(n - 1), base)
-      ..lineTo(x(0), base)
-      ..close();
-    canvas.drawPath(
-      area,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [color.withAlpha(72), color.withAlpha(5)],
-        ).createShader(Rect.fromLTWH(0, t, size.width, ph)),
-    );
-    canvas.drawPath(
-      line,
-      Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.2
-        ..strokeJoin = StrokeJoin.round,
-    );
-
-    final step = math.max(1, ((n - 1) / 4).round());
-    for (final i in {0, step, step * 2, step * 3, n - 1}) {
-      if (i != n - 1 && n - 1 - i < step / 2) continue;
-      if (i < 0 || i >= n) continue;
-      _text(canvas, _fmtDate(labels.length > i ? labels[i] : null),
-          Offset(x(i), base + 14),
-          align: i == 0 ? -1 : (i == n - 1 ? 1 : 0));
-    }
-
-    if (hover != null && hover! < n) {
-      final hx = x(hover!);
-      canvas.drawLine(Offset(hx, t), Offset(hx, base),
-          Paint()..color = const Color(0x590E2E1A));
-      canvas.drawCircle(Offset(hx, y(values[hover!])), 5, Paint()..color = Colors.white);
-      canvas.drawCircle(Offset(hx, y(values[hover!])), 3.5, Paint()..color = color);
-    }
-  }
-
-  /// [align]: -1 left, 0 centre, 1 right of [at]; vertically centred.
-  void _text(Canvas canvas, String s, Offset at, {int align = 0}) {
-    final tp = TextPainter(
-      text: TextSpan(
-          text: s, style: const TextStyle(fontSize: 12, color: WebColors.muted)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final dx = align < 0 ? at.dx : (align > 0 ? at.dx - tp.width : at.dx - tp.width / 2);
-    tp.paint(canvas, Offset(dx, at.dy - tp.height / 2));
-  }
-
-  @override
-  bool shouldRepaint(covariant _ForecastPainter old) =>
-      old.values != values || old.hover != hover || old.maxV != maxV || old.color != color;
 }
