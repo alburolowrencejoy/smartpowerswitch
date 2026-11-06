@@ -1663,18 +1663,10 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     );
   }
 
-  Widget _code(String c) => Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: _palette.pale.withAlpha(153),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(c,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: _palette.dark)),
+  /// Marks a building row; the name follows, so the code isn't repeated.
+  Widget _buildingIcon() => Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Icon(Icons.apartment_rounded, size: 18, color: _palette.dark),
       );
 
   Widget _utilityCard(BuildContext ctx, List<UsageRow> rows) {
@@ -1790,7 +1782,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                           : () => _openBreakdown(
                               ctx, BreakdownKind.building, g.key, rows),
                       label: Row(children: [
-                        _code(g.key.isEmpty ? '—' : g.key),
+                        _buildingIcon(),
                         Flexible(
                           child: Text(
                               g.key.isEmpty
