@@ -219,18 +219,38 @@ void main() {
       expect(find.text('Model comparison'), findsOneWidget);
       expect(find.text('ARIMA(7, 1, 3)'), findsOneWidget);
       expect(find.text('Training failed: boom'), findsOneWidget);
-      expect(
-          find.text('12.20 kWh'), findsWidgets); // GRU, the best, for tomorrow
-      expect(find.text('About ₱ 122.00 at ₱10.00/kWh'), findsOneWidget);
-      expect(find.text('Best model · GRU'), findsOneWidget);
+      // The forecast card shows the picked model (GRU, the best) only.
+      expect(find.text('GRU forecast'), findsOneWidget);
+      expect(find.text('12.20 kWh'), findsOneWidget); // GRU, tomorrow
+      expect(find.text('≈ ₱ 122.00'), findsOneWidget);
+      expect(find.text('13.00 kWh'), findsNothing); // ARIMA's tomorrow
       expect(find.text('Sun, Jan 11, 2026'), findsOneWidget);
+      // No horizons published yet: the 7- and 30-day rows wait for them,
+      // and there is no Tomorrow / Next 7 days switch (one 'Tomorrow').
+      expect(find.text('After the next training run'), findsNWidgets(2));
+      expect(find.text('Tomorrow'), findsOneWidget);
       expect(find.text('95.5%'), findsOneWidget); // GRU: 100 - MAPE 4.5
       // GRU predicted only the second test day: both totals cover that day.
-      // (12.50 kWh is also XGBoost's forecast in the Tomorrow card.)
-      expect(find.text('12.50 kWh'), findsNWidgets(2));
+      expect(find.text('12.50 kWh'), findsOneWidget);
       expect(find.text('22.00 kWh'), findsNWidgets(2)); // ARIMA, XGBoost actual
-      // No horizons published: no Tomorrow / Next 7 days switch.
-      expect(find.text('Next 7 days'), findsNothing);
+    });
+
+    testWidgets('the forecast card follows the model dropdown', (tester) async {
+      await pump(tester, data: {'campus': payloadWithHorizons()});
+      await tester.tap(
+          find.byTooltip('Choose a model to compare with the actual readings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('ARIMA').last);
+      await tester.pumpAndSettle();
+      expect(find.text('ARIMA forecast'), findsOneWidget);
+      expect(find.text('13.00 kWh'), findsOneWidget); // tomorrow
+      expect(find.text('7.00 kWh'), findsOneWidget); // next 7 days
+      expect(find.text('≈ ₱ 70.00'), findsOneWidget);
+      expect(find.text('1.00 kWh a day'), findsOneWidget);
+      // Tapping the 7-day row switches the chart.
+      await tester.tap(find.text('7.00 kWh'));
+      await tester.pump();
+      expect(find.text('Actual vs 7-day forecast'), findsOneWidget);
     });
 
     testWidgets('the 7-day switch changes the chart title, card and table',
@@ -238,16 +258,17 @@ void main() {
       await pump(tester, data: {'campus': payloadWithHorizons()});
       expect(find.text('Actual vs day-ahead forecast'), findsOneWidget);
 
-      await tester.tap(find.text('Next 7 days'));
+      await tester.tap(find.text('Next 7 days').first); // the switch
       await tester.pump();
       expect(find.text('Actual vs 7-day forecast'), findsOneWidget);
       expect(find.textContaining('tested on Jan 9 – Jan 10, 2026'),
           findsNWidgets(2)); // chart and table subtitles
-      // The forecast card: XGBoost is best on this horizon.
-      expect(find.text('Best model · XGBoost'), findsOneWidget);
-      expect(find.text('14.00 kWh'), findsNWidgets(2)); // headline + its row
-      expect(find.text('About ₱ 140.00 at ₱10.00/kWh'), findsOneWidget);
-      expect(find.text('2.00 kWh a day on average'), findsOneWidget);
+      // XGBoost is best on this horizon, so the dropdown and card follow it.
+      expect(find.text('XGBoost forecast'), findsOneWidget);
+      expect(find.text('14.00 kWh'), findsOneWidget);
+      expect(find.text('≈ ₱ 140.00'), findsOneWidget);
+      expect(find.text('2.00 kWh a day'), findsOneWidget);
+      expect(find.text('After the next training run'), findsOneWidget); // 30
       // Table: totals over the 2 scored days, accuracy = 100 - MAPE.
       expect(find.text('98.0%'), findsOneWidget); // XGBoost
       expect(find.text('91.0%'), findsOneWidget); // ARIMA

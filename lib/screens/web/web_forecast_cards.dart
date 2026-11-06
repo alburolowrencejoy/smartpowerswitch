@@ -30,8 +30,9 @@ const kForecastColors = {
 /// model predicted for it from the real readings up to the day before.
 /// "Next 7 days" / "Next 30 days" show the same models forecasting further
 /// ahead, one day at a time on their own predictions: scored on the last
-/// test days, then run for the coming days. The chart, the forecast card
-/// and the table all follow the selected horizon.
+/// test days, then run for the coming days. The chart and the table follow
+/// the selected horizon; the forecast card beside the chart shows the
+/// model picked in the dropdown for all three horizons.
 class ForecastComparison extends StatefulWidget {
   final InstitutePalette palette;
   final double rate;
@@ -76,10 +77,6 @@ class _View {
   double? rmse(ModelScore m) => dayAhead ? m.rmse : _h(m)?.rmse;
   double? mape(ModelScore m) => dayAhead ? m.mape : _h(m)?.mape;
   int? rank(ModelScore m) => dayAhead ? m.rank : _h(m)?.rank;
-
-  /// kWh expected over the coming day(s): tomorrow, or the horizon's total.
-  double? ahead(ModelScore m) =>
-      dayAhead ? (m.ok ? m.nextDay : null) : _h(m)?.total;
 
   /// Models with a result, lowest RMSE first, then the ones without.
   List<ModelScore> get rows {
@@ -251,7 +248,7 @@ class _ForecastComparisonState extends State<ForecastComparison> {
         ]),
       ]),
     );
-    final ahead = _aheadCard(v);
+    final ahead = _forecastCard(v, selected);
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       LayoutBuilder(builder: (context, box) {
@@ -419,80 +416,93 @@ class _ForecastComparisonState extends State<ForecastComparison> {
     ]);
   }
 
-  /// "Tomorrow" (next-day kWh) or "Next 7 / 30 days" (total kWh): the best
-  /// model's forecast up top, every model's below.
-  Widget _aheadCard(_View v) {
+  /// The model picked in the chart's dropdown: its forecast for tomorrow,
+  /// the next 7 days and the next 30 days. The row of the horizon on the
+  /// chart is highlighted; tapping a row switches the chart to it.
+  Widget _forecastCard(_View v, ModelScore m) {
     final c = v.c;
-    final best = c.models[v.best];
-    final kwh = best == null ? null : v.ahead(best);
-    final info = v.info;
-    return _card(
-      title: v.dayAhead ? 'Tomorrow' : 'Next ${v.days} days',
-      subtitle: v.dayAhead
-          ? (c.nextDay == null ? 'Next day' : _longDate(c.nextDay!))
-          : _range(info?.start, info?.end),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
+    final color = kForecastColors[m.key]!;
+    Widget row(int days, String label, String dates, double? kwh) {
+      final active = v.days == days;
+      final canSwitch = days == 1 || c.horizons.containsKey(days);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Material(
+          color: active ? color.withAlpha(22) : Colors.white,
+          shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: WebColors.outline),
+            side: BorderSide(
+                color: active ? color.withAlpha(150) : WebColors.outline),
           ),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Text('Best model · ${best?.name ?? '—'}',
-                  style:
-                      const TextStyle(fontSize: 12.5, color: WebColors.muted)),
-              const SizedBox(width: 6),
-              if (best != null) const _BestChip(),
-            ]),
-            const SizedBox(height: 6),
-            Text(kwh == null ? '—' : '${kwh.toStringAsFixed(2)} kWh',
-                style: const TextStyle(
-                    fontFamily: AppFonts.family,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
-                    color: WebColors.ink)),
-            const SizedBox(height: 2),
-            Text(
-                kwh == null
-                    ? ''
-                    : 'About ₱ ${(kwh * widget.rate).toStringAsFixed(2)} at ₱${widget.rate.toStringAsFixed(2)}/kWh',
-                style: const TextStyle(fontSize: 13, color: WebColors.mid)),
-            if (kwh != null && !v.dayAhead)
-              Text('${(kwh / v.days).toStringAsFixed(2)} kWh a day on average',
-                  style: const TextStyle(fontSize: 13, color: WebColors.mid)),
-          ]),
-        ),
-        const SizedBox(height: 12),
-        for (final k in ForecastComparisons.models)
-          if (c.models[k] case final m?)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: canSwitch ? () => setState(() => _days = days) : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               child: Row(children: [
-                _Swatch(kForecastColors[k]!),
-                const SizedBox(width: 8),
                 Expanded(
-                    child: Text(m.name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: WebColors.ink))),
-                Text(
-                    v.ahead(m) != null
-                        ? '${v.ahead(m)!.toStringAsFixed(2)} kWh'
-                        : 'Not available',
-                    style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: v.ahead(m) != null
-                            ? FontWeight.w700
-                            : FontWeight.w400,
-                        color: v.ahead(m) != null
-                            ? WebColors.ink
-                            : WebColors.muted)),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(label,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: WebColors.ink)),
+                        const SizedBox(height: 2),
+                        Text(dates,
+                            style: const TextStyle(
+                                fontSize: 12.5, color: WebColors.muted)),
+                        if (kwh != null && days > 1)
+                          Text('${(kwh / days).toStringAsFixed(2)} kWh a day',
+                              style: const TextStyle(
+                                  fontSize: 12.5, color: WebColors.muted)),
+                      ]),
+                ),
+                const SizedBox(width: 12),
+                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text(kwh == null ? '—' : '${kwh.toStringAsFixed(2)} kWh',
+                      style: const TextStyle(
+                          fontFamily: AppFonts.family,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          color: WebColors.ink)),
+                  const SizedBox(height: 2),
+                  Text(
+                      kwh == null
+                          ? (canSwitch
+                              ? 'Not available'
+                              : 'After the next training run')
+                          : '≈ ₱ ${(kwh * widget.rate).toStringAsFixed(2)}',
+                      style: const TextStyle(
+                          fontSize: 12.5, color: WebColors.mid)),
+                ]),
               ]),
             ),
+          ),
+        ),
+      );
+    }
+
+    return _card(
+      title: '${m.name} forecast',
+      subtitle: widget.seriesName,
+      trailing: m.key == v.best ? const _BestChip() : null,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        row(
+            1,
+            'Tomorrow',
+            c.nextDay == null ? 'Next day' : _longDate(c.nextDay!),
+            m.ok ? m.nextDay : null),
+        for (final h in kForecastHorizons)
+          row(
+              h,
+              'Next $h days',
+              c.horizons[h] == null
+                  ? '—'
+                  : _range(c.horizons[h]!.start, c.horizons[h]!.end),
+              m.horizons[h]?.total),
+        Text('Cost at ₱${widget.rate.toStringAsFixed(2)}/kWh.',
+            style: const TextStyle(fontSize: 12.5, color: WebColors.muted)),
       ]),
     );
   }
