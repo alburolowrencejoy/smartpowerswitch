@@ -54,6 +54,46 @@ Map<String, Object?> payload({String best = 'gru'}) => {
       },
     };
 
+/// [payload] plus a 7-day horizon for ARIMA and XGBoost (GRU has none).
+Map<String, Object?> payloadWithHorizons() {
+  final p = payload();
+  final models = p['models'] as Map<String, Object?>;
+  (models['arima'] as Map<String, Object?>)['horizons'] = {
+    'd7': {
+      'backtest': [11.0, 13.0],
+      'values': List.filled(7, 1.0),
+      'total': 7.0,
+      'mae': 1.0,
+      'rmse': 1.0,
+      'mape': 9.0,
+      'rank': 2,
+    },
+  };
+  (models['xgboost'] as Map<String, Object?>)['horizons'] = {
+    'd7': {
+      'backtest': [10.0, 12.5],
+      'values': List.filled(7, 2.0),
+      'total': 14.0,
+      'mae': 0.25,
+      'rmse': 0.35,
+      'mape': 2.0,
+      'rank': 1,
+    },
+  };
+  return {
+    ...p,
+    'horizons': {
+      'd7': {
+        'days': 7,
+        'start': '2026-01-11',
+        'end': '2026-01-17',
+        'test': {'start': '2026-01-09', 'end': '2026-01-10', 'days': 2},
+        'best': 'xgboost',
+      },
+    },
+  };
+}
+
 void main() {
   group('SeriesComparison.fromMap', () {
     test('reads every field the job writes', () {
@@ -77,6 +117,22 @@ void main() {
       expect(s.models['gru']!.values, [null, 12.5]);
       expect(s.models['lstm']!.ok, isFalse);
       expect(s.models['lstm']!.unavailable, contains('boom'));
+    });
+
+    test('reads the 7-day horizon', () {
+      final s = SeriesComparison.fromMap('campus', payloadWithHorizons())!;
+      final h = s.horizons[7]!;
+      expect([h.start, h.end], [DateTime(2026, 1, 11), DateTime(2026, 1, 17)]);
+      expect([h.testStart, h.testEnd, h.testDays],
+          [DateTime(2026, 1, 9), DateTime(2026, 1, 10), 2]);
+      expect(h.best, 'xgboost');
+      expect(s.horizons.containsKey(30), isFalse);
+      final x = s.models['xgboost']!.horizons[7]!;
+      expect([x.total, x.rmse, x.mape, x.rank], [14.0, 0.35, 2.0, 1]);
+      expect(x.backtest, [10.0, 12.5]);
+      expect(x.values, hasLength(7));
+      expect(s.models['gru']!.horizons, isEmpty);
+      expect(SeriesComparison.fromMap('campus', payload())!.horizons, isEmpty);
     });
 
     test('ranked lists trained models by RMSE', () {
@@ -168,7 +224,35 @@ void main() {
       expect(find.text('About ₱ 122.00 at ₱10.00/kWh'), findsOneWidget);
       expect(find.text('Best model · GRU'), findsOneWidget);
       expect(find.text('Sun, Jan 11, 2026'), findsOneWidget);
-      expect(find.text('0.950'), findsOneWidget); // GRU R²
+      expect(find.text('95.5%'), findsOneWidget); // GRU: 100 - MAPE 4.5
+      // GRU predicted only the second test day: both totals cover that day.
+      // (12.50 kWh is also XGBoost's forecast in the Tomorrow card.)
+      expect(find.text('12.50 kWh'), findsNWidgets(2));
+      expect(find.text('22.00 kWh'), findsNWidgets(2)); // ARIMA, XGBoost actual
+      // No horizons published: no Tomorrow / Next 7 days switch.
+      expect(find.text('Next 7 days'), findsNothing);
+    });
+
+    testWidgets('the 7-day switch changes the chart title, card and table',
+        (tester) async {
+      await pump(tester, data: {'campus': payloadWithHorizons()});
+      expect(find.text('Actual vs day-ahead forecast'), findsOneWidget);
+
+      await tester.tap(find.text('Next 7 days'));
+      await tester.pump();
+      expect(find.text('Actual vs 7-day forecast'), findsOneWidget);
+      expect(find.textContaining('tested on Jan 9 – Jan 10, 2026'),
+          findsNWidgets(2)); // chart and table subtitles
+      // The forecast card: XGBoost is best on this horizon.
+      expect(find.text('Best model · XGBoost'), findsOneWidget);
+      expect(find.text('14.00 kWh'), findsNWidgets(2)); // headline + its row
+      expect(find.text('About ₱ 140.00 at ₱10.00/kWh'), findsOneWidget);
+      expect(find.text('2.00 kWh a day on average'), findsOneWidget);
+      // Table: totals over the 2 scored days, accuracy = 100 - MAPE.
+      expect(find.text('98.0%'), findsOneWidget); // XGBoost
+      expect(find.text('91.0%'), findsOneWidget); // ARIMA
+      expect(find.text('22.50 kWh'), findsOneWidget); // XGBoost predicted
+      expect(find.text('24.00 kWh'), findsOneWidget); // ARIMA predicted
     });
 
     testWidgets('explains a filter with no comparison', (tester) async {

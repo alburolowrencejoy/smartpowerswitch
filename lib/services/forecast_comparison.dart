@@ -65,6 +65,99 @@ class ForecastComparisons {
   }
 }
 
+/// One model's multi-day forecast (`horizons/d7`, `horizons/d30`): scored
+/// on the last test days without seeing them, then run for the real next
+/// days.
+class HorizonScore {
+  /// Predictions for [HorizonInfo.testStart]..[HorizonInfo.testEnd].
+  final List<double?> backtest;
+
+  /// Forecast for [HorizonInfo.start]..[HorizonInfo.end].
+  final List<double?> values;
+
+  /// Sum of [values], in kWh.
+  final double? total;
+  final double? mae, rmse, mape;
+
+  /// 1 = lowest RMSE on this horizon.
+  final int? rank;
+
+  const HorizonScore({
+    this.backtest = const [],
+    this.values = const [],
+    this.total,
+    this.mae,
+    this.rmse,
+    this.mape,
+    this.rank,
+  });
+
+  static HorizonScore? fromMap(Object? raw) {
+    if (raw is! Map || _d(raw['rmse']) == null) return null;
+    return HorizonScore(
+      backtest: _list(raw['backtest']),
+      values: _list(raw['values']),
+      total: _d(raw['total']),
+      mae: _d(raw['mae']),
+      rmse: _d(raw['rmse']),
+      mape: _d(raw['mape']),
+      rank: _d(raw['rank'])?.toInt(),
+    );
+  }
+}
+
+/// The days one horizon covers, shared by every model.
+class HorizonInfo {
+  /// 7 or 30.
+  final int days;
+
+  /// The forecast days, starting the day after the last full day.
+  final DateTime? start, end;
+
+  /// The last test days the forecast was scored on (all of the test period
+  /// when it is shorter than [days]).
+  final DateTime? testStart, testEnd;
+  final int testDays;
+
+  /// Key of the model with the lowest RMSE on this horizon.
+  final String? best;
+
+  const HorizonInfo({
+    required this.days,
+    this.start,
+    this.end,
+    this.testStart,
+    this.testEnd,
+    this.testDays = 0,
+    this.best,
+  });
+
+  static HorizonInfo? fromMap(int days, Object? raw) {
+    if (raw is! Map) return null;
+    final test = raw['test'] is Map ? raw['test'] as Map : const {};
+    return HorizonInfo(
+      days: days,
+      start: _date(raw['start']),
+      end: _date(raw['end']),
+      testStart: _date(test['start']),
+      testEnd: _date(test['end']),
+      testDays: _d(test['days'])?.toInt() ?? 0,
+      best: raw['best']?.toString(),
+    );
+  }
+}
+
+/// Horizons the job publishes, in days ahead.
+const kForecastHorizons = [7, 30];
+
+Map<int, T> _horizons<T>(Object? raw, T? Function(int days, Object? v) parse) {
+  if (raw is! Map) return const {};
+  return {
+    for (final h in kForecastHorizons)
+      if (parse(h, raw['d$h']) case final v?) h: v,
+  };
+}
+
 /// One model's day-ahead test result.
 class ModelScore {
   final String key;
@@ -85,6 +178,9 @@ class ModelScore {
   /// Set when the model failed to train.
   final String? unavailable;
 
+  /// 7- and 30-day forecasts, keyed by days ahead.
+  final Map<int, HorizonScore> horizons;
+
   const ModelScore({
     required this.key,
     this.mae,
@@ -97,6 +193,7 @@ class ModelScore {
     this.nextDay,
     this.order,
     this.unavailable,
+    this.horizons = const {},
   });
 
   String get name => ForecastComparisons.names[key] ?? key;
@@ -120,6 +217,7 @@ class ModelScore {
       order:
           order is List ? [for (final v in order) _d(v)?.toInt() ?? 0] : null,
       unavailable: raw['unavailable']?.toString(),
+      horizons: _horizons(raw['horizons'], (_, v) => HorizonScore.fromMap(v)),
     );
   }
 }
@@ -151,6 +249,9 @@ class SeriesComparison {
   /// Set when the series has too little history to compare.
   final String? unavailable;
 
+  /// The 7- and 30-day forecast periods, keyed by days ahead.
+  final Map<int, HorizonInfo> horizons;
+
   const SeriesComparison({
     required this.series,
     this.generatedAt,
@@ -168,6 +269,7 @@ class SeriesComparison {
     this.best,
     this.models = const {},
     this.unavailable,
+    this.horizons = const {},
   });
 
   ModelScore? get bestModel => best == null ? null : models[best];
@@ -215,6 +317,7 @@ class SeriesComparison {
           if (modelsRaw.containsKey(k)) k: ModelScore.fromMap(k, modelsRaw[k]),
       },
       unavailable: raw['unavailable']?.toString(),
+      horizons: _horizons(raw['horizons'], HorizonInfo.fromMap),
     );
   }
 }

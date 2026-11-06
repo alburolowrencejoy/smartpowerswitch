@@ -15,6 +15,12 @@ One comparison is made for the campus total and one per institute
 (`energy_summaries/hourly/{hour}/buildings/{code}`; the UNASSIGNED bucket is
 skipped), and all of them are written to `history/predictions/comparison`.
 
+On top of the notebook's day-ahead comparison, each trained model also
+forecasts the next 7 and 30 days (HORIZONS) by feeding its own predictions
+back in, one day at a time. Each horizon is scored the same way on the last
+days of the test period (all of it when the horizon is longer): forecast
+from the day before, without seeing any of those days.
+
 Run daily by .github/workflows/train.yml. Locally:
     python tools/forecast_comparison.py --dry-run          # read RTDB, write nothing
     python tools/forecast_comparison.py --hourly-json FILE # an exported energy_summaries/hourly
@@ -53,6 +59,9 @@ LSTM_EPOCHS    = 50
 
 # Below this many days the 80/20 split leaves too little to train on.
 MIN_DAYS       = 60
+
+# Multi-day forecasts (days ahead), published as horizons/d7 and horizons/d30.
+HORIZONS       = [7, 30]
 UNASSIGNED     = "UNASSIGNED"    # functions/energy_math.js
 PH_TZ          = timezone(timedelta(hours=8))
 COMPARISON_REF = "history/predictions/comparison"
@@ -149,7 +158,12 @@ def evaluate(y_true, y_pred, name):
 def run_arima(train, test):
     """Stepwise search over (p, d, q) by AIC on the training set only; the
     selected order is then kept fixed. Returns (test predictions, next-day
-    prediction, info)."""
+    prediction, info, forecaster).
+
+    Every runner returns the same four things. The forecaster takes the
+    real daily history up to some day (always starting with [train]) and a
+    number of days, and predicts those days one at a time, feeding each
+    prediction back in."""
     import pmdarima as pm
     set_seeds()
 
@@ -175,7 +189,15 @@ def run_arima(train, test):
         ahead = np.asarray(arima.predict(n_periods=len(test) + 1))
         arima_pred = pd.Series(ahead[:-1], index=test.index)
         next_day = float(ahead[-1])
-    return arima_pred, next_day, {"order": [int(v) for v in arima.order]}
+
+    def forecast(history, steps):
+        model = copy.deepcopy(arima)
+        seen = history.iloc[len(train):]                                    # real days after training
+        if len(seen):
+            model.update(seen.values)
+        return [float(v) for v in np.asarray(model.predict(n_periods=steps))]
+
+    return arima_pred, next_day, {"order": [int(v) for v in arima.order]}, forecast
 
 
 # ── Notebook cell 6: Model 2 — XGBoost (lag features + iterative forecast) ──
@@ -237,7 +259,17 @@ def run_xgboost(train, test):
     xgb_pred = pd.Series(xgb_preds, index=test.index)
     next_day = predict_day(history, test.index[-1] + pd.Timedelta(days=1))
     importance = pd.Series(xgb.feature_importances_, index=FEATURES).sort_values(ascending=False)
-    return xgb_pred, next_day, {"feature_importance": {k: float(v) for k, v in importance.items()}}
+
+    def forecast(history, steps):
+        h, out = history.copy(), []
+        for _ in range(steps):
+            ts = h.index[-1] + pd.Timedelta(days=1)
+            out.append(predict_day(h, ts))
+            h.loc[ts] = out[-1]
+        return out
+
+    return (xgb_pred, next_day,
+            {"feature_importance": {k: float(v) for k, v in importance.items()}}, forecast)
 
 
 # ── Notebook cell 7: Model 3 — GRU (Keras) ────────────────────────────────
@@ -302,7 +334,17 @@ def run_gru(train, test):
 
     inverse = lambda v: scaler.inverse_transform(np.array(v).reshape(-1, 1)).ravel()
     gru_pred = pd.Series(inverse(gru_scaled), index=test.index)
-    return gru_pred, float(inverse([next_scaled])[0]), {"epochs": len(hist.history["loss"])}
+
+    def forecast(history, steps):
+        w = list(scaler.transform(history.values.reshape(-1, 1)).ravel()[-LOOKBACK:])
+        out = []
+        for _ in range(steps):
+            out.append(float(gru.predict(np.array(w[-LOOKBACK:]).reshape(1, LOOKBACK, 1), verbose=0)[0, 0]))
+            w.append(out[-1])
+        return [float(v) for v in inverse(out)]
+
+    return (gru_pred, float(inverse([next_scaled])[0]),
+            {"epochs": len(hist.history["loss"])}, forecast)
 
 
 # ── LSTM (the previous training job's model, unchanged) ───────────────────
@@ -356,7 +398,16 @@ def run_lstm(train, test):
     nxt = float(model.predict(np.array(window[-LSTM_WINDOW:]).reshape((1, LSTM_WINDOW, 1)), verbose=0)[0, 0])
 
     to_kwh = lambda v: np.maximum(np.asarray(v) * std + mean, 0.0)
-    return pd.Series(to_kwh(preds), index=test.index), float(to_kwh([nxt])[0]), {}
+
+    def forecast(history, steps):
+        w = ((history.values.astype('float32') - mean) / std)[-LSTM_WINDOW:].tolist()
+        out = []
+        for _ in range(steps):
+            out.append(float(model.predict(np.array(w[-LSTM_WINDOW:]).reshape((1, LSTM_WINDOW, 1)), verbose=0)[0, 0]))
+            w.append(out[-1])
+        return [float(v) for v in to_kwh(out)]
+
+    return pd.Series(to_kwh(preds), index=test.index), float(to_kwh([nxt])[0]), {}, forecast
 
 
 RUNNERS = {"arima": run_arima, "xgboost": run_xgboost, "gru": run_gru, "lstm": run_lstm}
@@ -387,10 +438,13 @@ def compare_series(key: str, readings: pd.Series, generated_at: int, runners=Non
           f"{n_bad} incomplete days interpolated; train {len(train)}, test {len(test)}")
 
     fmt = lambda ts: ts.strftime("%Y-%m-%d")
-    models, results = {}, {}
+    models, results, forecasters = {}, {}, {}
     for mk, run in runners.items():
         try:
-            pred, next_day, info = run(train, test)
+            out = run(train, test)
+            pred, next_day, info = out[:3]
+            if len(out) > 3:
+                forecasters[mk] = out[3]
         except Exception as exc:  # one failing model must not block the others
             print(f"  {mk}: failed: {exc}")
             models[mk] = {"unavailable": f"Training failed: {exc}"[:300]}
@@ -417,6 +471,16 @@ def compare_series(key: str, readings: pd.Series, generated_at: int, runners=Non
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         comparison.to_csv(OUTPUT_DIR / f"model_comparison_{key}_{FORECAST_MODE}.csv")
 
+    horizons = {}
+    for h in HORIZONS:
+        hz = horizon_forecasts(daily, h, {mk: f for mk, f in forecasters.items() if mk in results})
+        if hz is None:
+            continue
+        info, per_model = hz
+        horizons[f"d{h}"] = info
+        for mk, entry in per_model.items():
+            models[mk].setdefault("horizons", {})[f"d{h}"] = entry
+
     return {
         **base,
         "days": len(daily),
@@ -427,7 +491,53 @@ def compare_series(key: str, readings: pd.Series, generated_at: int, runners=Non
         "next_day_label": fmt(test.index[-1] + pd.Timedelta(days=1)),
         "best": ranked[0] if ranked else None,
         "models": models,
+        **({"horizons": horizons} if horizons else {}),
     }
+
+
+def horizon_forecasts(daily: pd.Series, h: int, forecasters: dict):
+    """The [h]-day forecast of every model: scored on the last min(h, test
+    days) days of the history, forecast from the day before them without
+    seeing any of them, then run from the last full day for the real next
+    [h] days. kWh can't go below 0, so forecasts are floored there.
+    Returns (series-level info, {model: entry}) or None with no models."""
+    if not forecasters:
+        return None
+    fmt = lambda ts: ts.strftime("%Y-%m-%d")
+    test_days = len(daily) - int(len(daily) * (1 - TEST_FRACTION))
+    window = min(h, test_days)
+    tested, history = daily.iloc[-window:], daily.iloc[:-window]
+    future = pd.date_range(daily.index[-1] + pd.Timedelta(days=1), periods=h, freq="D")
+
+    per_model = {}
+    for mk, forecast in forecasters.items():
+        try:
+            back = np.maximum(np.asarray(forecast(history, window), float), 0.0)
+            ahead = np.maximum(np.asarray(forecast(daily, h), float), 0.0)
+        except Exception as exc:  # a horizon failing keeps the day-ahead result
+            print(f"  {mk}: {h}-day forecast failed: {exc}")
+            continue
+        r = evaluate(tested, back, MODEL_NAMES[mk])
+        per_model[mk] = {
+            "backtest": [_num(v) for v in back],
+            "values": [_num(v) for v in ahead],
+            "total": _num(ahead.sum()),
+            "mae": _num(r["MAE"]), "rmse": _num(r["RMSE"]), "mape": _num(r["MAPE (%)"]),
+        }
+        print(f"  {MODEL_NAMES[mk]:8s} {h:2d}-day: RMSE {r['RMSE']:10.4f}  MAPE {r['MAPE (%)']:7.2f}%  "
+              f"next {h} days {ahead.sum():.3f} kWh")
+
+    ranked = sorted((mk for mk, e in per_model.items() if e["rmse"] is not None),
+                    key=lambda mk: per_model[mk]["rmse"])
+    for i, mk in enumerate(ranked, 1):
+        per_model[mk]["rank"] = i
+    info = {
+        "days": h,
+        "start": fmt(future[0]), "end": fmt(future[-1]),
+        "test": {"start": fmt(tested.index[0]), "end": fmt(tested.index[-1]), "days": window},
+        "best": ranked[0] if ranked else None,
+    }
+    return info, per_model
 
 
 def compare_all(hourly: dict, now_utc: datetime, runners=None) -> dict:

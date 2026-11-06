@@ -37,6 +37,9 @@ class WebTrendChart extends StatefulWidget {
   /// the selected point is tapped again.
   final ValueChanged<int?>? onSelect;
 
+  /// Unit shown above the y-axis numbers ('kWh', or '₱' for cost).
+  final String unit;
+
   const WebTrendChart({
     super.key,
     required this.points,
@@ -47,20 +50,33 @@ class WebTrendChart extends StatefulWidget {
     this.compareColor = const Color(0xFF8A9A90),
     this.selected,
     this.onSelect,
+    this.unit = 'kWh',
   });
 
   @override
   State<WebTrendChart> createState() => _WebTrendChartState();
 }
 
-const _padL = 44.0, _padR = 12.0, _padT = 14.0, _padB = 30.0;
+const _padL = 44.0, _padR = 12.0, _padT = 28.0, _padB = 30.0;
 
+/// Top of the y-axis: four round steps (1, 2, 2.5 or 5 x 10^n each), so
+/// every gridline lands on a value that prints exactly.
 double niceAxisMax(double v) {
   if (!v.isFinite || v <= 0) return 10;
-  final e = math.pow(10, (math.log(v) / math.ln10).floor()).toDouble();
-  final f = v / e;
+  final step = v / 4;
+  final e = math.pow(10, (math.log(step) / math.ln10).floor()).toDouble();
+  final f = step / e;
   final n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
-  return n * e;
+  return n * e * 4;
+}
+
+/// Decimals needed to print every multiple of [step] exactly (at most 3).
+int axisDecimals(double step) {
+  for (var d = 0; d < 3; d++) {
+    final s = step * math.pow(10, d);
+    if ((s - s.round()).abs() < 1e-6) return d;
+  }
+  return 3;
 }
 
 class _WebTrendChartState extends State<WebTrendChart> {
@@ -104,6 +120,7 @@ class _WebTrendChartState extends State<WebTrendChart> {
                   selected: sel,
                   compare: widget.compare,
                   compareColor: widget.compareColor,
+                  unit: widget.unit,
                 ),
               ),
             ),
@@ -218,6 +235,7 @@ class _TrendPainter extends CustomPainter {
   final int? selected;
   final List<double>? compare;
   final Color compareColor;
+  final String unit;
 
   _TrendPainter({
     required this.points,
@@ -227,19 +245,23 @@ class _TrendPainter extends CustomPainter {
     this.selected,
     this.compare,
     this.compareColor = const Color(0xFF8A9A90),
+    this.unit = 'kWh',
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final g = geo;
     final grid = Paint()..color = const Color(0x1F4F6A58);
+    final decimals = axisDecimals(g.maxV / 4);
     for (var k = 0; k <= 4; k++) {
       final gy = _padT + g.ph * k / 4;
       canvas.drawLine(Offset(_padL, gy), Offset(size.width - _padR, gy), grid);
       final v = g.maxV * (4 - k) / 4;
-      _text(canvas, v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1),
+      _text(canvas, v == 0 ? '0' : v.toStringAsFixed(decimals),
           Offset(_padL - 8, gy), align: 1);
     }
+    _text(canvas, unit, const Offset(_padL - 8, _padT - 17),
+        align: 1, bold: true);
     final n = points.length;
     if (n == 0) return;
 
@@ -414,16 +436,20 @@ class _TrendPainter extends CustomPainter {
         align: lastAlign);
   }
 
-  TextPainter _layout(String s) => TextPainter(
+  TextPainter _layout(String s, {bool bold = false}) => TextPainter(
         text: TextSpan(
             text: s,
-            style: const TextStyle(fontSize: 12, color: WebColors.muted)),
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: bold ? FontWeight.w600 : FontWeight.w400,
+                color: WebColors.muted)),
         textDirection: TextDirection.ltr,
       )..layout();
 
   /// [align]: -1 left of [at], 0 centred, 1 right-aligned; centred vertically.
-  void _text(Canvas canvas, String s, Offset at, {int align = 0}) {
-    final tp = _layout(s);
+  void _text(Canvas canvas, String s, Offset at,
+      {int align = 0, bool bold = false}) {
+    final tp = _layout(s, bold: bold);
     final dx = align < 0
         ? at.dx
         : (align > 0 ? at.dx - tp.width : at.dx - tp.width / 2);
@@ -437,6 +463,7 @@ class _TrendPainter extends CustomPainter {
       old.selected != selected ||
       old.compare != compare ||
       old.color != color ||
+      old.unit != unit ||
       old.geo.bars != geo.bars ||
       old.geo.pw != geo.pw;
 }

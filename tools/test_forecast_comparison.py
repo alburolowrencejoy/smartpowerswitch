@@ -112,6 +112,48 @@ def test_compare_series_payload_ranks_by_rmse_and_isolates_failures(tmp_path, mo
     assert (tmp_path / "model_comparison_campus_rolling.csv").exists()
 
 
+def _fake_with_forecast(offset):
+    """Day-ahead like _fake; the forecaster repeats the last real day + offset."""
+    def run(train, test):
+        def forecast(history, steps):
+            return [float(history.iloc[-1] + offset)] * steps
+        return (*_fake(offset)(train, test), forecast)
+    return run
+
+
+def test_compare_series_adds_7_and_30_day_horizons(tmp_path, monkeypatch):
+    monkeypatch.setattr(fc, "OUTPUT_DIR", tmp_path)
+    readings = fc.hourly_series(make_hourly(100), "campus")
+    runners = {"arima": _fake_with_forecast(2.0), "xgboost": _fake_with_forecast(-0.5),
+               "gru": _fake(0.1)}                                   # no forecaster: no horizons
+    out = fc.compare_series("campus", readings, 1, runners)
+    daily, _ = fc.clean_to_daily(readings)
+
+    h7, h30 = out["horizons"]["d7"], out["horizons"]["d30"]
+    assert h7["start"] == "2026-04-11" and h7["end"] == "2026-04-17" and h7["days"] == 7
+    assert h30["end"] == "2026-05-10" and h30["days"] == 30
+    # 7 days: scored on the last 7 test days; 30 days: on all 20 test days.
+    assert h7["test"] == {"start": "2026-04-04", "end": "2026-04-10", "days": 7}
+    assert h30["test"]["start"] == out["test"]["start"] and h30["test"]["days"] == 20
+    assert h7["best"] == "xgboost"
+
+    a7 = out["models"]["arima"]["horizons"]["d7"]
+    assert len(a7["values"]) == 7 and len(a7["backtest"]) == 7
+    assert a7["values"][0] == pytest.approx(daily.iloc[-1] + 2.0)     # from the last full day
+    assert a7["backtest"][0] == pytest.approx(daily.iloc[-8] + 2.0)   # from the day before the window
+    assert a7["total"] == pytest.approx(7 * (daily.iloc[-1] + 2.0))
+    assert out["models"]["xgboost"]["horizons"]["d7"]["rank"] == 1 and a7["rank"] == 2
+    assert len(out["models"]["arima"]["horizons"]["d30"]["values"]) == 30
+    assert "horizons" not in out["models"]["gru"]
+
+
+def test_horizon_forecasts_are_floored_at_zero():
+    daily = pd.Series(np.ones(80), index=pd.date_range("2026-01-01", periods=80, freq="D"))
+    info, models = fc.horizon_forecasts(daily, 7, {"arima": lambda h, n: [-1.0] * n})
+    assert models["arima"]["values"] == [0.0] * 7 and models["arima"]["total"] == 0.0
+    assert fc.horizon_forecasts(daily, 7, {}) is None
+
+
 def test_compare_series_reports_too_little_history():
     readings = fc.hourly_series(make_hourly(30), "IC")
     out = fc.compare_series("IC", readings, 1, {"arima": _fake(0)})
@@ -146,6 +188,10 @@ def test_real_models_run_end_to_end(tmp_path, monkeypatch):
         assert "unavailable" not in m, (k, m)
         assert len(m["values"]) == 20 and all(np.isfinite(m["values"]))
         assert np.isfinite(m["next_day"]) and m["rank"] in (1, 2, 3, 4)
+        for h in (7, 30):
+            hz = m["horizons"][f"d{h}"]
+            assert len(hz["values"]) == h and all(v >= 0 for v in hz["values"])
+            assert len(hz["backtest"]) == min(h, 20) and hz["mape"] is not None
     assert len(out["models"]["arima"]["order"]) == 3
     # A clean weekly pattern is easy: every model should land within 25 %.
     assert all(out["models"][k]["mape"] < 25 for k in fc.MODEL_KEYS)

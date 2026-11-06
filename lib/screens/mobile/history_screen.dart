@@ -970,6 +970,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             compare: compareValues,
             selected: sel,
             onSelect: (i) => setState(() => _trendSelected = i),
+            unit: cost ? '₱' : 'kWh',
           ),
           if (compareSpan != null) ...[
             const SizedBox(height: 4),
@@ -1460,7 +1461,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               lines: [
                 ForecastLine(selected.name, kForecastColors[selected.key]!, selected.values),
               ],
-              actualColor: AppColors.ink,
+              actualColor: AppColors.greenMid,
               axisColor: AppColors.inkMuted,
               tooltipColor: AppColors.ink,
               height: 220,
@@ -1475,8 +1476,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
           const SizedBox(height: 10),
           Wrap(spacing: 16, runSpacing: 4, children: [
-            _legendItem(AppColors.ink, false, 'Actual'),
+            _legendItem(AppColors.greenMid, false, 'Actual'),
             _legendItem(kForecastColors[selected.key]!, false, '${selected.name} · day-ahead'),
+            _legendItem(kForecastColors[selected.key]!.withAlpha(110), false, 'Gap between them'),
           ]),
         ]),
       ),
