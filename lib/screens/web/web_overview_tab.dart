@@ -810,22 +810,8 @@ class _WebOverviewTabState extends State<WebOverviewTab> {
               flex: 4,
               child: Row(
                 children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.white, border: Border.all(color: WebColors.outline),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      r.code,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: p.dark,
-                      ),
-                    ),
-                  ),
+                  // A building icon, not the code: the name follows.
+                  Icon(Icons.apartment_rounded, size: 18, color: p.dark),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
