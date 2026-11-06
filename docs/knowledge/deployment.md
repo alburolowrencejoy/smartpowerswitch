@@ -77,6 +77,18 @@ writer picks it up automatically on its next telemetry push, no code
 change needed. To temporarily exclude a device from history, delete it or
 change `source` to anything else.
 
+## Web hosting cache headers
+
+Flutter web file names carry no content hash (`main.dart.js`,
+`flutter_bootstrap.js`, `version.json` keep their names every build), so
+`firebase.json` must not mark `*.js / *.css / *.json` as `immutable` /
+long `max-age`. Until 2026-11-07 it did (one year), and a deploy
+(1.0.61) didn't reach anyone who had opened the site before: their
+browsers kept the old `main.dart.js` without asking. Those files are now
+`no-cache` (the browser revalidates with the ETag on each load, a cheap
+304 when nothing changed). A browser that cached the old year-long header
+still needs one hard refresh (Ctrl+Shift+R) to pick up the change.
+
 ## See also
 
 - [`pzem-calibration.md`](pzem-calibration.md) — the full telemetry →
