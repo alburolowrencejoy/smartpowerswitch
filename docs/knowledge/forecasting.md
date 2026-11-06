@@ -41,6 +41,18 @@ epochs), scored by the same split and metrics.
 "Tomorrow" is the same rolling step run once more past the last full day
 (today's unfinished day is never used). A series needs 60+ days.
 
+**7- and 30-day forecasts (added 2026-11-06, not in the notebook).** Each
+runner also returns a forecaster that predicts N days one at a time on its
+own predictions (`HORIZONS = [7, 30]`). `horizon_forecasts` scores it on the
+last min(N, test days) days, forecast from the day before them, and then runs
+it from the last full day; results are floored at 0 kWh and published as
+`horizons/d7|d30` (series: dates, test window, best) and
+`models/{m}/horizons/d7|d30` (backtest, values, total, rmse, mape, rank).
+With a 16-day test period the 30-day forecast is only scored on 16 days.
+The web Analytics forecast card has a Tomorrow / Next 7 days / Next 30 days
+switch that drives the chart title, the forecast card and the table; the
+mobile Forecast tab still shows tomorrow only.
+
 ## Gotchas
 
 - Because a missing hour is 0 kWh, a board that drops off Wi-Fi for part

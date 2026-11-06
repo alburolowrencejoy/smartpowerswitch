@@ -190,6 +190,7 @@ class _YearComparisonState extends State<YearComparison> {
         compareColor: _cmpColor,
         selected: sel,
         onSelect: (i) => setState(() => _selected = i),
+        unit: _cost ? '₱' : 'kWh',
       ),
       const SizedBox(height: 10),
       Wrap(spacing: 18, runSpacing: 6, children: [

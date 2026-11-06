@@ -1489,6 +1489,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
             color: AppColors.greenMid,
             compare: compare,
             compareColor: WebColors.muted,
+            unit: _asCost ? '₱' : 'kWh',
           ),
         if (cmpSpan != null) ...[
           const SizedBox(height: 14),

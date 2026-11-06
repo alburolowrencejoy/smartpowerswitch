@@ -21,6 +21,7 @@ import 'analytics/analytics_focus.dart';
 import 'analytics/analytics_ui.dart';
 import 'history_trend_panel.dart';
 import 'web_theme.dart';
+import 'web_trend_chart.dart' show axisDecimals, niceAxisMax;
 import '../../theme/app_fonts.dart';
 import '../../widgets/history_fallback_notice.dart';
 import '../../utils/last_seen.dart';
@@ -1479,7 +1480,7 @@ class _AreaChartState extends State<_AreaChart> {
 class _AreaChartPainter extends CustomPainter {
   static const double _left = 44;
   static const double _right = 14;
-  static const double _top = 16;
+  static const double _top = 30;
   static const double _bottom = 28;
 
   final List<double> values;
@@ -1507,7 +1508,7 @@ class _AreaChartPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (values.isEmpty) return;
     final maxV =
-        _niceMax(values.fold<double>(0, (a, b) => b > a ? b : a));
+        niceAxisMax(values.fold<double>(0, (a, b) => b > a ? b : a));
     final plotW = size.width - _left - _right;
     final plotH = size.height - _top - _bottom;
     final baseY = _top + plotH;
@@ -1520,9 +1521,12 @@ class _AreaChartPainter extends CustomPainter {
     for (var g = 0; g <= 4; g++) {
       final y = _top + plotH * g / 4;
       canvas.drawLine(Offset(_left, y), Offset(size.width - _right, y), gridPaint);
-      _text(canvas, _fmtAxis(maxV * (4 - g) / 4), Offset(_left - 8, y),
+      _text(canvas, _fmtAxis(maxV * (4 - g) / 4, axisDecimals(maxV / 4)),
+          Offset(_left - 8, y),
           alignRight: true);
     }
+    _text(canvas, 'kWh', const Offset(_left - 8, _top - 17),
+        alignRight: true, bold: true);
 
     final pts = <Offset>[
       for (var i = 0; i < n; i++)
@@ -1607,11 +1611,14 @@ class _AreaChartPainter extends CustomPainter {
   }
 
   void _text(Canvas canvas, String text, Offset anchor,
-      {bool alignRight = false, bool center = false}) {
+      {bool alignRight = false, bool center = false, bool bold = false}) {
     final tp = TextPainter(
       text: TextSpan(
         text: text,
-        style: const TextStyle(fontSize: 12, color: WebColors.muted),
+        style: TextStyle(
+            fontSize: 12,
+            fontWeight: bold ? FontWeight.w600 : FontWeight.w400,
+            color: WebColors.muted),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -1757,28 +1764,9 @@ Color _levelColor(String level) {
   }
 }
 
-double _niceMax(double v) {
-  if (v <= 0) return 10;
-  final exp = math.pow(10, (math.log(v) / math.ln10).floor()).toDouble();
-  final f = v / exp;
-  final double nice;
-  if (f <= 1) {
-    nice = 1;
-  } else if (f <= 2) {
-    nice = 2;
-  } else if (f <= 2.5) {
-    nice = 2.5;
-  } else if (f <= 5) {
-    nice = 5;
-  } else {
-    nice = 10;
-  }
-  return nice * exp;
-}
-
-String _fmtAxis(double v) {
+String _fmtAxis(double v, int decimals) {
   if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}k';
-  return v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+  return v == 0 ? '0' : v.toStringAsFixed(decimals);
 }
 
 String _fmt(double v) {
