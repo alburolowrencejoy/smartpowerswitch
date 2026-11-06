@@ -18,6 +18,7 @@ import 'analytics/analytics_filter_bar.dart';
 import 'analytics/analytics_focus.dart';
 import 'analytics/analytics_ui.dart';
 import 'analytics/breakdown_panel.dart';
+import 'analytics/hourly_range.dart';
 import 'analytics/utility_donut.dart';
 import 'analytics/year_comparison.dart';
 import 'web_forecast_cards.dart';
@@ -75,6 +76,15 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   Object? _rangeRaw;
   Object? _compareRaw;
   bool _rangeLoaded = false;
+
+  // energy_summaries/hourly for the range and the compare range, only
+  // while the trend is grouped by hour.
+  late final _hourly = HourlyRange(_onHourly);
+  late final _hourlyCompare = HourlyRange(_onHourly);
+  void _onHourly() {
+    if (mounted) setState(() {});
+  }
+
   Map<String, DeviceMeta> _meta = {};
   Map<String, BuildingInfo> _buildingInfo = {};
 
@@ -205,6 +215,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
     _rangeSub?.cancel();
     _compareSub?.cancel();
     _buildingsSub?.cancel();
+    _hourly.dispose();
+    _hourlyCompare.dispose();
     super.dispose();
   }
 
@@ -244,6 +256,9 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
   void _listenRange() {
     final today = HistoryClock.instance.now();
     final span = _filter.span(today);
+    final hourly = _filter.group == GroupBy.hourly;
+    _hourly.watch(hourly ? span : null);
+    _hourlyCompare.watch(hourly ? _filter.compareSpan(today) : null);
     final key = '${dayKey(span.start)}..${dayKey(span.end)}';
     if (key != _rangeKey) {
       _rangeKey = key;
@@ -927,6 +942,16 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
         : applyFilter(
             f, parseDaily(_compareRaw, _meta, rates: _rates), cmpSpan);
     final empty = _rangeLoaded && rows.isEmpty;
+    // Grouped by hour, the trend reads the hourly summaries; every other
+    // section keeps the daily rows.
+    final byHour = f.group == GroupBy.hourly;
+    final trendRows = byHour
+        ? applyFilter(f, parseHourly(_hourly.raw, _meta, rates: _rates), span)
+        : rows;
+    final trendCmpRows = !byHour || cmpSpan == null
+        ? cmpRows
+        : applyFilter(f,
+            parseHourly(_hourlyCompare.raw, _meta, rates: _rates), cmpSpan);
 
     return Theme(
       data:
@@ -968,7 +993,7 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                       rangeStart: span.start,
                       padding: const EdgeInsets.only(top: 12)),
                   const SizedBox(height: 22),
-                  if (!_rangeLoaded)
+                  if (!_rangeLoaded || !_hourly.loaded)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: ClipRRect(
@@ -987,7 +1012,8 @@ class _HistoryScreenWebState extends State<HistoryScreenWeb> {
                     const SizedBox(height: 22),
                     KeyedSubtree(
                       key: _keyFor(AnalyticsSection.trend),
-                      child: _trendCard(rows, cmpRows, span, cmpSpan),
+                      child:
+                          _trendCard(trendRows, trendCmpRows, span, cmpSpan),
                     ),
                   ],
                   const SizedBox(height: 22),

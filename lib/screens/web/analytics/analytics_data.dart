@@ -61,6 +61,10 @@ class UsageRow {
   /// reading when there is one, so later rate changes never reprice it.
   final double cost;
 
+  /// 0-23 for a row of `energy_summaries/hourly` ([date] is then still the
+  /// day, so the day filters apply unchanged); null for a daily row.
+  final int? hour;
+
   const UsageRow({
     required this.date,
     required this.deviceId,
@@ -70,6 +74,7 @@ class UsageRow {
     required this.room,
     required this.kwh,
     required this.cost,
+    this.hour,
   });
 
   /// Rooms are only unique within a building + floor.
@@ -83,6 +88,61 @@ double _num(Object? v) {
 }
 
 final _dayKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+final _hourKeyPattern = RegExp(r'^(\d{4}-\d{2}-\d{2})-(\d{2})$');
+
+/// Flattens an `energy_summaries/hourly` snapshot (`{yyyy-MM-dd-HH: {devices:
+/// {id: {kwh, cost, building}}, buildings: {...}, campus: {...}}}`) into
+/// per-device rows with [UsageRow.hour] set. Hours without per-device
+/// entries fall back to per-building totals, then to the campus total.
+List<UsageRow> parseHourly(
+  Object? raw,
+  Map<String, DeviceMeta> meta, {
+  required RateTimeline rates,
+}) {
+  final rows = <UsageRow>[];
+  if (raw is! Map) return rows;
+  raw.forEach((key, val) {
+    final m = _hourKeyPattern.firstMatch(key.toString());
+    if (m == null || val is! Map) return;
+    final date = DateTime.tryParse(m[1]!);
+    final hour = int.parse(m[2]!);
+    if (date == null || hour > 23) return;
+    UsageRow row(String id, String building, DeviceMeta? d, Map v) {
+      final kwh = _num(v['kwh']);
+      return UsageRow(
+        date: date,
+        deviceId: id,
+        building: building,
+        utility: d?.utility ?? 'Unknown',
+        floor: d?.floor ?? 0,
+        room: d?.room ?? '',
+        kwh: kwh,
+        cost: rates.costOf(v['cost'], kwh, date),
+        hour: hour,
+      );
+    }
+
+    final devices = val['devices'];
+    if (devices is Map && devices.isNotEmpty) {
+      devices.forEach((id, v) {
+        if (v is! Map) return;
+        final d = meta[id.toString()];
+        final b = (v['building'] ?? '').toString();
+        rows.add(row(id.toString(), b.isNotEmpty ? b : (d?.building ?? ''), d, v));
+      });
+      return;
+    }
+    final buildings = val['buildings'];
+    if (buildings is Map && buildings.isNotEmpty) {
+      buildings.forEach((code, v) {
+        if (v is Map) rows.add(row('', code.toString(), null, v));
+      });
+      return;
+    }
+    if (val['campus'] case final Map v) rows.add(row('', '', null, v));
+  });
+  return rows;
+}
 
 /// Flattens a daily snapshot in the legacy `history/daily` shape (see
 /// `EnergyHistory.legacyRange`: `{yyyy-MM-dd: {devices: {id: {kwh, cost,
@@ -227,6 +287,7 @@ class Bucket {
 /// the axis stays evenly spaced.
 List<Bucket> bucketize(AnalyticsFilter f, List<UsageRow> rows,
     DateTimeRange span, GroupBy group) {
+  if (group == GroupBy.hourly) return _bucketizeHourly(f, rows, span);
   final byDay = <DateTime, double>{};
   final costByDay = <DateTime, double>{};
   for (final r in rows) {
@@ -268,6 +329,42 @@ List<Bucket> bucketize(AnalyticsFilter f, List<UsageRow> rows,
       case GroupBy.daily:
         out.add(Bucket(b, fmtDate(b),
             '${fmtDate(b)} · ${kWeekdays[b.weekday - 1]}', v, c));
+    }
+  }
+  return out;
+}
+
+/// One bucket per hour of every allowed day of [span], from hourly rows
+/// ([UsageRow.hour] set; daily rows are ignored). Hours with no reading
+/// count as 0, like empty days.
+List<Bucket> _bucketizeHourly(
+    AnalyticsFilter f, List<UsageRow> rows, DateTimeRange span) {
+  final kwh = <DateTime, double>{};
+  final cost = <DateTime, double>{};
+  for (final r in rows) {
+    final h = r.hour;
+    if (h == null) continue;
+    final t = DateTime(r.date.year, r.date.month, r.date.day, h);
+    kwh[t] = (kwh[t] ?? 0) + r.kwh;
+    cost[t] = (cost[t] ?? 0) + r.cost;
+  }
+  final oneDay = span.start == span.end;
+  final out = <Bucket>[];
+  for (var d = span.start;
+      !d.isAfter(span.end);
+      d = DateTime(d.year, d.month, d.day + 1)) {
+    if (!f.dayAllowed(d)) continue;
+    for (var h = 0; h < 24; h++) {
+      final t = DateTime(d.year, d.month, d.day, h);
+      final hh = '${h.toString().padLeft(2, '0')}:00';
+      out.add(Bucket(
+        t,
+        oneDay ? hh : '${fmtDate(d)} $hh',
+        '${fmtDate(d)} · ${kWeekdays[d.weekday - 1]} · '
+            '$hh–${((h + 1) % 24).toString().padLeft(2, '0')}:00',
+        kwh[t] ?? 0,
+        cost[t] ?? 0,
+      ));
     }
   }
   return out;
