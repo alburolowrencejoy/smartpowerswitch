@@ -226,7 +226,8 @@ class BreakdownPanel extends StatelessWidget {
                                   fontSize: 12.5, color: WebColors.muted)),
                           const SizedBox(height: 4),
                           Row(children: [
-                            if (kind == BreakdownKind.building) _code(id),
+                            if (kind == BreakdownKind.building)
+                              _buildingIcon(size: 24),
                             Flexible(
                               child: Text(_title,
                                   style: const TextStyle(
@@ -327,8 +328,10 @@ class BreakdownPanel extends StatelessWidget {
           groupSum(mine, (r) => r.building),
           total,
           label: (k) => Row(children: [
-            _code(k.isEmpty ? '—' : k),
-            Flexible(child: Text(_bName(k), overflow: TextOverflow.ellipsis)),
+            _buildingIcon(),
+            Flexible(
+                child: Text(k.isEmpty ? 'Unassigned' : _bName(k),
+                    overflow: TextOverflow.ellipsis)),
           ]),
           color: (k, i) => AnalyticsUi.buildingColor(k, i),
         ));
@@ -485,16 +488,10 @@ class BreakdownPanel extends StatelessWidget {
                 color: WebColors.ink)),
       );
 
-  Widget _code(String c) => Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: palette.pale.withAlpha(153),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(c,
-            style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w700, color: palette.dark)),
+  /// Marks a building; the name follows, so the code isn't repeated.
+  Widget _buildingIcon({double size = 18}) => Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Icon(Icons.apartment_rounded, size: size, color: palette.dark),
       );
 
   /// A stacked bar followed by one legend row per group.

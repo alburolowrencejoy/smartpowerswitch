@@ -68,10 +68,13 @@ const kUtilities = ['Lights', 'Outlets', 'AC'];
 /// them reports (codes from the `buildings` node are appended after these).
 const kDefaultBuildings = ['IC', 'ILEGG', 'ITED', 'IAAS', 'ADMIN'];
 
-/// Hourly grouping and the time-of-day filter need hourly readings, but
-/// `history/daily` only stores per-device daily totals.
-// TODO(analytics): enable Hourly grouping and the Time-of-day filter once an
-// hourly history node exists (e.g. history/hourly/{yyyy-MM-ddTHH}/devices).
+/// Hourly grouping: the trend reads `energy_summaries/hourly` (written by the
+/// rollup alongside the daily totals) for ranges of up to 7 days.
+const bool kHasHourlyGrouping = true;
+
+/// The time-of-day filter: it would have to filter every Analytics section
+/// (totals, breakdowns, tables), and those are built from daily totals.
+// TODO(analytics): enable once those sections can read hourly rows too.
 const bool kHasHourlyData = false;
 
 DateTime dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
@@ -131,7 +134,7 @@ DateTimeRange presetSpan(RangePreset p, DateTime today,
 
 /// Grouping suggested for a range of [days] days.
 GroupBy suggestedGroup(int days) {
-  if (days <= 2 && kHasHourlyData) return GroupBy.hourly;
+  if (days <= 2 && kHasHourlyGrouping) return GroupBy.hourly;
   if (days <= 62) return GroupBy.daily;
   if (days <= 180) return GroupBy.weekly;
   return GroupBy.monthly;
@@ -141,7 +144,7 @@ GroupBy suggestedGroup(int days) {
 bool groupAllowed(GroupBy g, int days) {
   switch (g) {
     case GroupBy.hourly:
-      return kHasHourlyData && days <= 7;
+      return kHasHourlyGrouping && days <= 7;
     case GroupBy.daily:
       return days <= 366;
     case GroupBy.weekly:
@@ -155,7 +158,7 @@ bool groupAllowed(GroupBy g, int days) {
 String groupDisabledReason(GroupBy g) {
   switch (g) {
     case GroupBy.hourly:
-      return kHasHourlyData
+      return kHasHourlyGrouping
           ? 'Only for ranges up to 7 days'
           : 'Needs hourly readings (daily totals only for now)';
     case GroupBy.daily:

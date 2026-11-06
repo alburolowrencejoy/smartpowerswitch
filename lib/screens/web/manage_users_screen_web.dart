@@ -640,13 +640,14 @@ class _ManageUsersScreenWebState extends State<ManageUsersScreenWeb> {
       palette: cp,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
+          // A building icon, not the code: the name beside it already says
+          // which institute this is.
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
-                color: cp.pale, borderRadius: BorderRadius.circular(6)),
-            child: Text(code,
-                style: TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w700, color: cp.dark)),
+                color: cp.pale, borderRadius: BorderRadius.circular(8)),
+            child: Icon(Icons.apartment_rounded, size: 20, color: cp.dark),
           ),
           const SizedBox(width: 10),
           Expanded(

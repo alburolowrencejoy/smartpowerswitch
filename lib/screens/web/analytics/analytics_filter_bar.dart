@@ -614,16 +614,10 @@ class _PanelHostState extends State<_PanelHost> {
     );
   }
 
-  Widget _codeChip(String code) => Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: p.pale.withAlpha(153),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(code,
-            style: TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w700, color: p.dark)),
+  /// Marks a building row; the name follows, so the code isn't repeated.
+  Widget _buildingIcon() => Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Icon(Icons.apartment_rounded, size: 18, color: p.dark),
       );
 
   // ── Time range ───────────────────────────────────────────────────────
@@ -767,7 +761,7 @@ class _PanelHostState extends State<_PanelHost> {
         _check(
           value: d.buildings.contains(x.code),
           label: Row(children: [
-            _codeChip(x.code),
+            _buildingIcon(),
             Expanded(
               child: Text(x.name,
                   maxLines: 1,

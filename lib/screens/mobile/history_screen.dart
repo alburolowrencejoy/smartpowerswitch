@@ -34,6 +34,7 @@ import '../../widgets/top_toast.dart';
 import '../web/analytics/analytics_data.dart';
 import '../web/analytics/analytics_filter.dart';
 import '../web/analytics/breakdown_panel.dart';
+import '../web/analytics/hourly_range.dart';
 import '../web/analytics/year_comparison.dart';
 import '../web/history_trend_panel.dart';
 import '../web/web_trend_chart.dart';
@@ -204,8 +205,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
     if (mounted) setState(() {});
   }
 
+  // energy_summaries/hourly for the range and the compare range, only while
+  // the trend is grouped by hour (see _buildTrendSection).
+  late final _hourly = HourlyRange(_onHourly);
+  late final _hourlyCompare = HourlyRange(_onHourly);
+  void _onHourly() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    _hourly.dispose();
+    _hourlyCompare.dispose();
     _combinedSub?.cancel();
     _predictionsSub?.cancel();
     _loadTimeoutTimer?.cancel();
@@ -906,6 +917,20 @@ class _HistoryScreenState extends State<HistoryScreen> {
     List<UsageRow>? compareRows,
   ) {
     final cost = _isCost(f);
+    // Grouped by hour, the trend reads the hourly summaries for just these
+    // dates. watch() only re-subscribes when the dates change, and its
+    // callback runs later (on data), never during this build.
+    final byHour = f.group == GroupBy.hourly;
+    _hourly.watch(byHour ? span : null);
+    _hourlyCompare.watch(byHour ? compareSpan : null);
+    if (byHour) {
+      final rates = RateHistory.instance.timeline(_electricityRate);
+      rows = applyFilter(f, parseHourly(_hourly.raw, _meta, rates: rates), span);
+      compareRows = compareSpan == null
+          ? null
+          : applyFilter(f, parseHourly(_hourlyCompare.raw, _meta, rates: rates),
+              compareSpan);
+    }
     final buckets = bucketize(f, rows, span, f.group);
     final compareBuckets = compareSpan == null
         ? null
